@@ -1,0 +1,7 @@
+fragment PostParts on Post {
+  title
+  slug
+  created_at
+  headline
+  body
+}
