@@ -1,12 +1,13 @@
+import DynamicTina from "@components/tina/dynamic"
 import '@styles/globals.css'
+
 import type { AppProps } from 'next/app'
-import Tina from '@tina/components/TinaProvider'
 
 function App({ Component, pageProps }: AppProps) {
   return (
-      <Tina>
+      <DynamicTina>
         <Component {...pageProps} />
-      </Tina>
+      </DynamicTina>
   )
 }
 
