@@ -40,7 +40,7 @@ function SinglePost(props: Props) {
     }, [markdown])
 
     return useMemo(() => {
-        return <MDXRemote {...mdx} scope={{...metadata}}/>
+        return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}}/>
     }, [mdx, metadata])
 }
 

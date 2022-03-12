@@ -1,6 +1,7 @@
+import { TinaEditProvider } from 'tinacms/dist/edit-state'
+
 import dynamic from 'next/dynamic'
 const TinaProvider = dynamic(() => import('@components/tina/provider'), { ssr: false })
-import { TinaEditProvider } from 'tinacms/dist/edit-state'
 
 const DynamicTina = ({ children }) => {
     return (
