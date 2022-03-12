@@ -1,4 +1,5 @@
 import {defineConfig} from "tinacms";
+import {TinaCMSProviderDefaultProps} from "tinacms/dist/tina-cms";
 
 const branch = 'main'
 // When working locally, hit our local filesystem.
@@ -8,7 +9,9 @@ const apiURL =
         ? 'http://localhost:4001/graphql'
         : `https://content.tinajs.io/content/${process.env.NEXT_PUBLIC_TINA_CLIENT_ID}/github/${branch}`
 
-export const tinaConfig = defineConfig({
+type TinaConfig = Omit<TinaCMSProviderDefaultProps, 'children'>
+
+export const tinaConfig: TinaConfig = defineConfig({
     apiURL,
     cmsCallback: (cms) => {
         import('react-tinacms-editor').then((field)=> {

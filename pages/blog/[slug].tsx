@@ -26,7 +26,7 @@ interface Query<VType, DType> {
     data: DType
 }
 
-function SinglePost(props: Props) {
+const BlogPost = (props: Props) => {
     const { data: { getPostDocument: { data: { body: markdown, ...metadata }}} } = useTina(props.query)
 
     const init = useRef(false)
@@ -40,11 +40,12 @@ function SinglePost(props: Props) {
     }, [markdown])
 
     return useMemo(() => {
-        return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}}/>
-    }, [mdx, metadata])
+        return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}} />
+    }, [mdx, markdown, metadata])
 }
 
-export default SinglePost
+export default BlogPost
+
 
 const serializeOptions: SerializeOptions = {
     mdxOptions: MdxConfig.options,
