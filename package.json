@@ -9,7 +9,14 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@emotion/cache": "^11.9.3",
+    "@emotion/react": "^11.9.3",
+    "@emotion/server": "^11.4.0",
+    "@emotion/styled": "^11.9.3",
+    "@fontsource/roboto": "^4.5.7",
     "@mdx-js/loader": "^2.0.0",
+    "@mui/icons-material": "^5.8.4",
+    "@mui/material": "^5.9.1",
     "@next/mdx": "^12.1.0",
     "@tinacms/cli": "^0.60.8",
     "next": "12.1.0",
