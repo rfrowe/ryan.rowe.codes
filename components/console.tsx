@@ -1,5 +1,5 @@
 import {css} from '@emotion/react'
-
+import {PropsWithStyle} from '@emotion/react'
 import {useCallback, useEffect, useMemo, useState} from 'react'
 
 interface Props {
@@ -48,7 +48,9 @@ const ConsoleTypist = ({
     cursorIntervalMillis = 1000,
     getInsertionDelayMillis = defaultCharacterDelay,
     deletionDelayMillis = 25,
-}: Props) => {
+    css,
+    className
+}: PropsWithStyle<Props>) => {
     const [idx, setIdx] = useState(0)
     const [currentText, setCurrentText] = useState(text)
     const [cursor, cursorIsFlashing, setCursorFlashing] = useBlinkingCursor(cursorIntervalMillis)
@@ -84,7 +86,14 @@ const ConsoleTypist = ({
     }, [idx, currentText, text])
 
 
-    return <>{currentText.substring(0, idx)}{cursor}</>
+    return (
+        <>
+            <span css={css} className={className}>
+                {currentText.substring(0, idx)}
+            </span>
+            {cursor}
+        </>
+    )
 }
 
 export default ConsoleTypist
