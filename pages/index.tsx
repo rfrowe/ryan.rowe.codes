@@ -7,7 +7,6 @@ import {Post} from '@tina/__generated__/types'
 
 import {NextPage, GetStaticProps} from 'next'
 import Head from 'next/head'
-import Image from 'next/image'
 import {useCallback, useMemo, useState} from "react";
 
 type PostWithHeadline = Post & {
@@ -92,7 +91,6 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
                 >
                     Powered by{' '}
                     <span className={styles.logo}>
-    <Image src="/vercel.svg" alt="Vercel Logo" width={72} height={16}/>
     </span>
                 </a>
             </footer>

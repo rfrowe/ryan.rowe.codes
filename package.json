@@ -6,7 +6,8 @@
     "dev": "tinacms server:start -c \"next dev\"",
     "build": "tinacms server:start -c \"next build\"",
     "start": "tinacms server:start -c \"next start\"",
-    "lint": "next lint"
+    "lint": "next lint",
+    "export": "next export"
   },
   "dependencies": {
     "@emotion/cache": "^11.9.3",
