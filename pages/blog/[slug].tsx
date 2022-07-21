@@ -1,4 +1,5 @@
 import MdxConfig from "../../mdx.config.mjs";
+import PageTemplate from "@components/layout/template";
 import {getAllPosts} from "@lib/post";
 import {
     ExperimentalGetTinaClient,
@@ -7,8 +8,6 @@ import {
 } from "@tina/__generated__/types";
 
 import {GetStaticPaths, GetStaticProps} from "next";
-import LayoutTemplate from "@components/layout/template";
-
 import {MDXRemote, MDXRemoteSerializeResult} from "next-mdx-remote";
 import {SerializeOptions} from "next-mdx-remote/dist/types";
 import {serialize} from "next-mdx-remote/serialize";
@@ -46,9 +45,9 @@ const BlogPost = (props: Props) => {
     }, [mdx, markdown, metadata])
 
     return (
-        <LayoutTemplate title={metadata.title}>
+        <PageTemplate title={metadata.title}>
             {content}
-        </LayoutTemplate>
+        </PageTemplate>
     )
 }
 

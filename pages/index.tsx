@@ -1,5 +1,5 @@
 import ConsoleTypist from "@components/console";
-import LayoutTemplate from "@components/layout/template";
+import PageTemplate from "@components/layout/template";
 import { css } from '@emotion/react';
 import {getAllPosts} from '@lib/post';
 import {isDefined, notNull} from '@lib/util'
@@ -65,7 +65,7 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
     }, [headlines, index])
 
     return (
-        <LayoutTemplate>
+        <PageTemplate>
             <h1 className={styles.title}>
                 Ryan <br/>
                 Rowe <br/>
@@ -74,7 +74,7 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
             <h3>
                 {headline}
             </h3>
-        </LayoutTemplate>
+        </PageTemplate>
     )
 }
 

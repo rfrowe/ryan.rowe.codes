@@ -7,7 +7,7 @@ interface Props {
     title?: string
 }
 
-const LayoutTemplate = ({
+const PageTemplate = ({
     title = 'Ryan Rowe Codes',
     children
 }: PropsWithChildren<Props>) => (
@@ -24,4 +24,4 @@ const LayoutTemplate = ({
     </div>
 )
 
-export default LayoutTemplate
+export default PageTemplate
