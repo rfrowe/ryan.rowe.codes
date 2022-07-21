@@ -3,7 +3,6 @@ import PageTemplate from "@components/layout/template";
 import { css } from '@emotion/react';
 import {getAllPosts} from '@lib/post';
 import {isDefined, notNull} from '@lib/util'
-import styles from '@styles/Home.module.css'
 import {Post} from '@tina/__generated__/types'
 
 import {NextPage, GetStaticProps} from 'next'
@@ -66,7 +65,7 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
 
     return (
         <PageTemplate>
-            <h1 className={styles.title}>
+            <h1>
                 Ryan <br/>
                 Rowe <br/>
                 Codes

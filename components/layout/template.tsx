@@ -1,27 +1,35 @@
 import Head from "next/head";
 import {PropsWithChildren} from "react";
 import NavBar from "@components/layout/nav";
-import styles from '@styles/Home.module.css'
+import {css} from "@emotion/react";
 
 interface Props {
     title?: string
 }
 
+const mainStyle = css({
+    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+})
+
 const PageTemplate = ({
     title = 'Ryan Rowe Codes',
     children
 }: PropsWithChildren<Props>) => (
-    <div className={styles.container}>
+    <>
         <Head>
             <title>{title}</title>
             <link rel='icon' href='/favicon.ico' />
         </Head>
 
-        <main className={styles.main}>
+        <main css={mainStyle}>
             <NavBar />
             {children}
         </main>
-    </div>
+    </>
 )
 
 export default PageTemplate
