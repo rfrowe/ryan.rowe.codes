@@ -1,10 +1,10 @@
-import {PaletteMode} from '@mui/material';
+import {PaletteMode, responsiveFontSizes} from '@mui/material';
 import {createTheme} from '@mui/material/styles';
 
 export type ThemeMode = PaletteMode;
 
-const makeTheme = (mode: ThemeMode) => createTheme({
+const makeTheme = (mode: ThemeMode) => responsiveFontSizes(createTheme({
     palette: {mode}
-});
+}));
 
 export default makeTheme;
