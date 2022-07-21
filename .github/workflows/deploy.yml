@@ -8,7 +8,9 @@ jobs:
       - name: Cache 💾
         uses: actions/cache@v3
         with:
-          path: ${{ github.workspace }}/.next/cache
+          path: |
+            ${{ github.workspace }}/.next/cache
+            ${{ github.workspace }}/node_modules
           key: ${{ runner.os }}-${{ hashFiles('**/yarn.lock') }}
       - name: Setup ⚙️
         uses: actions/setup-node@v3
