@@ -2,16 +2,23 @@ import Head from "next/head";
 import {PropsWithChildren} from "react";
 import NavBar from "@components/layout/nav";
 import {css} from "@emotion/react";
+import {Box} from "@mui/material";
 
 interface Props {
     title?: string
 }
 
-const mainStyle = css({
+const containerStyle = css({
     minHeight: '100vh',
     display: 'flex',
     flexDirection: 'column',
-    justifyContent: 'center',
+})
+
+const mainStyle = css({
+    flexGrow: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between',
     alignItems: 'center',
 })
 
@@ -25,10 +32,14 @@ const PageTemplate = ({
             <link rel='icon' href='/favicon.ico' />
         </Head>
 
-        <main css={mainStyle}>
+
+        <Box css={containerStyle}>
             <NavBar />
-            {children}
-        </main>
+            <main css={mainStyle}>
+                {children}
+            </main>
+        </Box>
+
     </>
 )
 

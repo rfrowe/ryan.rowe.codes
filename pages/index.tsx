@@ -59,7 +59,9 @@ const headlineStyles: ThemedStyles = theme => css({
 
 const bannerStyles: ThemedStyles = theme => css({
     alignSelf: 'flex-start',
+    marginTop: 'auto',
     marginLeft: '20%',
+    marginBottom: 'auto',
     [theme.breakpoints.down("sm")]: {
         marginLeft: '10%'
     }
