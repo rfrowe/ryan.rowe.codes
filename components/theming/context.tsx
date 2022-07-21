@@ -9,15 +9,46 @@ type ThemeModeContext = [ThemeMode, ToggleThemeFn];
 
 const ThemeModeContext = createContext<ThemeModeContext | undefined>(undefined);
 
+const themeModeStorageKey = 'themeMode'
+
+function persistThemeMode(mode: ThemeMode | undefined) {
+    if (mode === undefined) {
+        window.localStorage.removeItem(themeModeStorageKey)
+    } else {
+        window.localStorage.setItem(themeModeStorageKey, mode)
+    }
+}
+
+function readPersistedThemeMode(): ThemeMode | undefined {
+    const mode = window.localStorage.getItem(themeModeStorageKey)
+    if (mode !== null && (mode === 'dark' || mode === 'light')) {
+        return mode
+    }
+}
+
 function useThemeModeContextState(): ThemeModeContext {
     const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)');
     const systemMode = prefersDarkMode ? 'dark' : 'light';
 
     // Default theme mode to system mode and automatically change this when system mode changes.
     const [mode, setMode] = useState<ThemeMode>(systemMode);
-    useEffect(() => setMode(systemMode), [systemMode]);
+    useEffect(() => {
+        setMode(readPersistedThemeMode() || systemMode)
+    }, [systemMode]);
 
-    const toggleMode = useCallback(() => setMode(prev => prev === 'dark' ? 'light' : 'dark'), []);
+    const toggleMode = useCallback(() => {
+        setMode(prev => {
+            const next = prev === 'dark' ? 'light' : 'dark'
+
+            if (next === systemMode) {
+                persistThemeMode(undefined)
+            } else {
+                persistThemeMode(next)
+            }
+
+            return next
+        })
+    }, [systemMode]);
 
     return [mode, toggleMode];
 }
