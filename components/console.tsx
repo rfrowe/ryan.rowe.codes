@@ -1,4 +1,4 @@
-import {css} from '@emotion/react';
+import {css} from '@emotion/react'
 
 import {useCallback, useEffect, useMemo, useState} from 'react'
 
@@ -14,31 +14,30 @@ interface Props {
 
 const defaultCharacterDelay = () => Math.random() * 75 + 25
 
-function useFlashingCursor(flashIntervalMillis: number): [JSX.Element, (flash: boolean) => void] {
-    const [flashEnabled, setFlashEnabled] = useState(false);
-    const [showCursor, setShowCursor] = useState(true);
-
-    useEffect(() => {
-        if (!flashEnabled) {
-            if (!showCursor) {
-                setShowCursor(true)
-            }
-        } else {
-            const timer = setInterval(() => setShowCursor(prev => !prev), flashIntervalMillis)
-
-            return () => clearInterval(timer)
+const blinkingStyle = (interval: number) => css({
+    animationName: 'blinker',
+    animationDuration: `${interval}ms`,
+    animationTimingFunction: 'step-start',
+    animationIterationCount: 'infinite',
+    '@keyframes blinker': {
+        '50%': {
+            'opacity': 0
         }
-    }, [flashEnabled]);
+    }
+})
+
+function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, boolean, (flash: boolean) => void] {
+    const [flashEnabled, setFlashEnabled] = useState(false);
 
     const cursor = useMemo(() => {
-        const visibility = showCursor ? 'visible' : 'hidden'
+        const cursorCss = flashEnabled ? [blinkingStyle(flashIntervalMillis)] : []
 
-        return <span css={css({visibility})}>&#9144;</span>
-    }, [showCursor])
+        return <span css={cursorCss}>&#9144;</span>
+    }, [flashEnabled, flashIntervalMillis])
 
-    const setCursorFlashing = useCallback(() => setFlashEnabled(state => !state), [])
+    const setCursorFlashing = useCallback(() => setFlashEnabled(state => !state), [setFlashEnabled])
 
-    return [cursor, setCursorFlashing]
+    return [cursor, flashEnabled, setCursorFlashing]
 }
 
 const ConsoleTypist = ({
@@ -46,13 +45,13 @@ const ConsoleTypist = ({
     startDelayMillis = 250,
     onTypingFinished,
     onTypingFinishedDelayMillis = 5000,
-    cursorIntervalMillis = 500,
+    cursorIntervalMillis = 1000,
     getInsertionDelayMillis = defaultCharacterDelay,
     deletionDelayMillis = 25,
 }: Props) => {
     const [idx, setIdx] = useState(0)
     const [currentText, setCurrentText] = useState(text)
-    const [cursor, setCursorFlashing] = useFlashingCursor(cursorIntervalMillis)
+    const [cursor, cursorIsFlashing, setCursorFlashing] = useBlinkingCursor(cursorIntervalMillis)
 
     // Type or erase letters at a pseudo-random, relatively realistic speed.
     useEffect(() => {
@@ -70,11 +69,13 @@ const ConsoleTypist = ({
         } else {
             if (idx > 0) {
                 timer = setTimeout(() => setIdx(prev => prev - 1), deletionDelayMillis)
+                if (cursorIsFlashing) {
+                    setCursorFlashing(false)
+                }
             } else {
                 // Successfully erased to start, begin typing new text.
                 timer = setTimeout(() => {
                     setCurrentText(text)
-                    setCursorFlashing(false)
                 }, startDelayMillis)
             }
         }
