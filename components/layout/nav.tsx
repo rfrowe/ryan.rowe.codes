@@ -26,7 +26,7 @@ const linksStyle: ThemedStyles = theme => css({
 })
 
 function HideOnScroll({children}: { children: ReactElement }) {
-    const trigger = useScrollTrigger()
+    const trigger = useScrollTrigger({threshold: 25})
 
     return (
         <Slide appear={false} direction='down' in={!trigger}>
@@ -40,41 +40,45 @@ const NavBar = () => {
     const hideRootLink = route.pathname === '/'
 
     return (
-        <HideOnScroll>
-            <AppBar component='nav' css={css({background: 'transparent'})}>
-                <Toolbar>
-                    <ThemeSwitcher css={[
-                        iconButtonStyle,
-                        theme => css({color: theme.palette.action.active})
-                    ]}/>
-                    <Link href='https://github.com/rfrowe' css={iconButtonStyle}>
-                        <IconButton>
-                            <GitHubIcon/>
-                        </IconButton>
-                    </Link>
-                    <Link href='mailto:ryan@rowe.codes' css={iconButtonStyle}>
-                        <IconButton>
-                            <EmailIcon/>
-                        </IconButton>
-                    </Link>
-
-                    {/* TODO: use next/link */}
-                    <Box css={brandStyle}>
-                        <Link href='/'>
-                            <h2 css={logoStyle(hideRootLink)}>ryan.rowe.codes</h2>
+        <>
+            <HideOnScroll>
+                <AppBar css={css({background: 'transparent'})}>
+                    <Toolbar component='nav'>
+                        <ThemeSwitcher css={[
+                            iconButtonStyle,
+                            theme => css({color: theme.palette.action.active})
+                        ]}/>
+                        <Link href='https://github.com/rfrowe' css={iconButtonStyle}>
+                            <IconButton>
+                                <GitHubIcon/>
+                            </IconButton>
                         </Link>
-                    </Box>
+                        <Link href='mailto:ryan@rowe.codes' css={iconButtonStyle}>
+                            <IconButton>
+                                <EmailIcon/>
+                            </IconButton>
+                        </Link>
 
-                    {/* TODO: use next/link */}
-                    <Link href='/blog' css={linksStyle}>
-                        Blog
-                    </Link>
-                    <Link href='/about' css={linksStyle}>
-                        About
-                    </Link>
-                </Toolbar>
-            </AppBar>
-        </HideOnScroll>
+                        {/* TODO: use next/link */}
+                        <Box css={brandStyle}>
+                            <Link href='/'>
+                                <h2 css={logoStyle(hideRootLink)}>ryan.rowe.codes</h2>
+                            </Link>
+                        </Box>
+
+                        {/* TODO: use next/link */}
+                        <Link href='/blog' css={linksStyle}>
+                            Blog
+                        </Link>
+                        <Link href='/about' css={linksStyle}>
+                            About
+                        </Link>
+                    </Toolbar>
+                </AppBar>
+            </HideOnScroll>
+            {/* This preserves the correct vertical spacing for proper layout with fixed toolbar. */}
+            <Toolbar/>
+        </>
     )
 }
 
