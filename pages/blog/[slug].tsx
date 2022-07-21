@@ -7,6 +7,8 @@ import {
 } from "@tina/__generated__/types";
 
 import {GetStaticPaths, GetStaticProps} from "next";
+import LayoutTemplate from "@components/layout/template";
+
 import {MDXRemote, MDXRemoteSerializeResult} from "next-mdx-remote";
 import {SerializeOptions} from "next-mdx-remote/dist/types";
 import {serialize} from "next-mdx-remote/serialize";
@@ -39,9 +41,15 @@ const BlogPost = (props: Props) => {
         }
     }, [markdown])
 
-    return useMemo(() => {
+    const content = useMemo(() => {
         return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}} />
     }, [mdx, markdown, metadata])
+
+    return (
+        <LayoutTemplate title={metadata.title}>
+            {content}
+        </LayoutTemplate>
+    )
 }
 
 export default BlogPost
