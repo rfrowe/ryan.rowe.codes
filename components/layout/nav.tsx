@@ -35,6 +35,14 @@ function HideOnScroll({children}: { children: ReactElement }) {
     );
 }
 
+const navStyle: ThemedStyles = theme => css({
+    background: theme.palette.background.default,
+    borderBottomColor: theme.palette.text.disabled,
+    borderBottomStyle: 'solid',
+    borderBottomWidth: '1px',
+    boxShadow: 'none',
+})
+
 const NavBar = () => {
     const route = useRouter()
     const hideRootLink = route.pathname === '/'
@@ -42,7 +50,7 @@ const NavBar = () => {
     return (
         <>
             <HideOnScroll>
-                <AppBar css={css({background: 'transparent'})}>
+                <AppBar css={navStyle} position='sticky'>
                     <Toolbar component='nav'>
                         <ThemeSwitcher css={[
                             iconButtonStyle,
