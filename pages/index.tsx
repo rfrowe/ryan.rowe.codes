@@ -7,6 +7,8 @@ import {Post} from '@tina/__generated__/types'
 
 import {NextPage, GetStaticProps} from 'next'
 import {useCallback, useMemo, useState} from "react";
+import ThemedStyles from "@lib/types/css";
+import {Box, Typography} from "@mui/material";
 
 type PostWithHeadline = Post & {
     headline: NonNullable<string>
@@ -49,6 +51,20 @@ export const getStaticProps: GetStaticProps<Props> = async () => {
     }
 }
 
+const headlineStyles: ThemedStyles = theme => css({
+    fontFamily: 'monospace',
+    color: theme.palette.text.primary,
+    textDecoration: 'none',
+})
+
+const bannerStyles: ThemedStyles = theme => css({
+    alignSelf: 'flex-start',
+    marginLeft: '20%',
+    [theme.breakpoints.down("sm")]: {
+        marginLeft: '10%'
+    }
+})
+
 const Home: NextPage<Props> = ({headlines}: Props) => {
     const [index, setIndex] = useState(0)
     const advanceHeadline = useCallback(() => setIndex(i => i + 1), [])
@@ -57,7 +73,7 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
         const headline = headlines[index % headlines.length]
 
         return (
-            <a href={headline.href} css={css({fontFamily: 'monospace'})}>
+            <a href={headline.href} css={headlineStyles}>
                 <ConsoleTypist text={headline.text} onTypingFinished={advanceHeadline} />
             </a>
         )
@@ -65,14 +81,16 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
 
     return (
         <PageTemplate>
-            <h1>
-                Ryan <br/>
-                Rowe <br/>
-                Codes
-            </h1>
-            <h3>
-                {headline}
-            </h3>
+            <Box css={bannerStyles}>
+                <Typography variant='h1'>
+                    Ryan <br/>
+                    Rowe <br/>
+                    Codes
+                </Typography>
+                <Typography variant='h3'>
+                    {headline}
+                </Typography>
+            </Box>
         </PageTemplate>
     )
 }
