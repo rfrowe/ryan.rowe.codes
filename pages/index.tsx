@@ -1,3 +1,5 @@
+import ConsoleTypist from "@components/console";
+import { css } from '@emotion/react';
 import {getAllPosts} from '@lib/post';
 import {isDefined, notNull} from '@lib/util'
 import styles from '@styles/Home.module.css'
@@ -6,7 +8,7 @@ import {Post} from '@tina/__generated__/types'
 import {NextPage, GetStaticProps} from 'next'
 import Head from 'next/head'
 import Image from 'next/image'
-import {useEffect, useMemo, useState} from "react";
+import {useCallback, useMemo, useState} from "react";
 
 type PostWithHeadline = Post & {
     headline: NonNullable<string>
@@ -51,17 +53,17 @@ export const getStaticProps: GetStaticProps<Props> = async () => {
 
 const Home: NextPage<Props> = ({headlines}: Props) => {
     const [index, setIndex] = useState(0)
+    const advanceHeadline = useCallback(() => setIndex(i => i + 1), [])
+
     const headline = useMemo(() => {
         const headline = headlines[index % headlines.length]
 
-        return <a href={headline.href}>{headline.text}</a>
+        return (
+            <a href={headline.href} css={css({fontFamily: 'monospace'})}>
+                <ConsoleTypist text={headline.text} onTypingFinished={advanceHeadline} />
+            </a>
+        )
     }, [headlines, index])
-
-    useEffect(() => {
-        setTimeout(() => {
-            setIndex(i => i + 1)
-        }, 2000)
-    }, [index])
 
     return (
         <div className={styles.container}>
