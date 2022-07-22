@@ -1,7 +1,7 @@
 import Head from "next/head";
 import {PropsWithChildren} from "react";
 import NavBar from "@components/layout/nav";
-import {css} from "@emotion/react";
+import {css, PropsWithStyle} from "@emotion/react";
 import {Box} from "@mui/material";
 
 interface Props {
@@ -23,9 +23,11 @@ const mainStyle = css({
 })
 
 const PageTemplate = ({
+    children,
+    className,
+    css,
     title = 'Ryan Rowe Codes',
-    children
-}: PropsWithChildren<Props>) => (
+}: PropsWithStyle<PropsWithChildren<Props>>) => (
     <>
         <Head>
             <title>{title}</title>
@@ -35,7 +37,7 @@ const PageTemplate = ({
 
         <Box css={containerStyle}>
             <NavBar />
-            <main css={mainStyle}>
+            <main css={[mainStyle, css]} className={className}>
                 {children}
             </main>
         </Box>
