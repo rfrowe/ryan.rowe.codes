@@ -51,6 +51,13 @@ export const getStaticProps: GetStaticProps<Props> = async () => {
     }
 }
 
+const containerStyle: ThemedStyles = theme => css({
+    alignItems: 'stretch',
+    [theme.breakpoints.up('md')]: {
+        flexDirection: 'row',
+    }
+})
+
 const headlineStyle: ThemedStyles = theme => css({
     fontFamily: 'monospace',
     textDecorationLine: 'none'
@@ -61,12 +68,34 @@ const linkStyle: ThemedStyles = theme => css({
     textDecorationColor: 'inherit',
 })
 
-const bannerStyle: ThemedStyles = theme => css({
-    alignSelf: 'flex-start',
-    marginLeft: '20%',
-    [theme.breakpoints.down("sm")]: {
-        marginLeft: '10%'
+const bannerMargin: ThemedStyles = theme => css({
+    marginLeft: '10%',
+    [theme.breakpoints.down('md')]: {
+        marginLeft: 'unset',
+        marginTop: '10%',
+        '&:not(:first-child)': {
+            marginTop: 'unset',
+        }
     }
+})
+
+const bannerStyle: ThemedStyles = theme => css({
+    flexGrow: 1,
+    flexBasis: 0,
+    boxShadow: theme.shadows[10],
+    position: 'relative', // necessary for boxShadow
+    paddingTop: '10%',
+    [theme.breakpoints.down('md')]: {
+        paddingTop: 'unset',
+        paddingLeft: '10%',
+    }
+})
+
+const imageStyle: ThemedStyles = theme => css({
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    backgroundColor: theme.palette.primary.main,
 })
 
 const Home: NextPage<Props> = ({headlines}: Props) => {
@@ -84,19 +113,19 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
     }, [headlines, index])
 
     return (
-        <PageTemplate>
-            <Box css={css({flexGrow: 2, visibility: 'hidden'})} />
+        <PageTemplate css={containerStyle}>
             <Box css={bannerStyle}>
-                <Typography variant='h1'>
+                <Typography variant='h1' css={bannerMargin}>
                     Ryan <br/>
                     Rowe <br/>
                     Codes
                 </Typography>
-                <Typography variant='h3'>
+                <Typography variant='h3' css={bannerMargin}>
                     {headline}
                 </Typography>
             </Box>
-            <Box css={css({flexGrow: 3, visibility: 'hidden'})} />
+            {/* TODO: use a real image here. */}
+            <Box css={imageStyle} />
         </PageTemplate>
     )
 }
