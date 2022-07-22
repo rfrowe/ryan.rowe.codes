@@ -37,7 +37,7 @@ function HideOnScroll({children}: { children: ReactElement }) {
 
 const navStyle: ThemedStyles = theme => css({
     background: theme.palette.background.default,
-    borderBottomColor: theme.palette.text.disabled,
+    borderBottomColor: theme.palette.divider,
     borderBottomStyle: 'solid',
     borderBottomWidth: '1px',
     boxShadow: 'none',
