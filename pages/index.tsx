@@ -87,6 +87,7 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
 
     return (
         <PageTemplate>
+            <Box css={css({flexGrow: 2, visibility: 'hidden'})} />
             <Box css={bannerStyle}>
                 <Typography variant='h1'>
                     Ryan <br/>
@@ -97,6 +98,7 @@ const Home: NextPage<Props> = ({headlines}: Props) => {
                     {headline}
                 </Typography>
             </Box>
+            <Box css={css({flexGrow: 3, visibility: 'hidden'})} />
         </PageTemplate>
     )
 }
