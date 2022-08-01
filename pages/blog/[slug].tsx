@@ -13,6 +13,10 @@ import {SerializeOptions} from "next-mdx-remote/dist/types";
 import {serialize} from "next-mdx-remote/serialize";
 import {useEffect, useMemo, useRef, useState} from "react";
 import {useTina} from "tinacms/dist/edit-state";
+import {Link, Typography} from "@mui/material";
+import {MDXComponents} from "mdx/types";
+import {css} from "@emotion/react";
+import ThemedStyles from "@lib/types/css";
 
 const client = ExperimentalGetTinaClient()
 
@@ -26,6 +30,29 @@ interface Query<VType, DType> {
     variables: VType
     data: DType
 }
+
+const templateStyle: ThemedStyles = theme => css({
+    marginTop: theme.spacing(5),
+    marginLeft: '20%',
+    marginRight: '20%',
+    alignItems: 'stretch',
+    [theme.breakpoints.down('xl')]: {
+        marginLeft: '15%',
+        marginRight: '15%',
+    },
+    [theme.breakpoints.down('lg')]: {
+        marginLeft: '10%',
+        marginRight: '10%',
+    },
+    [theme.breakpoints.down('md')]: {
+        marginLeft: '5%',
+        marginRight: '5%',
+    },
+    [theme.breakpoints.down('sm')]: {
+        marginLeft: theme.spacing(2),
+        marginRight: theme.spacing(2),
+    }
+})
 
 const BlogPost = (props: Props) => {
     const { data: { getPostDocument: { data: { body: markdown, ...metadata }}} } = useTina(props.query)
@@ -41,11 +68,14 @@ const BlogPost = (props: Props) => {
     }, [markdown])
 
     const content = useMemo(() => {
-        return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}} />
+        return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}} components={components} />
     }, [mdx, markdown, metadata])
 
     return (
-        <PageTemplate title={metadata.title}>
+        <PageTemplate
+            title={metadata.title}
+            css={templateStyle}
+        >
             {content}
         </PageTemplate>
     )
@@ -53,6 +83,38 @@ const BlogPost = (props: Props) => {
 
 export default BlogPost
 
+type IntrinsicProps<T extends keyof JSX.IntrinsicElements> = Omit<JSX.IntrinsicElements[T], 'ref'>
+
+type IntrinsicComponents = keyof JSX.IntrinsicElements extends infer U
+    ? (U extends keyof JSX.IntrinsicElements
+        ? {[K in U]: (props: IntrinsicProps<K>) => JSX.Element}
+        : never)
+    : never
+
+const overrides: IntrinsicComponents = {
+    // TODO: use next/link
+    a: props => <Link {...props} />,
+    h1: props => <Typography variant='h1' {...props} />,
+    h2: props => <Typography variant='h2' {...props} />,
+    h3: props => <Typography variant='h3' {...props} />,
+    h4: props => <Typography variant='h4' {...props} />,
+    h5: props => <Typography variant='h5' {...props} />,
+    h6: props => <Typography variant='h6' {...props} />,
+    p: props => (
+        <Typography
+            variant='body1'
+            css={theme => css({
+                marginTop: theme.spacing(2),
+                marginBottom: theme.spacing(2)
+            })}
+            {...props}
+        />
+    ),
+}
+
+const components: MDXComponents = {
+    ...overrides,
+}
 
 const serializeOptions: SerializeOptions = {
     mdxOptions: MdxConfig.options,
