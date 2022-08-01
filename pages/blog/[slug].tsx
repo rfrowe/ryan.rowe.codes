@@ -11,12 +11,26 @@ import {GetStaticPaths, GetStaticProps} from "next";
 import {MDXRemote, MDXRemoteSerializeResult} from "next-mdx-remote";
 import {SerializeOptions} from "next-mdx-remote/dist/types";
 import {serialize} from "next-mdx-remote/serialize";
-import {useEffect, useMemo, useRef, useState} from "react";
+import React, {
+    ComponentProps,
+    PropsWithChildren,
+    ReactElement,
+    useEffect,
+    useMemo,
+    useRef,
+    useState
+} from "react";
 import {useTina} from "tinacms/dist/edit-state";
 import {Link, Typography} from "@mui/material";
 import {MDXComponents} from "mdx/types";
 import {css} from "@emotion/react";
 import ThemedStyles from "@lib/types/css";
+import {useThemeMode} from "@components/theming";
+import dynamic from "next/dynamic";
+import {SyntaxHighlighterProps} from "react-syntax-highlighter";
+import {materialOceanic as dark, materialDark as light} from 'react-syntax-highlighter/dist/cjs/styles/prism';
+
+const SyntaxHighlighter = dynamic(async () => (await import('react-syntax-highlighter')).Prism)
 
 const client = ExperimentalGetTinaClient()
 
@@ -112,8 +126,40 @@ const overrides: IntrinsicComponents = {
     ),
 }
 
+const CodeBlock = (props: SyntaxHighlighterProps) => {
+    const [mode] = useThemeMode()
+    const style = mode === 'light' ? light : dark;
+
+    return (
+        <SyntaxHighlighter
+            css={theme => css({
+                boxShadow: theme.shadows[3],
+                borderRadius: '10px',
+            })}
+            showLineNumbers={true}
+            style={style}
+            {...props}
+        />
+    )
+}
+
 const components: MDXComponents = {
     ...overrides,
+    CodeBlock,
+    pre: ({children, ...props}: PropsWithChildren<Omit<ComponentProps<typeof SyntaxHighlighter>, 'children'>>) => {
+        const inner = children as ReactElement<IntrinsicProps<'code'>>
+        const match = /language-(\w+)/.exec(inner.props.className || '')
+        const language = match ? match[1] : undefined
+
+        return (
+            <CodeBlock
+                language={language}
+                {...props}
+            >
+                {inner.props.children as string}
+            </CodeBlock>
+        )
+    },
 }
 
 const serializeOptions: SerializeOptions = {
