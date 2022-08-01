@@ -1,4 +1,5 @@
 import remarkGfm from 'remark-gfm'
+import remarkMdxCodeMeta from 'remark-mdx-code-meta'
 
 const MdxConfig = {
     extension: /\.mdx?$/,
@@ -6,6 +7,7 @@ const MdxConfig = {
     options: {
         remarkPlugins: [
             remarkGfm,
+            remarkMdxCodeMeta,
         ],
         rehypePlugins: [],
     },
