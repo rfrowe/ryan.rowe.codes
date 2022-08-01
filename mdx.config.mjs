@@ -1,8 +1,12 @@
+import remarkGfm from 'remark-gfm'
+
 const MdxConfig = {
     extension: /\.mdx?$/,
     /** @type {import('@mdx-js/loader').Options} */
     options: {
-        remarkPlugins: [],
+        remarkPlugins: [
+            remarkGfm,
+        ],
         rehypePlugins: [],
     },
 }

@@ -118,7 +118,7 @@ const components: MDXComponents = {
 
 const serializeOptions: SerializeOptions = {
     mdxOptions: MdxConfig.options,
-    parseFrontmatter: true,
+    parseFrontmatter: false,
 }
 
 export const getStaticProps: GetStaticProps<Props> = async (context) => {
