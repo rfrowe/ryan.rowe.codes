@@ -14,14 +14,14 @@ import {serialize} from "next-mdx-remote/serialize";
 import React, {
     ComponentProps,
     PropsWithChildren,
-    ReactElement,
+    ReactElement, useCallback,
     useEffect,
     useMemo,
     useRef,
     useState
 } from "react";
 import {useTina} from "tinacms/dist/edit-state";
-import {Link, Typography} from "@mui/material";
+import {IconButton, Link, Typography} from "@mui/material";
 import {MDXComponents} from "mdx/types";
 import {css} from "@emotion/react";
 import ThemedStyles from "@lib/types/css";
@@ -29,6 +29,7 @@ import {useThemeMode} from "@components/theming";
 import dynamic from "next/dynamic";
 import {SyntaxHighlighterProps} from "react-syntax-highlighter";
 import {materialOceanic as dark, materialDark as light} from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import AssignmentIcon from '@mui/icons-material/Assignment';
 
 const SyntaxHighlighter = dynamic(async () => (await import('react-syntax-highlighter')).Prism)
 
@@ -126,12 +127,31 @@ const overrides: IntrinsicComponents = {
     ),
 }
 
+const PreTag = ({children, onCopyToClipboard, ...props}: IntrinsicProps<'pre'> & {onCopyToClipboard: () => void}) => (
+    <pre {...props}>
+        <IconButton css={theme => css({
+            float: 'right',
+        })} onClick={onCopyToClipboard}>
+            <AssignmentIcon />
+        </IconButton>
+        {children}
+    </pre>
+)
+
 const CodeBlock = (props: SyntaxHighlighterProps) => {
     const [mode] = useThemeMode()
     const style = mode === 'light' ? light : dark;
 
+    const {children: contents} = props;
+    const clipboardText = useMemo(() =>
+        typeof contents === 'string' ? contents : contents.join('\n'),
+        [contents]);
+    const copyToClipboard = useCallback(() => navigator.clipboard.writeText(clipboardText), [clipboardText])
+
+    const FooPreTag = useCallback((props: IntrinsicProps<'pre'>) => <PreTag {...props} onCopyToClipboard={copyToClipboard} />, [copyToClipboard])
     return (
         <SyntaxHighlighter
+            PreTag={FooPreTag}
             css={theme => css({
                 boxShadow: theme.shadows[3],
                 borderRadius: '10px',
