@@ -1,46 +1,36 @@
-import MdxConfig from "../../mdx.config.mjs";
-
 import {GetStaticPaths, GetStaticProps} from "next";
-import {SerializeOptions} from "next-mdx-remote/dist/types";
 import {serialize} from "next-mdx-remote/serialize";
 import React, {ComponentProps} from "react";
-import BlogPost from "@components/blog/post";
-import {getAllPosts} from "@lib/post";
-import {ExperimentalGetTinaClient} from "@tina/__generated__/types";
+import BlogPost, {serializeOptions} from "@components/blog/post";
+import {getAllPosts, getPost} from "@lib/post";
 
 export default BlogPost
 
-export const getStaticPaths: GetStaticPaths = async () => {
+type SlugQuery = {slug: string}
+
+export const getStaticPaths: GetStaticPaths<SlugQuery> = async () => {
     const posts = await getAllPosts()
     return {
-        paths: posts.map(({sys: {filename}, data: {slug}}) => {
-            return {params: {slug}}
-        }),
+        paths: posts.map(({slug}) => ({params: {slug}})),
         fallback: false,
     }
 }
 
-const serializeOptions: SerializeOptions = {
-    mdxOptions: MdxConfig.options,
-}
-
-const tinaClient = ExperimentalGetTinaClient()
-
-export const getStaticProps: GetStaticProps<ComponentProps<typeof BlogPost>> = async (context) => {
+export const getStaticProps: GetStaticProps<ComponentProps<typeof BlogPost>, SlugQuery> = async (context) => {
     // Lookup Post by slug.
     const posts = await getAllPosts()
-    const post = posts.find(post => post.data.slug == context.params?.slug)
+    const post = posts.find(({slug}) => slug == context.params?.slug)
     if (post === undefined) {
         return {notFound: true}
     }
 
     // Fetch document from file system.
-    const query = await tinaClient.getPostDocument({relativePath: post.sys.relativePath})
-    const mdx = await serialize(query.data.getPostDocument.data.body, serializeOptions)
+    const response = await getPost({relativePath: post._sys.relativePath})
+    const mdx = await serialize(response.data.post.body, serializeOptions)
     return {
         props: {
             mdx,
-            query,
+            data: response,
         }
     }
 }

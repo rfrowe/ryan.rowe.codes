@@ -5,18 +5,18 @@ import ThemedStyles from "@lib/types/css"
 import {MDXRemote, MDXRemoteSerializeResult} from "next-mdx-remote"
 import {serialize} from "next-mdx-remote/serialize"
 import React, {useEffect, useMemo, useRef, useState} from "react"
-import {GetPostDocumentQuery, GetPostDocumentQueryVariables,} from "@tina/__generated__/types"
+import {ExperimentalGetTinaClient, Post, PostQuery} from "@tina/__generated__/types"
 import {useTina} from "tinacms/dist/edit-state"
+import {SerializeOptions} from "next-mdx-remote/dist/types";
+import MdxConfig from "../../mdx.config.mjs";
 
-interface Query<VType, DType> {
-    query: string,
-    variables: VType
-    data: DType
-}
+type Resolve<T extends Promise<any>> = T extends Promise<infer U> ? U : never;
+
+type PostQueryResult = Resolve<ReturnType<ReturnType<typeof ExperimentalGetTinaClient>['post']>>
 
 interface Props {
     mdx: MDXRemoteSerializeResult
-    query: Query<GetPostDocumentQueryVariables, GetPostDocumentQuery>
+    data: PostQueryResult
 }
 
 const templateStyle: ThemedStyles = theme => css({
@@ -42,14 +42,18 @@ const templateStyle: ThemedStyles = theme => css({
     }
 })
 
+export const serializeOptions: SerializeOptions = {
+    mdxOptions: MdxConfig.options,
+}
+
 const BlogPost = (props: Props) => {
-    const {data: {getPostDocument: {data: {body: markdown, ...metadata}}}} = useTina(props.query)
+    const {data: {post: {body: markdown, ...metadata}}} = useTina(props.data)
 
     const init = useRef(false)
     const [mdx, setMdx] = useState(props.mdx)
     useEffect(() => {
         if (init.current) {
-            import("next-mdx-remote/serialize").then(({serialize}) => serialize(markdown)).then(setMdx)
+            import("next-mdx-remote/serialize").then(({serialize}) => serialize(markdown, serializeOptions)).then(setMdx)
         } else {
             init.current = true
         }

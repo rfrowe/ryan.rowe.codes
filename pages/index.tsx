@@ -10,8 +10,8 @@ import {useCallback, useMemo, useState} from "react";
 import ThemedStyles from "@lib/types/css";
 import {Box, Link, Typography} from "@mui/material";
 
-type PostWithHeadline = Post & {
-    headline: NonNullable<string>
+type PostWithHeadline = Omit<Post, 'headline'> & {
+    headline: NonNullable<Post['headline']>
 }
 
 interface Headline {
@@ -30,8 +30,7 @@ const defaultHeadline: Headline = {
 }
 
 export const getStaticProps: GetStaticProps<Props> = async () => {
-    const query = await getAllPosts()
-    const posts: Post[] = query.map(result => result.data)
+    const posts = await getAllPosts()
 
     const headlines: Headline[] = posts
         .filter((post): post is PostWithHeadline => isDefined(post.headline) && notNull(post.headline))
@@ -73,7 +72,7 @@ const bannerMargin: ThemedStyles = theme => css({
     [theme.breakpoints.down('md')]: {
         marginLeft: 'unset',
         marginTop: '10%',
-        '&:not(:first-child)': {
+        '&:not(:first-of-type)': {
             marginTop: 'unset',
         }
     }

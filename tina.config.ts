@@ -9,14 +9,13 @@ const apiURL =
         ? 'http://localhost:4001/graphql'
         : `https://content.tinajs.io/content/${process.env.NEXT_PUBLIC_TINA_CLIENT_ID}/github/${branch}`
 
-type TinaConfig = Omit<TinaCMSProviderDefaultProps, 'children'>
-
-export const tinaConfig: TinaConfig = defineConfig({
+export const tinaConfig: Omit<TinaCMSProviderDefaultProps, 'children'> = defineConfig({
     apiURL,
     cmsCallback: (cms) => {
-        import('react-tinacms-editor').then((field)=> {
-            cms.plugins.add(field.MarkdownFieldPlugin)
-        })
+        // TODO: figure something else out for this
+        // import('react-tinacms-editor').then((field)=> {
+        //     cms.plugins.add(field.MarkdownFieldPlugin)
+        // })
         // This won't work until the following issue is fixed:
         // https://github.com/tinacms/tinacms/issues/2684
         // import('tinacms').then(({RouteMappingPlugin}) => {

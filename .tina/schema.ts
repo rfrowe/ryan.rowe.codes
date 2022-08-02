@@ -37,9 +37,9 @@ export default defineSchema({
                     name: 'body',
                     isBody: true,
                     required: true,
-                    ui: {
-                        component: 'markdown'
-                    },
+                    // ui: {
+                    //     component: 'markdown'
+                    // },
                 },
             ],
         },
