@@ -1,7 +1,13 @@
 import {findDuplicate, isDefined, notNull} from "@lib/util";
 import {ExperimentalGetTinaClient, PostConnectionQueryVariables, PostQueryVariables} from "@tina/__generated__/types";
+import {SerializeOptions} from "next-mdx-remote/dist/types";
+import MdxConfig from "../mdx.config.mjs";
 
 const tinaClient = ExperimentalGetTinaClient()
+
+export const postMdxOptions: SerializeOptions = {
+    mdxOptions: MdxConfig.options,
+}
 
 export class DuplicatePostError extends Error {
     constructor(slug: string) {

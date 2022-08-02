@@ -1,8 +1,8 @@
 import {GetStaticPaths, GetStaticProps} from "next";
 import {serialize} from "next-mdx-remote/serialize";
 import React, {ComponentProps} from "react";
-import BlogPost, {serializeOptions} from "@components/blog/post";
-import {getAllPosts, getPost} from "@lib/post";
+import BlogPost from "@components/blog/post";
+import {getAllPosts, getPost, postMdxOptions} from "@lib/post";
 
 export default BlogPost
 
@@ -26,7 +26,7 @@ export const getStaticProps: GetStaticProps<ComponentProps<typeof BlogPost>, Slu
 
     // Fetch document from file system.
     const response = await getPost({relativePath: post._sys.relativePath})
-    const mdx = await serialize(response.data.post.body, serializeOptions)
+    const mdx = await serialize(response.data.post.body, postMdxOptions)
     return {
         props: {
             mdx,

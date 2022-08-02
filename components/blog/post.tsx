@@ -1,14 +1,13 @@
 import mdxComponents from "@components/blog/markdown"
 import PageTemplate from "@components/layout/template"
 import {css} from "@emotion/react"
+import {useAsyncError} from "@lib/error";
 import ThemedStyles from "@lib/types/css"
 import {MDXRemote, MDXRemoteSerializeResult} from "next-mdx-remote"
 import {serialize} from "next-mdx-remote/serialize"
 import React, {useEffect, useMemo, useRef, useState} from "react"
-import {ExperimentalGetTinaClient, Post, PostQuery} from "@tina/__generated__/types"
+import {ExperimentalGetTinaClient} from "@tina/__generated__/types"
 import {useTina} from "tinacms/dist/edit-state"
-import {SerializeOptions} from "next-mdx-remote/dist/types";
-import MdxConfig from "../../mdx.config.mjs";
 
 type Resolve<T extends Promise<any>> = T extends Promise<infer U> ? U : never;
 
@@ -42,8 +41,11 @@ const templateStyle: ThemedStyles = theme => css({
     }
 })
 
-export const serializeOptions: SerializeOptions = {
-    mdxOptions: MdxConfig.options,
+const serializeMarkdown = async (markdown: string) => {
+    const {serialize} = await import('next-mdx-remote/serialize')
+    const {postMdxOptions} = await import('@lib/post')
+
+    return serialize(markdown, postMdxOptions)
 }
 
 const BlogPost = (props: Props) => {
@@ -51,12 +53,15 @@ const BlogPost = (props: Props) => {
 
     const init = useRef(false)
     const [mdx, setMdx] = useState(props.mdx)
+
+    const throwError = useAsyncError();
     useEffect(() => {
-        if (init.current) {
-            import("next-mdx-remote/serialize").then(({serialize}) => serialize(markdown, serializeOptions)).then(setMdx)
-        } else {
+        if (!init.current) {
             init.current = true
+            return
         }
+
+        serializeMarkdown(markdown).then(setMdx).catch(throwError)
     }, [markdown])
 
     const content = useMemo(() => {
