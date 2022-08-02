@@ -13,6 +13,7 @@ const schema = defineSchema({
                     label: 'Title',
                     name: 'title',
                     required: true,
+                    isTitle: true,
                 },
                 {
                     type: 'string',
@@ -37,9 +38,9 @@ const schema = defineSchema({
                     name: 'body',
                     isBody: true,
                     required: true,
-                    // ui: {
-                    //     component: 'markdown'
-                    // },
+                    ui: {
+                        component: 'textarea',
+                    }
                 },
             ],
         },
@@ -60,9 +61,6 @@ export const tinaConfig = defineConfig({
     schema,
     // TODO: figure something else out for this
     // cmsCallback: (cms) => {
-    //     import('react-tinacms-editor').then((field)=> {
-    //         cms.plugins.add(field.MarkdownFieldPlugin)
-    //     })
     //     // This won't work until the following issue is fixed:
     //     // https://github.com/tinacms/tinacms/issues/2684
     //     import('tinacms').then(({RouteMappingPlugin}) => {
