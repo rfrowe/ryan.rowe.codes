@@ -62,7 +62,7 @@ const BlogPost = (props: Props) => {
         }
 
         serializeMarkdown(markdown).then(setMdx).catch(throwError)
-    }, [markdown])
+    }, [markdown, throwError])
 
     const content = useMemo(() => {
         return <MDXRemote {...mdx} scope={{...metadata, markdown: markdown}} components={mdxComponents}/>

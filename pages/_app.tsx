@@ -1,5 +1,5 @@
 import {ThemeModeProvider} from "@components/theming";
-import DynamicTina from "@components/tina/dynamic"
+import DynamicTina from "@tina/components/TinaDynamicProvider";
 import {Global} from "@emotion/react";
 import {CssBaseline} from "@mui/material";
 import globalStyles from "@styles/global";
