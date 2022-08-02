@@ -35,8 +35,13 @@ const Navigation = () => {
     return (
         <NavBar>
             <NavBarThemeSwitcher />
-            <NavBarIconLink href='https://github.com/rfrowe' icon={GitHubIcon} />
             <NavBarIconLink
+                aria-label='Check out my GitHub'
+                href='https://github.com/rfrowe'
+                icon={GitHubIcon}
+            />
+            <NavBarIconLink
+                aria-label='Send me an email'
                 href='mailto:ryan@rowe.codes'
                 icon={EmailIcon}
                 onMouseEnter={() => setShowEmail(true)}

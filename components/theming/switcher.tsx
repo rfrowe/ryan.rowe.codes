@@ -1,8 +1,8 @@
 import {useThemeMode} from "@components/theming/context";
+import {PropsWithStyle} from '@emotion/react'
 import {IconButton} from "@mui/material";
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
-import {PropsWithStyle} from '@emotion/react'
 
 const ThemeSwitcher = ({className, css}: PropsWithStyle) => {
     const [mode, toggleMode] = useThemeMode();
@@ -15,7 +15,7 @@ const ThemeSwitcher = ({className, css}: PropsWithStyle) => {
             color='primary'
             className={className}
             css={css}
-            aria-label={`switch to ${opposite} mode`}
+            aria-label={`Change theme to ${opposite} mode`}
             onClick={toggleMode}
         >
             <Icon />
