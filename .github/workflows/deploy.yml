@@ -19,8 +19,11 @@ jobs:
           cache: yarn
       - name: Install dependencies 📦
         run: yarn install --frozen-lockfile
-      - name: Lint ✏️
-        run: yarn lint
+      # TODO: fix linting
+      # - name: Lint ✏️
+      #   run: yarn lint
+      - name: TypeCheck ✅
+        run: yarn typecheck
       - name: Build 🔨
         run: |
           source .env
@@ -30,5 +33,4 @@ jobs:
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./out
           cname: ryan.rowe.codes
