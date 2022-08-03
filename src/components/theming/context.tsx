@@ -27,8 +27,8 @@ function readPersistedThemeMode(): ThemeMode | undefined {
 }
 
 function useThemeModeContextState(): ThemeModeContext {
-    const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)');
-    const systemMode = prefersDarkMode ? 'dark' : 'light';
+    const prefersLightMode = useMediaQuery('(prefers-color-scheme: light)');
+    const systemMode = prefersLightMode ? 'light' : 'dark';
 
     // Default theme mode to system mode and automatically change this when system mode changes.
     const [mode, setMode] = useState<ThemeMode>(systemMode);
