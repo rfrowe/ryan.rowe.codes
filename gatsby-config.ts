@@ -1,4 +1,6 @@
 import type { GatsbyConfig } from "gatsby";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 const config: GatsbyConfig = {
     siteMetadata: {
@@ -18,6 +20,8 @@ const config: GatsbyConfig = {
         {
             resolve: `gatsby-plugin-mdx`,
             options: {
+                remarkPlugins: [remarkMath],
+                rehypePlugins: [rehypeKatex],
                 gatsbyRemarkPlugins: [
                     {
                         resolve: `gatsby-remark-prismjs`,
