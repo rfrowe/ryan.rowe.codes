@@ -15,7 +15,19 @@ const config: GatsbyConfig = {
         `gatsby-plugin-typescript`,
         `gatsby-plugin-tsconfig-paths`,
         `gatsby-plugin-emotion`,
-        `gatsby-plugin-mdx`,
+        {
+            resolve: `gatsby-plugin-mdx`,
+            options: {
+                gatsbyRemarkPlugins: [
+                    {
+                        resolve: `gatsby-remark-prismjs`,
+                        options: {
+                            showLineNumbers: true,
+                        }
+                    }
+                ],
+            },
+        },
         `gatsby-plugin-material-ui`,
         {
             resolve: `gatsby-source-filesystem`,

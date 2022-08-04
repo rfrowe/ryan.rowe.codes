@@ -31,7 +31,7 @@ const overrides: IntrinsicComponents = {
             {...props}
         />
     ),
-    pre: PreBlock,
+    // pre: PreBlock,
 }
 
 export default overrides
