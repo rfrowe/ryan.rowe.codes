@@ -1,5 +1,7 @@
 # ryan.rowe.codes
 
+![deploy status badge](https://github.com/rfrowe/ryan.rowe.codes/actions/workflows/deploy.yml/badge.svg)
+
 This is the source for [my portfolio site](https://ryan.rowe.codes). It's made with:
 * [Gatsby](https://gatsbyjs.com)
 * [MDX](https://mdxjs.com)
