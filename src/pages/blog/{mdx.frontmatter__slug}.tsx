@@ -51,7 +51,6 @@ export default Post
 export const query = graphql`
     query GetSinglePost($id: String) {
         mdx(id: {eq: $id}) {
-            slug
             body
             rawBody
             frontmatter {
