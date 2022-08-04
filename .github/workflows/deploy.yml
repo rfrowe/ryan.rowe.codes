@@ -22,8 +22,6 @@ jobs:
       # TODO: fix linting
       # - name: Lint ✏️
       #   run: yarn lint
-      - name: TypeCheck ✅
-        run: yarn typecheck
       - name: Build 🔨
         run: |
           source .env
