@@ -26,7 +26,6 @@ jobs:
         run: |
           source .env
           yarn build
-          yarn export
       - name: Deploy 🚀
         uses: peaceiris/actions-gh-pages@v3
         with:
