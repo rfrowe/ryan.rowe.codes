@@ -1,7 +1,7 @@
-import type {PropsWithChildren} from "react";
 import NavBar from "./nav";
 import {css, PropsWithStyle} from "@emotion/react";
 import {Box} from "@mui/material";
+import {PropsWithChildren} from "react";
 
 const containerStyle = css({
     minHeight: '100vh',
@@ -21,7 +21,7 @@ const PageTemplate = ({
     children,
     className,
     css,
-}: PropsWithStyle<PropsWithChildren>) => (
+}: PropsWithChildren<PropsWithStyle>) => (
     <Box css={containerStyle}>
         <NavBar />
         <main css={[mainStyle, css]} className={className}>

@@ -1,5 +1,5 @@
 import {createContext, PropsWithChildren, useCallback, useContext, useEffect, useMemo, useState} from "react";
-import {ThemeProvider as MuiThemeProvider} from "@mui/system";
+import {ThemeProvider as MuiThemeProvider} from "@mui/material";
 import makeTheme, {ThemeMode} from "@styles/themes";
 import {useMediaQuery} from "@mui/material";
 import {ThemeProvider as EmotionThemeProvider} from "@emotion/react";

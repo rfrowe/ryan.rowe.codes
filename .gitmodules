@@ -1,0 +1,3 @@
+[submodule "src/content/blog/2022-03-11_algorithmic-art/assets"]
+	path = src/content/blog/2022-03-11_algorithmic-art/assets
+	url = git@github.com:rfrowe/RandomCube.git

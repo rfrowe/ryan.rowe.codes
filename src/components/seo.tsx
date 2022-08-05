@@ -1,6 +1,6 @@
 import React, {PropsWithChildren} from "react";
 
-interface Props extends PropsWithChildren {
+interface Props extends PropsWithChildren<{}> {
     title: string
 }
 

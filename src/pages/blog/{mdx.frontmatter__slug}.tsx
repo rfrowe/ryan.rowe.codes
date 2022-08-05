@@ -31,20 +31,17 @@ const templateStyle: ThemedStyles = theme => css({
     }
 })
 
-const Post = (props: PageProps<Queries.GetSinglePostQuery>) => {
-    return (
-        <PageTemplate
-            css={templateStyle}
-        >
-            <MDXProvider components={mdxComponents}>
-                <Typography variant='h1'>{props.data.mdx!.frontmatter?.title}</Typography>
-                <MDXRenderer {...props.data.mdx!.frontmatter} source={props.data.mdx!.rawBody}>
-                    {props.data.mdx!.body}
-                </MDXRenderer>
-            </MDXProvider>
-        </PageTemplate>
-    )
-}
+const Post = (props: PageProps<Queries.GetSinglePostQuery>) =>
+    <PageTemplate
+        css={templateStyle}
+    >
+        <MDXProvider components={mdxComponents}>
+            <Typography variant='h1'>{props.data.mdx!.frontmatter?.title}</Typography>
+            <MDXRenderer {...props.data.mdx!.frontmatter} source={props.data.mdx!.rawBody}>
+                {props.data.mdx!.body}
+            </MDXRenderer>
+        </MDXProvider>
+    </PageTemplate>
 
 export default Post
 
