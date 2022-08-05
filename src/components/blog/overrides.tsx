@@ -1,6 +1,6 @@
-import {PreBlock} from "./code"
 import {css} from "@emotion/react"
-import {Link, Typography} from "@mui/material"
+import {Link} from "gatsby-theme-material-ui";
+import {Typography} from "@mui/material"
 import React from "react"
 
 export type IntrinsicProps<T extends keyof JSX.IntrinsicElements> = Omit<JSX.IntrinsicElements[T], 'ref'>
@@ -13,7 +13,6 @@ type IntrinsicComponents = keyof JSX.IntrinsicElements extends infer U
     : never
 
 const overrides: IntrinsicComponents = {
-    // TODO: use next/link
     a: props => <Link {...props} />,
     h1: props => <Typography variant='h1' {...props} />,
     h2: props => <Typography variant='h2' {...props} />,

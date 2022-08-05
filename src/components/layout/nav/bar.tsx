@@ -1,6 +1,6 @@
 import {css} from "@emotion/react";
+import ThemedStyles from "@lib/types/css";
 import {AppBar, Slide, Toolbar, useScrollTrigger} from "@mui/material";
-import ThemedStyles from "../../../lib/types/css";
 import {PropsWithChildren, ReactElement} from "react";
 
 function HideOnScroll({children}: { children: ReactElement }) {

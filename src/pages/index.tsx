@@ -3,9 +3,10 @@ import Seo from "@components/seo";
 import PageTemplate from "@components/layout/template";
 import { css } from '@emotion/react';
 import {graphql, PageProps} from "gatsby";
+import {Link} from "gatsby-theme-material-ui";
 import ThemedStyles from "@lib/types/css";
 import {isDefined, notNull} from '@lib/util'
-import {Box, Link, Typography} from "@mui/material";
+import {Box, Typography} from "@mui/material";
 import {useCallback, useMemo, useState} from "react";
 
 type Element<T extends readonly unknown[]> = T extends readonly (infer U)[] ? U : never

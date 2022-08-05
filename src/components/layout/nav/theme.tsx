@@ -1,5 +1,5 @@
-import {zoomOnHover} from "./icon";
-import ThemeSwitcher from "../../theming/switcher";
+import {zoomOnHover} from "@components/layout/nav/icon";
+import ThemeSwitcher from "@components/theming/switcher";
 import {css} from "@emotion/react";
 
 const NavBarThemeSwitcher = () => (
