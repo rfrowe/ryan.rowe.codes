@@ -5,10 +5,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          submodules: recursive
       - name: Cache 💾
         uses: actions/cache@v3
         with:
           path: |
+            ${{ github.workspace }}/.cache
             ${{ github.workspace }}/node_modules
           key: ${{ runner.os }}-gatsby-${{ hashFiles('**/yarn.lock') }}
       - name: Setup ⚙️
@@ -25,12 +28,6 @@ jobs:
         run: |
           source .env
           yarn build
-      - name: Test Artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: public
-          path: |
-            public
       - name: Deploy 🚀
         uses: peaceiris/actions-gh-pages@v3
         with:
