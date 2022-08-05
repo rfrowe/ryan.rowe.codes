@@ -10,17 +10,27 @@ const CubeCard = () => {
 
     return (
         <Box css={theme => css({
-            width: '50%',
+            width: '60%',
+            [theme.breakpoints.between('lg', 'sm')]: {
+                width: '75%',
+            },
+            [theme.breakpoints.down('sm')]: {
+                width: '90%',
+            },
             margin: theme.spacing('2em', 'auto'),
             canvas: {
                 width: '100% !important',
                 height: 'unset !important',
             },
         })}>
-            <Box css={css({
+            <Box css={theme => css({
                 display: 'flex',
                 flexDirection: 'row',
                 alignItems: 'center',
+                justifyContent: 'center',
+                [theme.breakpoints.down('md')]: {
+                    flexWrap: 'wrap',
+                },
             })}>
                 <Typography
                     id='complexity-slider-label'
@@ -30,7 +40,7 @@ const CubeCard = () => {
                 </Typography>
                 <CalculateIcon css={theme => css({
                     margin: theme.spacing(0, 2),
-                    flexShrink: '0',
+                    flexShrink: 0,
                 })}/>
                 <Slider
                     step={1}
