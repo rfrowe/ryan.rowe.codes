@@ -1,42 +1,33 @@
 {
+  "extends": "astro/tsconfigs/strict",
   "compilerOptions": {
-    "baseUrl": "src",
+    "baseUrl": ".",
     "paths": {
       "@components/*": [
-        "components/*"
+        "src/components/*"
       ],
       "@lib/*": [
-        "lib/*"
+        "src/lib/*"
       ],
       "@styles/*": [
-        "styles/*"
+        "src/styles/*"
+      ],
+      "@content/*": [
+        "src/content/*"
       ]
     },
-    "target": "esnext",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
-    "strict": true,
-    "forceConsistentCasingInFileNames": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "preserve",
-    "jsxImportSource": "@emotion/react",
-    "incremental": true,
-    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react"
   },
   "include": [
+    ".astro/types.d.ts",
     "**/*.ts",
     "**/*.tsx",
-    "**/*.mdx"
+    "**/*.mdx",
+    "**/*.astro"
   ],
   "exclude": [
+    "dist",
     "node_modules"
   ]
 }
