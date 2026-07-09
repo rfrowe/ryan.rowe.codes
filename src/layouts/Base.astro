@@ -1,0 +1,36 @@
+---
+import Nav from "@components/nav/Nav.astro";
+import { noFlashThemeScript } from "@styles/theme-script";
+import * as styles from "./Base.css.ts";
+
+import "@styles/global.css.ts";
+import "katex/dist/katex.min.css";
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>{title}</title>
+    {/*
+      `is:inline` stops Astro from bundling this as a deferred module -- it must run
+      synchronously, before first paint, so `data-theme` is already correct by the time
+      the page (and the theme toggle island) render. See @styles/theme-script.ts.
+    */}
+    <script is:inline set:html={noFlashThemeScript} />
+  </head>
+  <body>
+    <div class={styles.container}>
+      <Nav />
+      <main class={styles.main}>
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>

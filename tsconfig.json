@@ -14,6 +14,9 @@
       ],
       "@content/*": [
         "src/content/*"
+      ],
+      "@layouts/*": [
+        "src/layouts/*"
       ]
     },
     "jsx": "react-jsx",
