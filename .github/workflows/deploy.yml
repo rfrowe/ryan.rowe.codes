@@ -1,35 +1,29 @@
 name: Deploy
-on: push
+on:
+  push:
+    branches: [main]
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Cache 💾
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ github.workspace }}/.cache
-            ${{ github.workspace }}/node_modules
-          key: ${{ runner.os }}-gatsby-${{ hashFiles('**/yarn.lock') }}
       - name: Setup ⚙️
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
-          node-version: 16
-          cache: yarn
+          node-version: 20
+          cache: npm
       - name: Install dependencies 📦
-        run: yarn install --frozen-lockfile
+        run: npm ci
       # TODO: fix linting
       # - name: Lint ✏️
-      #   run: yarn lint
+      #   run: npm run lint
       - name: Build 🔨
-        run: |
-          source .env
-          yarn build
+        run: npm run build
       - name: Deploy 🚀
-        uses: peaceiris/actions-gh-pages@v3
+        uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
           cname: ryan.rowe.codes
