@@ -2,6 +2,7 @@
 import { getCollection, render, type CollectionEntry } from "astro:content"
 import { formatPostDate } from "@lib/blog"
 import BlogPost from "@layouts/BlogPost.astro"
+import { mdxComponents } from "@components/mdx-components"
 
 export async function getStaticPaths() {
   const posts = await getCollection("blog")
@@ -24,5 +25,5 @@ const { Content } = await render(post)
 ---
 
 <BlogPost title={post.data.title}>
-  <Content />
+  <Content components={mdxComponents} source={post.body} />
 </BlogPost>
