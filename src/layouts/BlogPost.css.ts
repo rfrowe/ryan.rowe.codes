@@ -3,24 +3,19 @@ import { typography } from "@styles/theme.css.ts";
 import { mediaDown, spacing } from "@styles/theme-utils";
 
 /**
- * Reproduces the pre-migration `templateStyle` (src/pages/blog/{mdx.frontmatter__slug}.tsx),
- * which was merged onto `PageTemplate`'s `mainStyle`: responsive left/right margins that
- * shrink at each breakpoint, `alignSelf: stretch` to opt out of Base.astro's
- * `align-items: center`, AND -- crucially -- the flex column with `justify-content:
- * space-between` and `flex-grow: 1` that `mainStyle` provided. The title + each MDX block
- * are direct flex children here, so they distribute across the full viewport height:
- * on a short post (hello-world) the title pins to the top and the last block to the bottom
- * with even gaps; on a long post (algorithmic-art) content overflows and simply stacks.
- * Wrapping the content in a plain block element instead (the earlier regression) bunched
- * every block tight at the top.
+ * Post layout: the responsive left/right margins from the pre-migration `templateStyle`
+ * (shrinking at each breakpoint), plus `alignSelf: stretch` to opt out of Base.astro's
+ * `align-items: center` so the content fills the margin-defined width.
+ *
+ * Content flows top-aligned in normal block order. This is a DELIBERATE departure from the
+ * pre-migration site: that build inherited `justify-content: space-between` from the shared
+ * `mainStyle`, which spread a short post's blocks down the full viewport height with large
+ * uneven gaps (title pinned top, last block pinned bottom). Top-aligned block flow reads
+ * like a normal document instead -- so post pages no longer match the live site's vertical
+ * distribution, by choice.
  */
 export const article = style({
-  flexGrow: 1,
   alignSelf: "stretch",
-  display: "flex",
-  flexDirection: "column",
-  justifyContent: "space-between",
-  alignItems: "stretch",
   marginTop: spacing(5),
   marginLeft: "20%",
   marginRight: "20%",
