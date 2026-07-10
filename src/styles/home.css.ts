@@ -78,10 +78,13 @@ export const image = style({
   flexGrow: 2,
   flexShrink: 1,
   flexBasis: 0,
-  backgroundColor: vars.palette.primary.main,
+  backgroundColor: vars.palette.background.default,
   backgroundImage: 'url("/seattle-night.webp")',
   backgroundSize: "cover",
-  backgroundPosition: "center",
+  backgroundRepeat: "no-repeat",
+  // Fill the column; anchor to the top so vertical cropping trims the foreground
+  // (bottom), keeping the sky + Space Needle.
+  backgroundPosition: "center top",
   "@media": {
     "(prefers-color-scheme: light)": {
       backgroundImage: 'url("/seattle-day.webp")',
