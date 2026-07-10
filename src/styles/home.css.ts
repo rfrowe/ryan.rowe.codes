@@ -61,26 +61,12 @@ const bannerMargin = style({
   },
 });
 
-export const heading1 = style([
-  bannerMargin,
-  {
-    fontSize: typography.h1.fontSize,
-    fontWeight: typography.h1.fontWeight,
-    lineHeight: typography.h1.lineHeight,
-    letterSpacing: typography.h1.letterSpacing,
-  },
-]);
+// Spread the whole `typography.h1`/`h3` fragment (fontSize + its responsive `@media`
+// steps + weight/line-height/spacing) so the headings scale exactly like MUI's
+// responsiveFontSizes; picking off individual props would drop the `@media` overrides.
+export const heading1 = style([bannerMargin, typography.h1]);
 
-export const heading3 = style([
-  bannerMargin,
-  {
-    fontFamily: "monospace",
-    fontSize: typography.h3.fontSize,
-    fontWeight: typography.h3.fontWeight,
-    lineHeight: typography.h3.lineHeight,
-    letterSpacing: typography.h3.letterSpacing,
-  },
-]);
+export const heading3 = style([bannerMargin, typography.h3, { fontFamily: "monospace" }]);
 
 // Reproduces `imageStyle`: the primary-color placeholder standing in for a real image.
 export const image = style({

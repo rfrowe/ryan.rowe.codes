@@ -4,6 +4,17 @@ import { formatPostDate } from "@lib/blog"
 import BlogPost from "@layouts/BlogPost.astro"
 import { mdxComponents } from "@components/mdx-components"
 
+// The hello-world post is a QUINE that renders its OWN full source (see CodeBlock.tsx).
+// The content collection's `entry.body` strips the YAML frontmatter, but the pre-migration
+// site rendered the whole file including it -- so import each post's raw bytes (`?raw`,
+// frontmatter and all) and hand that to the MDX as `source`, restoring the frontmatter in
+// the quine. `entry.body` is the fallback if a post's file can't be matched.
+const rawSources = import.meta.glob<string>("/src/content/blog/**/*.mdx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+})
+
 export async function getStaticPaths() {
   const posts = await getCollection("blog")
 
@@ -22,8 +33,9 @@ interface Props {
 
 const { post } = Astro.props
 const { Content } = await render(post)
+const fullSource = (post.filePath && rawSources[`/${post.filePath}`]) || post.body
 ---
 
 <BlogPost title={post.data.title}>
-  <Content components={mdxComponents} source={post.body} />
+  <Content components={mdxComponents} source={fullSource} />
 </BlogPost>

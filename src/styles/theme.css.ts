@@ -61,36 +61,56 @@ export const transitions = {
 // reference. The headline keeps its explicit monospace override.
 // ---------------------------------------------------------------------------
 
+// MUI's Typography default `fontFamily` is `"Roboto","Helvetica","Arial",sans-serif`, and
+// the pre-migration site never loaded the Roboto webfont -- so browsers fell through to
+// Helvetica (Helvetica Neue on macOS). Reproducing that exact stack (rather than a
+// `-apple-system` system-UI stack, which resolves to San Francisco and renders a visibly
+// different typeface at large sizes) is what makes the headings/prose match the live site.
 export const fontFamily = {
-  sans: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  sans: '"Roboto", "Helvetica", "Arial", sans-serif',
   mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
 };
 
 // ---------------------------------------------------------------------------
-// Type scale (MUI v5 default typography variants). h1-h6 scale down toward the `sm`
-// breakpoint via clamp(), approximating `responsiveFontSizes` -- MUI's exact per-
-// breakpoint coefficients are an undocumented implementation detail, so this reproduces
-// the same *intent* (large headings shrink more on small screens, small ones barely
-// move) rather than bit-exact output. body1 and smaller variants are <=1rem, which
-// MUI's own algorithm leaves untouched, so they stay fixed here too.
+// Type scale (MUI v5 default typography variants), reproducing `responsiveFontSizes()`
+// EXACTLY rather than approximating it. Reverse-engineered from the live site + MUI's
+// source (responsiveFontSizes -> responsiveProperty + alignProperty/fontGrid):
+//   minRem (the < sm size) = 1 + (maxRem - 1) / factor,   factor = 2
+//   raw(bp)               = minRem + (maxRem - minRem) * (bp / lg)     for bp in sm,md,lg
+//   aligned(bp)           = round(raw / grid) * grid,   grid = 4 / (lineHeight * 16)
+// This matches the measured live sizes to the sub-pixel (e.g. h1: 56 / 75.41 / 85.69 /
+// 96px across xs/sm/md/lg). Variants <= 1rem (body1) are left untouched, as MUI does.
+// Each variant is a complete style fragment (fontSize + its `@media` step overrides +
+// weight/line-height/spacing) so consumers spread the whole object and inherit the
+// responsive steps -- picking off just `.fontSize` would drop them.
 // ---------------------------------------------------------------------------
 
-const fluidRem = (minRem: number, maxRem: number, minBp: Breakpoint = "sm", maxBp: Breakpoint = "lg"): string => {
-  const minPx = breakpoints[minBp];
-  const deltaPx = breakpoints[maxBp] - minPx;
-  const deltaRem = maxRem - minRem;
-  return `clamp(${minRem}rem, calc(${minRem}rem + ${deltaRem}rem * ((100vw - ${minPx}px) / ${deltaPx}px)), ${maxRem}rem)`;
+const RESPONSIVE_BPS = [breakpoints.sm, breakpoints.md, breakpoints.lg]; // 600 / 900 / 1200
+const HTML_FONT_SIZE = 16;
+const RESPONSIVE_FACTOR = 2;
+
+const responsiveFontSize = (maxRem: number, lineHeight: number): { fontSize: string; "@media"?: Record<string, { fontSize: string }> } => {
+  if (maxRem <= 1) return { fontSize: `${maxRem}rem` };
+  const minRem = 1 + (maxRem - 1) / RESPONSIVE_FACTOR;
+  const gridRem = 4 / (lineHeight * HTML_FONT_SIZE);
+  const align = (rem: number) => Math.round(rem / gridRem) * gridRem;
+  const media: Record<string, { fontSize: string }> = {};
+  for (const bp of RESPONSIVE_BPS) {
+    const raw = minRem + (maxRem - minRem) * (bp / breakpoints.lg);
+    media[`screen and (min-width: ${bp}px)`] = { fontSize: `${align(raw)}rem` };
+  }
+  return { fontSize: `${minRem}rem`, "@media": media };
 };
 
 export const typography = {
-  h1: { fontSize: fluidRem(2.5, 6), fontWeight: 300, lineHeight: 1.167, letterSpacing: "-0.01562em" },
-  h2: { fontSize: fluidRem(2.25, 3.75), fontWeight: 300, lineHeight: 1.2, letterSpacing: "-0.00833em" },
-  h3: { fontSize: fluidRem(2, 3), fontWeight: 400, lineHeight: 1.167, letterSpacing: "0em" },
-  h4: { fontSize: fluidRem(1.75, 2.125), fontWeight: 400, lineHeight: 1.235, letterSpacing: "0.00735em" },
-  h5: { fontSize: fluidRem(1.375, 1.5), fontWeight: 400, lineHeight: 1.334, letterSpacing: "0em" },
-  h6: { fontSize: fluidRem(1.125, 1.25), fontWeight: 500, lineHeight: 1.6, letterSpacing: "0.0075em" },
+  h1: { ...responsiveFontSize(6, 1.167), fontWeight: 300, lineHeight: 1.167, letterSpacing: "-0.01562em" },
+  h2: { ...responsiveFontSize(3.75, 1.2), fontWeight: 300, lineHeight: 1.2, letterSpacing: "-0.00833em" },
+  h3: { ...responsiveFontSize(3, 1.167), fontWeight: 400, lineHeight: 1.167, letterSpacing: "0em" },
+  h4: { ...responsiveFontSize(2.125, 1.235), fontWeight: 400, lineHeight: 1.235, letterSpacing: "0.00735em" },
+  h5: { ...responsiveFontSize(1.5, 1.334), fontWeight: 400, lineHeight: 1.334, letterSpacing: "0em" },
+  h6: { ...responsiveFontSize(1.25, 1.6), fontWeight: 500, lineHeight: 1.6, letterSpacing: "0.0075em" },
   body1: { fontSize: "1rem", fontWeight: 400, lineHeight: 1.5, letterSpacing: "0.00938em" },
-} as const;
+};
 
 // ---------------------------------------------------------------------------
 // Palette (MUI v5 documented defaults) -- token contract + light/dark values

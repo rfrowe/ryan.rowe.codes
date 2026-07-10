@@ -7,24 +7,15 @@ const repoRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), ".."
 const HELLO_WORLD_MDX = path.join(repoRoot, "src/content/blog/2022-03-11_hello-world.mdx");
 const HELLO_WORLD_PATH = "/blog/2022-03-12/hello-world";
 
-// Mirrors @astrojs/internal-helpers's frontmatterRE (node_modules/@astrojs/internal-helpers/dist/frontmatter.js):
-// matches the leading `---...---` block so we can compute exactly what the content collection's
-// `entry.body` will be (frontmatter block replaced, then trimmed -- see getPostBody below).
-const FRONTMATTER_RE = /(?:^﻿?|^\s*\n)(?:---|\+\+\+)([\s\S]*?\n)(?:---|\+\+\+)/;
-
 /**
- * Recomputes what Astro's MDX content-entry-type sets as `post.body` for a given raw MDX
- * file: `parseFrontmatter(contents, { frontmatter: "empty-with-spaces" }).content.trim()`
- * (see node_modules/@astrojs/mdx/dist/index.js `getEntryInfo`). Whatever the frontmatter
- * block gets replaced with is irrelevant once trimmed away (it's whitespace either way,
- * and it sits at the very start of the file) -- slicing off everything up to and
- * including the closing delimiter, then trimming, produces an identical string.
+ * The quine now renders the post's FULL source, frontmatter included (the route passes the
+ * `?raw` file bytes as `source`, not the frontmatter-stripped `entry.body`), matching the
+ * pre-migration site. So the expected text is simply the raw file, with only trailing
+ * newlines normalised away (react-syntax-highlighter drops the final newline; nothing else
+ * is touched, so a dropped line / collapsed whitespace / missing frontmatter still fails).
  */
-export function getPostBody(mdxPath) {
-  const raw = readFileSync(mdxPath, "utf-8");
-  const match = FRONTMATTER_RE.exec(raw);
-  const content = match ? raw.slice(match.index + match[0].length) : raw;
-  return content.trim();
+export function getExpectedQuineSource(mdxPath) {
+  return readFileSync(mdxPath, "utf-8").replace(/\n+$/, "");
 }
 
 /**
@@ -54,13 +45,14 @@ async function extractRenderedCodeText(page) {
  * an encoding slip -- this is the exact check the plan calls for.
  */
 export async function runQuineCheck(browser, localBaseUrl) {
-  const expected = getPostBody(HELLO_WORLD_MDX);
+  const expected = getExpectedQuineSource(HELLO_WORLD_MDX);
 
   const page = await browser.newPage();
   try {
     await page.goto(`${localBaseUrl}${HELLO_WORLD_PATH}`, { waitUntil: "networkidle" });
     await page.waitForSelector("pre code");
-    const actual = await extractRenderedCodeText(page);
+    const actualRaw = await extractRenderedCodeText(page);
+    const actual = actualRaw == null ? null : actualRaw.replace(/\n+$/, "");
 
     const pass = actual === expected;
     let firstDiffIndex = -1;

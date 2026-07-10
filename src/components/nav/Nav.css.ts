@@ -48,15 +48,15 @@ export const toolbar = style({
 
 // Base link styling shared by every nav item (icon or text), reproducing the
 // pre-migration `NavBarLink`: MUI `Link` typography='h5' + `spacing(0, 1)` margin.
-export const link = style({
-  display: "inline-flex",
-  alignItems: "center",
-  margin: spacing(0, 1),
-  fontSize: typography.h5.fontSize,
-  fontWeight: typography.h5.fontWeight,
-  lineHeight: typography.h5.lineHeight,
-  letterSpacing: typography.h5.letterSpacing,
-});
+export const link = style([
+  {
+    display: "inline-flex",
+    alignItems: "center",
+    margin: spacing(0, 1),
+  },
+  // Spread the full h5 fragment so nav links pick up its responsive `@media` steps too.
+  typography.h5,
+]);
 
 // Text links (Blog/About/home) additionally get MUI Link's own defaults: primary color
 // + underline.
