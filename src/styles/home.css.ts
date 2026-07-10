@@ -78,6 +78,9 @@ export const image = style({
   flexGrow: 2,
   flexShrink: 1,
   flexBasis: 0,
+  // Positioning context for the SkylineAnchors overlay island (absolute, inset: 0), which
+  // draws the homography anchor markers registered to the background photo.
+  position: "relative",
   backgroundColor: vars.palette.background.default,
   backgroundImage: 'url("/seattle-night.webp")',
   backgroundSize: "cover",

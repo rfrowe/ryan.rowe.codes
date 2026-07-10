@@ -2,6 +2,7 @@
 import { getCollection } from "astro:content";
 import Base from "@layouts/Base.astro";
 import HeadlineCycler, { type HeadlinePost } from "@components/HeadlineCycler";
+import SkylineAnchors from "@components/SkylineAnchors";
 import { formatPostDate } from "@lib/blog";
 import * as styles from "@styles/home.css.ts";
 
@@ -24,7 +25,8 @@ const headlinePosts: HeadlinePost[] = posts.map(post => ({
         <HeadlineCycler client:load posts={headlinePosts} />
       </h3>
     </div>
-    {/* TODO: use a real image here. */}
-    <div class={styles.image} />
+    <div class={styles.image}>
+      <SkylineAnchors client:load />
+    </div>
   </div>
 </Base>
