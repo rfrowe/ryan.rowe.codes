@@ -46,7 +46,10 @@ const isRoot = Astro.url.pathname === "/";
           href="/"
           class={`${styles.textLink} ${styles.showOnDesktop} ${styles.homeLink}`}
         >
-          {"ryan"}<span class={styles.at}>@</span><span class={styles.dot}>.</span>{"rowe"}.{"codes"}
+          {"ryan"}<span class={styles.at}>@</span><span
+            class={styles.dot}
+            aria-hidden="true">.</span
+          >{"rowe"}.{"codes"}
         </NavLink>
       </>
     )}

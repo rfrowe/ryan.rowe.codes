@@ -122,37 +122,51 @@ export const spacer = style({
 // A general-sibling selector (`~`) can reach across the intervening mobile-only Home
 // icon link because it only requires a shared parent + a later DOM position, not
 // adjacency.
+//
+// The reveal is driven by `font-size` (0 <-> 1em) on plain `display: inline` spans rather
+// than `width` on `inline-block` spans. This is deliberate: Chromium serializes an
+// `inline-block` boundary into `window.getSelection().toString()` as stray whitespace, so
+// the original width technique made a copy of the link read "ryan .rowe.codes". With inline
+// spans there is no such boundary, so the `@` is the real, selectable email separator (it
+// stays in the selection even while collapsed to `font-size: 0`) and the decorative `.` is
+// excluded from the copy (`user-select: none` + `aria-hidden` in the markup) -- selecting
+// the link yields a clean "ryan@rowe.codes" in both the default and hovered states.
 
 export const emailTrigger = style({});
 
-export const homeLink = style({});
+// The shared `link` style is `display: inline-flex`, which turns every direct child (each
+// text run and glyph span) into its own flex item; Chromium serializes those item
+// boundaries into `getSelection().toString()` as newlines, so copying the link produced a
+// mangled multi-line string. The home link carries only plain inline text, so drop it back
+// to normal inline flow -- no flex items, no boundary artifacts, and the copied text stays
+// a single continuous string.
+export const homeLink = style({
+  display: "inline",
+});
 
 export const at = style({
-  display: "inline-block",
-  width: 0,
-  overflow: "hidden",
-  userSelect: "none",
-  transition: transition("width", { duration: transitions.duration.shorter }),
+  display: "inline",
+  fontSize: 0,
+  transition: transition("font-size", { duration: transitions.duration.shorter }),
   selectors: {
     [`${emailTrigger}:hover ~ ${homeLink} &`]: {
-      width: "1em",
+      fontSize: "1em",
     },
   },
 });
 
 export const dot = style({
-  display: "inline-block",
-  overflow: "hidden",
-  width: "unset",
+  display: "inline",
+  userSelect: "none",
   // A 0-duration transition with a delay reproduces the original's `setTimeout` snap:
-  // the dot's width changes instantly, but only after half the `@` reveal has played,
-  // masking the swap instead of an abrupt cut.
-  transitionProperty: "width",
+  // the dot collapses instantly, but only after half the `@` reveal has played, masking
+  // the swap instead of an abrupt cut.
+  transitionProperty: "font-size",
   transitionDuration: "0s",
   transitionDelay: `${transitions.duration.shorter / 2}ms`,
   selectors: {
     [`${emailTrigger}:hover ~ ${homeLink} &`]: {
-      width: 0,
+      fontSize: 0,
     },
   },
 });
