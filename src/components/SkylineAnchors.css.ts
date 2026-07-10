@@ -6,11 +6,15 @@ import { fontFamily, transitions, vars } from "@styles/theme.css.ts";
 const MARKER = 52;
 const HALF = MARKER / 2;
 
-// Neon-Genesis / NERV-terminal accent for the active marker + the typed coordinate
-// readouts: a hot orange with a dark outline and a colored glow, so the text stays legible
-// over both the peachy day sky and the dark night skyline without any solid backing.
-const NGE = "#ff6a1a";
-const labelShadow = `0 0 2px #000, 0 0 3px #000, 0 1px 2px #000, 0 0 8px ${NGE}, 0 0 16px ${NGE}`;
+// Theme-dependent NERV accent: hot orange in day (light), cool terminal green at night
+// (dark). Applied to the markers and the typed readouts via `data-theme` selectors.
+const ORANGE = "#ff6a1a";
+const GREEN = "#2effb0";
+
+const textGlow = (c: string) => `0 0 2px #000, 0 0 3px #000, 0 1px 2px #000, 0 0 8px ${c}, 0 0 15px ${c}`;
+const markerGlowIdle = (c: string) => `drop-shadow(0 1px 1px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 2px ${c})`;
+const markerGlowActive = (c: string) => `drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 6px ${c})`;
+const darkSel = 'html[data-theme="dark"] &';
 
 // Overlay root: fills the skyline image div (`position: relative` there) and lets clicks/
 // hovers fall through to the photo everywhere except the markers themselves.
@@ -28,9 +32,8 @@ export const anchor = style({
   height: 0,
 });
 
-// The crosshair-in-a-box marker: subtle and semi-transparent by default so it reads as a
-// faint registration mark over the photo, coloured by the theme's text colour. Re-enables
-// pointer events so it can be hovered.
+// The crosshair-in-a-box marker. Idle: the accent colour at reduced opacity with a soft
+// glow, so it reads against the photo without shouting. Hover/focus: comes alive (below).
 export const marker = style({
   position: "absolute",
   left: 0,
@@ -42,21 +45,27 @@ export const marker = style({
   background: "none",
   cursor: "pointer",
   lineHeight: 0,
-  color: vars.palette.text.primary,
-  opacity: 0.45,
+  color: ORANGE,
+  opacity: 0.72,
   pointerEvents: "auto",
   transform: "translate(-50%, -50%)",
   transformOrigin: "center",
-  transition: `transform ${transitions.duration.shorter}ms ${transitions.easing.sharp}, color ${transitions.duration.shorter}ms ${transitions.easing.sharp}, opacity ${transitions.duration.shorter}ms ${transitions.easing.sharp}`,
-  filter: "drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45))",
+  transition: `transform ${transitions.duration.shorter}ms ${transitions.easing.sharp}, color ${transitions.duration.shorter}ms ${transitions.easing.sharp}, opacity ${transitions.duration.shorter}ms ${transitions.easing.sharp}, filter ${transitions.duration.shorter}ms ${transitions.easing.sharp}`,
+  filter: markerGlowIdle(ORANGE),
+  selectors: {
+    [darkSel]: { color: GREEN, filter: markerGlowIdle(GREEN) },
+  },
 });
 
-// Active marker: grows and switches to the NERV orange with a matching glow.
+// Active marker: full opacity, grown, stronger glow.
 export const markerActive = style({
-  color: NGE,
+  color: ORANGE,
   opacity: 1,
   transform: "translate(-50%, -50%) scale(1.35)",
-  filter: `drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 5px ${NGE})`,
+  filter: markerGlowActive(ORANGE),
+  selectors: {
+    [darkSel]: { color: GREEN, filter: markerGlowActive(GREEN) },
+  },
 });
 
 export const markerSvg = style({
@@ -65,37 +74,40 @@ export const markerSvg = style({
   height: MARKER,
 });
 
-// Coordinate readout, below the marker. Text-only (no pill): NERV orange with an
-// outline+glow. Left edge aligned to the marker box's left edge (`left: -HALF`).
-export const tooltip = style({
+// Shared look for the typed labels: text-only (no pill), accent colour + outline/glow,
+// left edge aligned to the marker box's left edge (`left: -HALF`).
+const labelBase = style({
   position: "absolute",
   left: -HALF,
-  top: HALF + 4,
   pointerEvents: "none",
   whiteSpace: "nowrap",
   fontFamily: fontFamily.mono,
-  fontSize: "0.7rem",
   fontWeight: 700,
-  letterSpacing: "0.06em",
-  lineHeight: 1.2,
-  color: NGE,
-  textShadow: labelShadow,
+  lineHeight: 1.4,
+  color: ORANGE,
+  textShadow: textGlow(ORANGE),
+  selectors: {
+    [darkSel]: { color: GREEN, textShadow: textGlow(GREEN) },
+  },
 });
 
-// "ANCHOR NN" label above the marker, typed out before the coordinate. Same treatment,
-// same left edge as the marker box.
-export const anchorNum = style({
-  position: "absolute",
-  left: -HALF,
-  top: -(HALF + 4),
-  transform: "translateY(-100%)",
-  pointerEvents: "none",
-  whiteSpace: "nowrap",
-  fontFamily: fontFamily.mono,
-  fontSize: "0.62rem",
-  fontWeight: 700,
-  letterSpacing: "0.22em",
-  lineHeight: 1.2,
-  color: NGE,
-  textShadow: labelShadow,
-});
+// "ANCHOR NN", above the marker (typed first).
+export const anchorNum = style([
+  labelBase,
+  {
+    top: -(HALF + 4),
+    transform: "translateY(-100%)",
+    fontSize: "0.62rem",
+    letterSpacing: "0.22em",
+  },
+]);
+
+// The coordinate + error readout, stacked below the marker (typed after "ANCHOR NN").
+export const readout = style([
+  labelBase,
+  {
+    top: HALF + 4,
+    fontSize: "0.7rem",
+    letterSpacing: "0.06em",
+  },
+]);

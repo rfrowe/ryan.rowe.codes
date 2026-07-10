@@ -1,60 +1,47 @@
 import { useEffect, useRef, useState } from "react";
 import ConsoleTypist from "./ConsoleTypist";
+import { toggleThemeMode } from "@styles/theme-script";
 import * as styles from "./SkylineAnchors.css.ts";
 
 /**
- * A provenance/craft overlay for the home-page Kerry Park skyline: it draws the 11 anchor
+ * A provenance/craft overlay for the home-page Kerry Park skyline: it draws the anchor
  * points used to align the day and night photos. The night photo was perspective-warped
  * onto the day photo via a homography, so a given anchor lands at the SAME position in the
- * rendered webp for both themes -- only the *coordinate label* differs (the anchor's pixel
- * position in whichever original photo is showing).
- *
- * The rendered webp (`public/seattle-{day,night}.webp`, 2400x1454) was produced by cropping
- * the original day photo to origin (4, 252), size 3552x2152, then scaling to 2400x1454. So
- * each anchor's position in the rendered image is derived from its original day-photo pixel
- * below, rather than hardcoded.
+ * rendered webp for both themes -- only the coordinate label differs (the anchor's pixel
+ * position in whichever original photo is showing). See `tools/` to regenerate all of this
+ * for new photos.
  */
 
 // Rendered webp dimensions (identical for day & night -- the night frame is aligned to it).
 const IMG_W = 2400;
-const IMG_H = 1454;
+const IMG_H = 1508;
 
 // The crop + scale that produced the rendered webp from the original day photo.
 const CROP_X0 = 4;
-const CROP_Y0 = 252;
-const CROP_W = 3552;
-const CROP_H = 2152;
+const CROP_Y0 = 288;
+const CROP_W = 3368;
+const CROP_H = 2116;
 const SCALE_X = IMG_W / CROP_W;
 const SCALE_Y = IMG_H / CROP_H;
 
-// Index-matched anchor pairs. `day` is the pixel position in the original day photo
-// (4816x2408), `night` in the original night photo (5130x3108).
+// Index-matched anchor pairs: `day` is the pixel position in the original day photo
+// (4816x2408), `night` in the original night photo (5130x3108). `ERRS` is each pair's
+// homography reprojection error in px (||H*night - day||).
 const DAY_PTS: ReadonlyArray<readonly [number, number]> = [
-  [1609, 489],
-  [1395, 745],
-  [1809, 757],
-  [1590, 1996],
-  [2279, 1027],
-  [3364, 1999],
-  [407, 901],
-  [1632, 1048],
-  [1882, 1215],
-  [2167, 1991],
-  [1528, 1984],
+  [1612, 483], [1406, 746], [1819, 748], [1644, 2004], [2244, 1017], [3398, 1990], [417, 883],
+  [1632, 1053], [1899, 1210], [2176, 2007], [1509, 2004], [2946, 1972], [1633, 1387], [1468, 1234],
+  [2425, 1270], [573, 1983], [690, 1750], [1038, 1807], [2076, 1209], [2091, 1214], [2429, 1964],
 ];
 
 const NIGHT_PTS: ReadonlyArray<readonly [number, number]> = [
-  [2598, 326],
-  [2318, 718],
-  [2822, 720],
-  [2619, 2423],
-  [3477, 1083],
-  [4874, 2413],
-  [1068, 853],
-  [2575, 1111],
-  [2985, 1360],
-  [3294, 2412],
-  [2418, 2364],
+  [2584, 358], [2305, 709], [2856, 712], [2608, 2395], [3459, 1080], [4943, 2394], [1037, 887],
+  [2602, 1120], [2998, 1334], [3323, 2409], [2427, 2390], [4176, 2345], [2599, 1568], [2414, 1363],
+  [3696, 1423], [1211, 2344], [1370, 2040], [1819, 2120], [3230, 1335], [3248, 1342], [3493, 2330],
+];
+
+const ERRS: ReadonlyArray<number> = [
+  33.8, 18.4, 23.4, 25.4, 12.0, 41.3, 14.8, 12.5, 27.1, 46.3, 18.5, 82.4, 8.6, 20.1, 23.5, 15.6,
+  6.0, 3.8, 23.0, 21.7, 82.9,
 ];
 
 interface Anchor {
@@ -62,26 +49,30 @@ interface Anchor {
   /** Position within the rendered webp (0..IMG_W, 0..IMG_H). */
   imgX: number;
   imgY: number;
-  /** Coordinate label to show in each theme (the original-photo pixel position). */
+  numLabel: string;
   dayLabel: string;
   nightLabel: string;
+  errLabel: string;
 }
 
-// Precompute each anchor's rendered-image position from the crop/scale constants.
 const ANCHORS: Anchor[] = DAY_PTS.map(([dx, dy], i) => {
   const [nx, ny] = NIGHT_PTS[i];
   return {
     index: i,
     imgX: (dx - CROP_X0) * SCALE_X,
     imgY: (dy - CROP_Y0) * SCALE_Y,
+    numLabel: `ANCHOR ${String(i + 1).padStart(2, "0")}`,
     dayLabel: `(${dx}, ${dy})`,
     nightLabel: `(${nx}, ${ny})`,
+    errLabel: `ERR ${ERRS[i].toFixed(1)}px`,
   };
 });
 
 type Mode = "light" | "dark";
 
 const isMode = (value: string | undefined): value is Mode => value === "light" || value === "dark";
+
+const readThemeMode = (): Mode => (isMode(document.documentElement.dataset.theme) ? (document.documentElement.dataset.theme as Mode) : "dark");
 
 interface Size {
   width: number;
@@ -107,13 +98,12 @@ const placeAnchors = ({ width, height }: Size): PlacedAnchor[] => {
   const renderedW = IMG_W * scale;
   const renderedH = IMG_H * scale;
   const offsetX = (width - renderedW) * 0.5; // center
-  const offsetY = (height - renderedH) * 0; // top
+  const offsetY = 0; // top
 
   const placed: PlacedAnchor[] = [];
   for (const anchor of ANCHORS) {
     const screenX = offsetX + anchor.imgX * scale;
     const screenY = offsetY + anchor.imgY * scale;
-    // Cull anything outside the visible container box.
     if (screenX < 0 || screenX > width || screenY < 0 || screenY > height) {
       continue;
     }
@@ -122,24 +112,20 @@ const placeAnchors = ({ width, height }: Size): PlacedAnchor[] => {
   return placed;
 };
 
-const readThemeMode = (): Mode => (isMode(document.documentElement.dataset.theme) ? (document.documentElement.dataset.theme as Mode) : "dark");
-
 const SkylineAnchors = () => {
   const rootRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<Size | null>(null);
   const [mode, setMode] = useState<Mode>("dark");
   const [hovered, setHovered] = useState<number | null>(null);
-  // Two-stage typed reveal for the hovered anchor: "Anchor N" types first, then the
-  // coordinate. `numTyped` flips true when the "Anchor N" line finishes; it resets whenever
-  // the hovered anchor changes (below) so leaving and re-entering re-types from scratch.
-  const [numTyped, setNumTyped] = useState(false);
+  // Sequenced reveal for the hovered anchor: 0 = typing "ANCHOR NN", 1 = typing the
+  // coordinate, 2 = typing the error, 3 = done. Only the actively-typing line renders a
+  // ConsoleTypist (with its cursor); completed lines are static text -- so the cursor
+  // appears to "move" down from the anchor number to the coordinate to the error.
+  const [stage, setStage] = useState(0);
 
   // Measure the container (the skyline image div this island is mounted inside) and keep the
   // marker positions in sync with every resize. The root element is `position: absolute;
-  // inset: 0`, so its own box already tracks the image div's content box exactly (its
-  // containing block is the image div, which is `position: relative`) -- measuring the root
-  // directly avoids the `<astro-island>` wrapper in between, which is a zero-size inline
-  // element (its only child is out of flow).
+  // inset: 0`, so its own box tracks the image div's content box exactly.
   useEffect(() => {
     const root = rootRef.current;
     if (!root) {
@@ -158,26 +144,22 @@ const SkylineAnchors = () => {
     return () => observer.disconnect();
   }, []);
 
-  // Stay theme-reactive so the coordinate label switches day<->night live when the toggle is
-  // used. There's no shared theme context under Astro -- ThemeToggle mutates `data-theme` on
-  // <html> directly -- so a MutationObserver is the way to observe it (same pattern as the
-  // quine CodeBlock and the cube renderer). Marker positions are theme-independent; only the
-  // label text changes.
+  // Stay theme-reactive so the coordinate label switches day<->night live when the theme is
+  // toggled (via the nav toggle OR by clicking a marker). Marker positions are
+  // theme-independent; only the coordinate text and the CSS accent colour change.
   useEffect(() => {
-    const documentElement = document.documentElement;
-
     const sync = () => setMode(readThemeMode());
     sync();
 
     const observer = new MutationObserver(sync);
-    observer.observe(documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
   }, []);
 
-  // Restart the two-stage typing whenever the hovered anchor changes (including on un-hover
-  // -> null), so returning to a marker re-types "Anchor N" and then the coordinate.
+  // Restart the sequence whenever the hovered anchor changes (including on un-hover -> null),
+  // so returning to a marker re-types from "ANCHOR NN".
   useEffect(() => {
-    setNumTyped(false);
+    setStage(0);
   }, [hovered]);
 
   const placed = size ? placeAnchors(size) : [];
@@ -186,17 +168,18 @@ const SkylineAnchors = () => {
     <div ref={rootRef} className={styles.root} aria-hidden="true">
       {placed.map(anchor => {
         const isActive = hovered === anchor.index;
-        const label = mode === "light" ? anchor.dayLabel : anchor.nightLabel;
+        const coordLabel = mode === "light" ? anchor.dayLabel : anchor.nightLabel;
         return (
           <div key={anchor.index} className={styles.anchor} style={{ left: anchor.screenX, top: anchor.screenY }}>
             <button
               type="button"
               className={`${styles.marker}${isActive ? ` ${styles.markerActive}` : ""}`}
-              aria-label={`Homography alignment anchor ${anchor.index + 1}`}
+              aria-label={`Homography alignment anchor ${anchor.index + 1} — click to toggle theme`}
               onMouseEnter={() => setHovered(anchor.index)}
               onMouseLeave={() => setHovered(current => (current === anchor.index ? null : current))}
               onFocus={() => setHovered(anchor.index)}
               onBlur={() => setHovered(current => (current === anchor.index ? null : current))}
+              onClick={() => toggleThemeMode()}
             >
               <svg className={styles.markerSvg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
                 <rect x={4} y={4} width={16} height={16} rx={1} />
@@ -207,16 +190,26 @@ const SkylineAnchors = () => {
             {isActive && (
               <>
                 <div className={styles.anchorNum}>
-                  <ConsoleTypist
-                    once
-                    key={`num-${anchor.index}`}
-                    text={`ANCHOR ${String(anchor.index + 1).padStart(2, "0")}`}
-                    onTypingFinished={() => setNumTyped(true)}
-                  />
+                  {stage === 0 ? (
+                    <ConsoleTypist once key={`n${anchor.index}`} text={anchor.numLabel} onTypingFinished={() => setStage(1)} />
+                  ) : (
+                    anchor.numLabel
+                  )}
                 </div>
-                {numTyped && (
-                  <div className={styles.tooltip}>
-                    <ConsoleTypist once key={`coord-${anchor.index}-${mode}`} text={label} />
+                {stage >= 1 && (
+                  <div className={styles.readout}>
+                    <div>
+                      {stage === 1 ? (
+                        <ConsoleTypist once key={`c${anchor.index}-${mode}`} text={coordLabel} onTypingFinished={() => setStage(2)} />
+                      ) : (
+                        coordLabel
+                      )}
+                    </div>
+                    {stage >= 2 && (
+                      <div>
+                        <ConsoleTypist once key={`e${anchor.index}`} text={anchor.errLabel} />
+                      </div>
+                    )}
                   </div>
                 )}
               </>
