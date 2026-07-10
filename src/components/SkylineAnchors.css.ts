@@ -53,8 +53,8 @@ export const markerActive = style({
 
 export const markerSvg = style({
   display: "block",
-  width: 22,
-  height: 22,
+  width: 44,
+  height: 44,
 });
 
 // The coordinate chip shown below the active marker: a small monospace label in an opaque
@@ -62,7 +62,7 @@ export const markerSvg = style({
 export const tooltip = style({
   position: "absolute",
   left: 0,
-  top: 16,
+  top: 30,
   transform: "translateX(-50%)",
   pointerEvents: "none",
   whiteSpace: "nowrap",
@@ -77,8 +77,21 @@ export const tooltip = style({
   boxShadow: "0 2px 6px rgba(0, 0, 0, 0.35)",
 });
 
-// The trailing cursor glyph on the static (already-typed) coordinate, matching the look of
-// ConsoleTypist's own cursor so the swap from animated to static text is seamless.
-export const staticCursor = style({
-  opacity: 0.7,
+// The "Anchor N" label shown ABOVE the active marker, typed out before the coordinate.
+export const anchorNum = style({
+  position: "absolute",
+  left: 0,
+  top: -30,
+  transform: "translate(-50%, -100%)",
+  pointerEvents: "none",
+  whiteSpace: "nowrap",
+  fontFamily: fontFamily.mono,
+  fontSize: "0.72rem",
+  lineHeight: 1.2,
+  color: vars.palette.text.primary,
+  backgroundColor: vars.palette.background.default,
+  border: `1px solid ${vars.palette.divider}`,
+  borderRadius: 6,
+  padding: "2px 6px",
+  boxShadow: "0 2px 6px rgba(0, 0, 0, 0.35)",
 });

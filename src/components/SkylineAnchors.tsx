@@ -129,9 +129,10 @@ const SkylineAnchors = () => {
   const [size, setSize] = useState<Size | null>(null);
   const [mode, setMode] = useState<Mode>("dark");
   const [hovered, setHovered] = useState<number | null>(null);
-  // Per-anchor "has already typed its label at least once": after the first reveal we render
-  // the label as static text so it doesn't re-animate on subsequent hovers or theme swaps.
-  const [typed, setTyped] = useState<ReadonlySet<number>>(() => new Set());
+  // Two-stage typed reveal for the hovered anchor: "Anchor N" types first, then the
+  // coordinate. `numTyped` flips true when the "Anchor N" line finishes; it resets whenever
+  // the hovered anchor changes (below) so leaving and re-entering re-types from scratch.
+  const [numTyped, setNumTyped] = useState(false);
 
   // Measure the container (the skyline image div this island is mounted inside) and keep the
   // marker positions in sync with every resize. The root element is `position: absolute;
@@ -173,15 +174,11 @@ const SkylineAnchors = () => {
     return () => observer.disconnect();
   }, []);
 
-  const markTyped = (index: number) =>
-    setTyped(prev => {
-      if (prev.has(index)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.add(index);
-      return next;
-    });
+  // Restart the two-stage typing whenever the hovered anchor changes (including on un-hover
+  // -> null), so returning to a marker re-types "Anchor N" and then the coordinate.
+  useEffect(() => {
+    setNumTyped(false);
+  }, [hovered]);
 
   const placed = size ? placeAnchors(size) : [];
 
@@ -208,16 +205,21 @@ const SkylineAnchors = () => {
               </svg>
             </button>
             {isActive && (
-              <div className={styles.tooltip}>
-                {typed.has(anchor.index) ? (
-                  <span>
-                    {label}
-                    <span className={styles.staticCursor}>&#9144;</span>
-                  </span>
-                ) : (
-                  <ConsoleTypist once text={label} onTypingFinished={() => markTyped(anchor.index)} />
+              <>
+                <div className={styles.anchorNum}>
+                  <ConsoleTypist
+                    once
+                    key={`num-${anchor.index}`}
+                    text={`Anchor ${anchor.index + 1}`}
+                    onTypingFinished={() => setNumTyped(true)}
+                  />
+                </div>
+                {numTyped && (
+                  <div className={styles.tooltip}>
+                    <ConsoleTypist once key={`coord-${anchor.index}-${mode}`} text={label} />
+                  </div>
                 )}
-              </div>
+              </>
             )}
           </div>
         );
