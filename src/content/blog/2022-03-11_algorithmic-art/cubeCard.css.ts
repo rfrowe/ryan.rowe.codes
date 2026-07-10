@@ -1,22 +1,15 @@
 import { globalStyle, style } from "@vanilla-extract/css";
 import { vars } from "@styles/theme.css.ts";
-import { mediaBetween, mediaDown, spacing } from "@styles/theme-utils";
+import { mediaDown, spacing } from "@styles/theme-utils";
 
 /**
- * Reproduces the pre-migration `cubeCard.tsx` Emotion styles. Per the migration plan,
- * the `mediaBetween("lg", "sm")` call below is DELIBERATELY reproduced with its
- * pre-existing reversed argument order (a pre-existing bug: `lg` is 1200px, `sm` is
- * 600px, so `min-width:1200px and max-width:599.95px` can never match) -- the live site
- * never actually applies this 75% rule, so the container stays at 60% width all the way
- * from `sm` to `lg`. Match current output, don't fix it here.
+ * Reproduces the pre-migration `cubeCard.tsx` Emotion styles: the cube container is 60%
+ * wide from `sm` upward and widens to 90% below `sm`.
  */
 export const container = style({
   width: "60%",
   margin: `${spacing("2em")} auto`,
   "@media": {
-    [mediaBetween("lg", "sm")]: {
-      width: "75%",
-    },
     [mediaDown("sm")]: {
       width: "90%",
     },
