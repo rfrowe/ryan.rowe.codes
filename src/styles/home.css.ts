@@ -68,10 +68,27 @@ export const heading1 = style([bannerMargin, typography.h1]);
 
 export const heading3 = style([bannerMargin, typography.h3, { fontFamily: "monospace" }]);
 
-// Reproduces `imageStyle`: the primary-color placeholder standing in for a real image.
+// The banner image: a Kerry Park Seattle skyline that swaps day (light) / night (dark).
+// The two photos are perspective-aligned (homography on the Space Needle) so the skyline
+// stays registered across the swap. `primary.main` remains as a fallback tint behind the
+// image (while it loads / if it 404s). Default is the night image to match the site's
+// "dark unless the OS prefers light" default; the explicit `data-theme` selectors (higher
+// specificity) win once the no-flash script runs. Both photos are CC0 / public domain.
 export const image = style({
   flexGrow: 1,
   flexShrink: 1,
   flexBasis: 0,
   backgroundColor: vars.palette.primary.main,
+  backgroundImage: 'url("/seattle-night.webp")',
+  backgroundSize: "cover",
+  backgroundPosition: "center",
+  "@media": {
+    "(prefers-color-scheme: light)": {
+      backgroundImage: 'url("/seattle-day.webp")',
+    },
+  },
+  selectors: {
+    'html[data-theme="light"] &': { backgroundImage: 'url("/seattle-day.webp")' },
+    'html[data-theme="dark"] &': { backgroundImage: 'url("/seattle-night.webp")' },
+  },
 });
