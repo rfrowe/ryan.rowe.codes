@@ -1,4 +1,5 @@
 import { style } from "@vanilla-extract/css";
+import { typography } from "@styles/theme.css.ts";
 import { mediaDown, spacing } from "@styles/theme-utils";
 
 /**
@@ -31,3 +32,10 @@ export const article = style({
     },
   },
 });
+
+/**
+ * The pre-migration template rendered the title via MUI's `<Typography variant="h1">`
+ * with no margin override, so its default `margin: 0` applies -- matches Prose.css.ts's
+ * `h1` treatment for in-body MDX headings.
+ */
+export const title = style({ ...typography.h1, margin: 0 });
