@@ -75,7 +75,7 @@ export const heading3 = style([bannerMargin, typography.h3, { fontFamily: "monos
 // "dark unless the OS prefers light" default; the explicit `data-theme` selectors (higher
 // specificity) win once the no-flash script runs. Both photos are CC0 / public domain.
 export const image = style({
-  flexGrow: 1,
+  flexGrow: 2,
   flexShrink: 1,
   flexBasis: 0,
   backgroundColor: vars.palette.primary.main,
