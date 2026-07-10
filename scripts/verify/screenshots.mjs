@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { PNG } from "pngjs";
-import { cropTo, diffPngs, composeSideBySide } from "./image-utils.mjs";
+import { cropTo, diffPngs, composeSideBySide, maskRegion } from "./image-utils.mjs";
 
 const NUMBER_LOCK = /[^a-z0-9-]/gi;
 const slug = value => value.replace(NUMBER_LOCK, "-");
@@ -47,7 +47,32 @@ function maskSelectorsFor(pairName) {
   return [];
 }
 
-async function captureFullPage(browser, { url, viewport, colorScheme, overrideMode, pairName }) {
+/**
+ * hello-world's one code block is a QUINE (see quine.mjs): it renders the post's own
+ * `post.body` MDX source via CodeBlock.tsx. That source's relative import line legitimately
+ * changed during the migration (`../../components/blog/code` -> `../../components/mdx/
+ * CodeBlock`), so this region can *never* pixel-match the LIVE (pre-migration) site's
+ * rendering of its own, different, pre-migration source -- a diff here is a false signal
+ * about visual fidelity, not a real regression. Its correctness is already asserted
+ * byte-for-byte by the exact-text check in quine.mjs (rendered textContent === post.body),
+ * so the plan anticipates masking it out of the tolerance diff the same way the index's
+ * volatile ConsoleTypist region is masked above.
+ *
+ * The box is located on the LOCAL page only -- the live pre-migration DOM for this block
+ * belongs to a component deleted in Phase 7a, so there is no equivalent selector to locate
+ * it on the live side -- and padded generously (full page width, +80px top/bottom) so the
+ * same rectangle, reused verbatim against the live screenshot in runVisualDiffMatrix, still
+ * fully covers that site's equivalent block despite minor cross-site position drift.
+ */
+async function computeQuineMaskRect(page) {
+  const box = await page.locator("pre").first().boundingBox().catch(() => null);
+  if (!box) return null;
+
+  const PAD = 80;
+  return { x: 0, y: Math.max(0, box.y - PAD), width: Number.MAX_SAFE_INTEGER, height: box.height + PAD * 2 };
+}
+
+async function captureFullPage(browser, { url, viewport, colorScheme, overrideMode, pairName, collectQuineMaskRect }) {
   const context = await browser.newContext({ viewport, colorScheme });
   if (overrideMode) {
     await context.addInitScript(mode => window.localStorage.setItem("themeMode", mode), overrideMode);
@@ -57,12 +82,14 @@ async function captureFullPage(browser, { url, viewport, colorScheme, overrideMo
     await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
     await waitForStableFrame(page, pairName);
 
+    const quineMaskRect = collectQuineMaskRect ? await computeQuineMaskRect(page) : null;
+
     const maskSelectors = maskSelectorsFor(pairName);
     const mask = maskSelectors.length > 0 ? maskSelectors.map(sel => page.locator(sel)) : undefined;
 
     const buffer = await page.screenshot({ fullPage: true, mask, timeout: 30000 });
     const scrollHeight = await page.evaluate(() => document.documentElement.scrollHeight);
-    return { buffer, scrollHeight };
+    return { buffer, scrollHeight, quineMaskRect };
   } finally {
     await context.close();
   }
@@ -103,7 +130,11 @@ export async function runVisualDiffMatrix(browser, {
 
         let local;
         try {
-          local = await captureFullPage(browser, { ...captureOpts, url: `${localBaseUrl}${pair.local}` });
+          local = await captureFullPage(browser, {
+            ...captureOpts,
+            url: `${localBaseUrl}${pair.local}`,
+            collectQuineMaskRect: pair.name === "hello-world",
+          });
           writeFileSync(path.join(dir, "local.png"), local.buffer);
         } catch (err) {
           results.push({ ...combo, pass: false, error: `local capture failed: ${err.message}` });
@@ -126,6 +157,12 @@ export async function runVisualDiffMatrix(browser, {
 
         const livePng = PNG.sync.read(live.buffer);
         const localPng = PNG.sync.read(local.buffer);
+
+        if (local.quineMaskRect) {
+          maskRegion(livePng, local.quineMaskRect);
+          maskRegion(localPng, local.quineMaskRect);
+        }
+
         const { diff, diffPixels, totalPixels, width, height } = diffPngs(livePng, localPng, pixelmatchThreshold);
         const diffRatio = diffPixels / totalPixels;
         const pass = diffRatio <= maxDiffRatio;
