@@ -4,11 +4,9 @@ import { formatPostDate } from "@lib/blog"
 import BlogPost from "@layouts/BlogPost.astro"
 import { mdxComponents } from "@components/mdx-components"
 
-// The hello-world post is a QUINE that renders its OWN full source (see CodeBlock.tsx).
-// The content collection's `entry.body` strips the YAML frontmatter, but the pre-migration
-// site rendered the whole file including it -- so import each post's raw bytes (`?raw`,
-// frontmatter and all) and hand that to the MDX as `source`, restoring the frontmatter in
-// the quine. `entry.body` is the fallback if a post's file can't be matched.
+// The hello-world post is a QUINE that renders its own full source (see CodeBlock.tsx).
+// `entry.body` strips the YAML frontmatter, so import each post's raw bytes (`?raw`) to feed
+// the MDX its complete source as `source`, frontmatter and all; `entry.body` is the fallback.
 const rawSources = import.meta.glob<string>("/src/content/blog/**/*.mdx", {
   query: "?raw",
   import: "default",

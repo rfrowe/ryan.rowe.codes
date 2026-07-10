@@ -8,10 +8,8 @@ import P from "./mdx/P.astro";
 import Link from "./mdx/Link.astro";
 
 /**
- * MDX tag overrides reproducing the pre-migration `src/components/blog/overrides.tsx`.
- * Passed to `<Content components={mdxComponents} />` from the post route
- * (src/pages/blog/[date]/[slug].astro). Raw HTML (e.g. `<abbr title>`) passes through
- * untouched -- MDX only invokes these for the tag names present here.
+ * MDX tag overrides passed to `<Content components={mdxComponents} />` in the post route.
+ * Only the tags listed here are overridden; everything else renders as plain HTML.
  */
 export const mdxComponents = {
   a: Link,

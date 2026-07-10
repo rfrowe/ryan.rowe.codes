@@ -1,20 +1,18 @@
 /**
  * Pure image glob -> sort -> chunk logic for the RandomCube island, split out of
- * cubeRenderer.tsx so it can be unit tested without a p5/DOM environment (see
- * cubeImages.test.ts) -- this is the top silent-failure risk called out in the migration
- * plan: `import.meta.glob`'s key order is not guaranteed to match Gatsby's old
- * `allFile(sort: {fields: [dir, name]})`, and a wrong order silently mismatches which
- * face texture lands on which side of the cube (no error, just a visually-wrong cube).
+ * cubeRenderer.tsx so it can be unit tested without a p5/DOM environment. `import.meta.glob`'s
+ * key order is not guaranteed, and a wrong order silently mismatches which face texture lands
+ * on which side of the cube (no error, just a visually-wrong cube), so the ordering is pinned here.
  */
 
 /** Shape of a Vite `import.meta.glob({eager: true, query: '?url', import: 'default'})` result: module path -> URL string. */
 export type ImageGlob = Record<string, string>;
 
 /**
- * Plain lexicographic string comparator. Deliberately NOT `String.prototype.localeCompare`,
- * which is locale/ICU-dependent and can order punctuation/case differently across Node
- * versions, OSes, and CI runners -- non-deterministic for a purely-ASCII path-sorting use
- * case where we want byte-order string comparison every time.
+ * Plain lexicographic (code-point) string comparator. Deliberately not `localeCompare`,
+ * which is locale/ICU-dependent and can order case/punctuation differently across Node
+ * versions, OSes, and CI runners -- non-deterministic for ASCII path sorting where byte
+ * order is what's wanted.
  */
 export const lexicographicCompare = (a: string, b: string): number => {
   if (a < b) {
@@ -28,10 +26,9 @@ export const lexicographicCompare = (a: string, b: string): number => {
 
 /**
  * Sorts a glob result's keys (module paths, e.g. "./assets/1/side0.jpg") with
- * `lexicographicCompare` and returns just the URLs in that order. Reproduces the
- * pre-migration Gatsby `allFile(sort: {fields: [dir, name]})` ordering closely enough:
- * path-lexicographic sort groups each numbered asset subdirectory together and orders
- * `sideN.jpg` files within it numerically (single digits, so lexicographic == numeric).
+ * `lexicographicCompare` and returns just the URLs in that order. Path-lexicographic sort
+ * groups each numbered asset subdirectory together and orders `sideN.jpg` files within it
+ * numerically (single digits, so lexicographic == numeric).
  */
 export function sortImageUrls(glob: ImageGlob): string[] {
   return Object.keys(glob)

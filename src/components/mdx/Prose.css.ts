@@ -2,11 +2,7 @@ import { style } from "@vanilla-extract/css";
 import { typography, vars } from "@styles/theme.css.ts";
 import { spacing } from "@styles/theme-utils";
 
-/**
- * Reproduces the pre-migration MDX overrides (src/components/blog/overrides.tsx): MUI
- * `Typography` renders every heading variant with `margin: 0` by default -- only the `p`
- * override explicitly added `spacing(2)` top/bottom margin on top of `body1`.
- */
+// Headings reset margin to 0; only `p` (below) adds vertical margin.
 const heading = (variant: keyof typeof typography) => style({ ...typography[variant], margin: 0 });
 
 export const h1 = heading("h1");
@@ -21,9 +17,6 @@ export const p = style({
   margin: spacing(2, 0),
 });
 
-// Reproduces `gatsby-theme-material-ui`'s `Link`: MUI `Link`'s default appearance
-// (primary color + underline) applies the same regardless of internal/external routing --
-// only the `target`/`rel` attributes (set in Link.astro) differ.
 export const link = style({
   color: vars.palette.primary.main,
   textDecoration: "underline",

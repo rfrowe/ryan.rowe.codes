@@ -9,8 +9,8 @@ import { breakpoints, transitions, type Breakpoint } from "./theme.css.ts";
 
 export const mediaUp = (bp: Breakpoint): string => `screen and (min-width: ${breakpoints[bp]}px)`;
 
-// MUI's `down()` stops just short of the next breakpoint rather than sharing its edge
-// pixel with the paired `up()` query, so the two never both match at the boundary.
+// Stop just short of the next breakpoint so `up()`/`down()` never both match at the
+// boundary pixel.
 export const mediaDown = (bp: Breakpoint): string => `screen and (max-width: ${breakpoints[bp] - 0.05}px)`;
 
 export const mediaBetween = (start: Breakpoint, end: Breakpoint): string =>
@@ -20,8 +20,7 @@ const spacingUnitPx = 8;
 
 const toSpacingValue = (value: number | string): string => (typeof value === "number" ? `${value * spacingUnitPx}px` : value);
 
-// Mirrors MUI's `theme.spacing(...)`: numbers are multiplied by the 8px factor, strings
-// (e.g. 'auto', '2em') pass through untouched. Supports 1-4 args like the MUI original.
+// Numbers multiply the 8px unit; strings (e.g. 'auto', '2em') pass through untouched.
 export const spacing = (...values: Array<number | string>): string => values.map(toSpacingValue).join(" ");
 
 export const transition = (

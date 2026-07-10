@@ -1,8 +1,7 @@
 import { keyframes, style } from "@vanilla-extract/css";
 
-// Reproduces the pre-migration Emotion `blinkingStyle`: a hard on/off blink (not a fade)
-// via `step-start` timing, so the cursor is either fully visible or fully hidden with no
-// intermediate opacity frame.
+// Hard on/off blink (not a fade) via `step-start` timing: the cursor is either fully visible
+// or fully hidden, with no intermediate opacity frame.
 const blinker = keyframes({
   "50%": {
     opacity: 0,

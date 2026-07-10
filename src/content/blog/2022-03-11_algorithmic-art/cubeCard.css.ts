@@ -2,10 +2,6 @@ import { globalStyle, style } from "@vanilla-extract/css";
 import { vars } from "@styles/theme.css.ts";
 import { mediaDown, spacing } from "@styles/theme-utils";
 
-/**
- * Reproduces the pre-migration `cubeCard.tsx` Emotion styles: the cube container is 60%
- * wide from `sm` upward and widens to 90% below `sm`.
- */
 export const container = style({
   width: "60%",
   margin: `${spacing("2em")} auto`,
@@ -16,11 +12,7 @@ export const container = style({
   },
 });
 
-// react-p5's `createCanvas` sets the canvas element's own inline `style.width`/
-// `style.height` (for pixel-density scaling), which otherwise wins over a plain CSS rule
-// -- the `!important` here is load-bearing, carried over from the pre-migration Emotion
-// styles for the same reason. A plain `&`-selector can't target a descendant tag (only
-// the class's own element/pseudo-states), hence `globalStyle` on the compound selector.
+// !important is load-bearing: the canvas element sets its own inline width/height.
 globalStyle(`${container} canvas`, {
   width: "100% !important",
   height: "unset !important",

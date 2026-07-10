@@ -1,11 +1,7 @@
 import { style } from "@vanilla-extract/css";
 
-/**
- * Reproduces the pre-migration `PageTemplate` (src/components/layout/template.tsx):
- * a full-height flex column holding the nav + a centered `<main>` that spaces its
- * children apart vertically. `BlogPost.astro` overrides `alignItems` per-child via
- * `alignSelf` rather than here, since only post pages needed `stretch`.
- */
+// Full-height flex column: nav + a centered `<main>` that spaces its children apart
+// vertically. BlogPost.astro opts children out of the centering per-child via `alignSelf`.
 
 export const container = style({
   minHeight: "100vh",

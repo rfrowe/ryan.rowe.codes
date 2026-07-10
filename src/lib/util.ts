@@ -22,10 +22,9 @@ export const findDuplicate = <T>(values: T[]): {value: T} | null => {
 }
 
 /**
- * Matches gatsby-theme-material-ui's Link: an href is "external" only when it resolves
- * to an http(s) origin other than the site's own. Relative paths, hash anchors, and
- * non-navigational schemes (`mailto:`, `tel:`, etc.) are all "internal" -- they don't get
- * `target="_blank"`.
+ * An href is "external" only when it resolves to an http(s) origin other than the site's
+ * own. Relative paths, hash anchors, and non-navigational schemes (`mailto:`, `tel:`, etc.)
+ * are all "internal" -- they don't get `target="_blank"`.
  */
 export const isExternalHref = (href: string, siteHostname = "ryan.rowe.codes"): boolean => {
     let url: URL

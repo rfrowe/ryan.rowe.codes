@@ -2,18 +2,13 @@ import { describe, expect, it } from "vitest";
 import { chunk, lexicographicCompare, sortAndChunkImages, sortImageUrls } from "./cubeImages";
 
 describe("lexicographicCompare", () => {
-  // @ai-generated
   it("orders by raw code point, unlike locale-aware localeCompare", () => {
-    // In common ICU locale collation (e.g. en-US), "aside" sorts before "Bside"
-    // (case-insensitive-ish), but plain code-point comparison puts uppercase 'B' (66)
-    // before lowercase 'a' (97). This is exactly the divergence the migration plan calls
-    // out: bare `localeCompare` is locale-dependent and must NOT be used for the cube's
-    // face ordering.
+    // In common ICU locale collation (e.g. en-US), "aside" sorts before "Bside", but plain
+    // code-point comparison puts uppercase 'B' (66) before lowercase 'a' (97).
     expect(lexicographicCompare("Bside", "aside")).toBe(-1);
     expect("Bside".localeCompare("aside")).toBeGreaterThan(0);
   });
 
-  // @ai-generated
   it("returns 0 for equal strings, -1/1 otherwise", () => {
     expect(lexicographicCompare("a", "a")).toBe(0);
     expect(lexicographicCompare("a", "b")).toBe(-1);
@@ -22,7 +17,6 @@ describe("lexicographicCompare", () => {
 });
 
 describe("chunk", () => {
-  // @ai-generated
   it("splits into groups of the given size, keeping a trailing partial group", () => {
     expect(chunk([1, 2, 3, 4, 5, 6, 7], 6)).toEqual([
       [1, 2, 3, 4, 5, 6],
@@ -30,14 +24,12 @@ describe("chunk", () => {
     ]);
   });
 
-  // @ai-generated
   it("returns an empty array for empty input", () => {
     expect(chunk([], 6)).toEqual([]);
   });
 });
 
 describe("sortImageUrls", () => {
-  // @ai-generated
   it("sorts glob keys lexicographically by path and maps to their URLs", () => {
     const glob = {
       "./assets/2/side1.jpg": "url-2-1",
@@ -57,7 +49,6 @@ describe("sortImageUrls", () => {
 });
 
 describe("sortAndChunkImages", () => {
-  // @ai-generated
   it("produces one 6-face group per cube, in FRONT/BACK/BOTTOM/TOP/RIGHT/LEFT positional order", () => {
     // Two cubes' worth of faces, deliberately out of order (as import.meta.glob's key
     // order is not guaranteed), mirroring the real asset layout
@@ -89,13 +80,11 @@ describe("sortAndChunkImages", () => {
     expect(cubes[1]).toEqual(["cube2-front", "cube2-back", "cube2-bottom", "cube2-top", "cube2-right", "cube2-left"]);
   });
 
-  // @ai-generated
   it("supports a custom group size", () => {
     const glob = { a: "1", b: "2", c: "3", d: "4" };
     expect(sortAndChunkImages(glob, 2)).toEqual([["1", "2"], ["3", "4"]]);
   });
 
-  // @ai-generated
   it("returns an empty array when the glob is empty", () => {
     expect(sortAndChunkImages({})).toEqual([]);
   });

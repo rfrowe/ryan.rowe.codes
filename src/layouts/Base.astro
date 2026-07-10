@@ -19,9 +19,8 @@ const { title } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
     <title>{title}</title>
     {/*
-      `is:inline` stops Astro from bundling this as a deferred module -- it must run
-      synchronously, before first paint, so `data-theme` is already correct by the time
-      the page (and the theme toggle island) render. See @styles/theme-script.ts.
+      `is:inline` keeps Astro from deferring this as a module -- it must run before first
+      paint so `data-theme` is set before the page (and the theme toggle island) render.
     */}
     <script is:inline set:html={noFlashThemeScript} />
   </head>

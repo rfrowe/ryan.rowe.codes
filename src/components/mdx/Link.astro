@@ -7,12 +7,8 @@ interface Props {
   class?: string;
 }
 
-/**
- * Reproduces `gatsby-theme-material-ui`'s `Link` used by the pre-migration MDX overrides
- * (src/components/blog/overrides.tsx): external hrefs open in a new tab with
- * `rel="noopener noreferrer"`; internal ones (relative paths, hash anchors, `mailto:`,
- * same-origin absolute URLs) navigate in place, same as a plain anchor.
- */
+// External hrefs open in a new tab with rel="noopener noreferrer"; internal ones
+// (relative, hash, mailto:, same-origin) navigate in place.
 const { href, class: className, ...rest } = Astro.props as Props;
 const external = href !== undefined && isExternalHref(href, Astro.site?.hostname);
 ---

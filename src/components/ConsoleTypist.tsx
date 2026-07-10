@@ -11,12 +11,9 @@ export interface ConsoleTypistProps {
   deletionDelayMillis?: number;
   className?: string;
   /**
-   * "Type once, then hold" mode. When true, the text is typed out a single time and then
-   * held as static text -- it never erases, and never fires the erase/retype cycling path
-   * (so `onTypingFinished` doesn't advance a caller's carousel; it's called exactly once,
-   * immediately, to signal "finished typing"). Defaults to false, preserving the original
-   * type/hold/erase/retype cycling behavior that HeadlineCycler drives. Used by the skyline
-   * anchor coordinates, which type out on first hover and then stay put.
+   * Type once and hold: type the text a single time and leave it static -- no erase/retype
+   * cycle. `onTypingFinished` fires exactly once when typing completes. Defaults to false (the
+   * type/hold/erase/retype cycling that HeadlineCycler drives).
    */
   once?: boolean;
 }
@@ -38,9 +35,8 @@ function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, boolean, 
     [flashEnabled, flashIntervalMillis],
   );
 
-  // `flash` is unused -- mirrors the pre-migration component's toggle-regardless-of-argument
-  // behavior (both call sites below happen to call this at the right moments for a toggle
-  // to land on the intended value).
+  // `flash` is ignored -- this just toggles. Both call sites below are positioned so the
+  // toggle lands on the intended value.
   const setCursorFlashing = useCallback((_flash: boolean) => setFlashEnabled(state => !state), []);
 
   return [cursor, flashEnabled, setCursorFlashing];
@@ -51,10 +47,9 @@ function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, boolean, 
  * erases it, then types whatever `text` has become -- the caller drives cycling by changing
  * `text` (typically from `onTypingFinished`).
  *
- * Exposes `data-typing="done"` on the wrapping element once the current `text` has finished
- * typing, cleared again the instant erasure starts, so callers -- Phase 8's Playwright
- * screenshots in particular -- can wait for a stable frame instead of racing the randomized
- * per-character timers.
+ * Exposes `data-typing="done"` on the wrapping element once the current `text` finishes typing
+ * (cleared the instant erasure starts) so callers can wait for a stable frame instead of racing
+ * the randomized per-character timers.
  */
 const ConsoleTypist = ({
   text,
