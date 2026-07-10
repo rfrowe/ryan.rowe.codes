@@ -13,8 +13,7 @@
     "astro": "astro",
     "check": "astro check",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "verify:screenshots": "node scripts/verify-screenshots.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@astrojs/mdx": "^7.0.2",
@@ -25,10 +24,12 @@
     "astro": "^7.0.6",
     "astro-expressive-code": "^0.44.0",
     "astro-icon": "^1.1.5",
+    "delaunator": "^5.1.0",
     "katex": "^0.17.0",
     "p5": "^2.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-icons": "^5.7.0",
     "react-syntax-highlighter": "^16.1.1",
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0"

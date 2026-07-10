@@ -1,13 +1,13 @@
 import { style } from "@vanilla-extract/css";
-import { fontFamily, transitions, vars } from "@styles/theme.css.ts";
+import { fontFamily, transitions } from "@styles/theme.css.ts";
 
 // Square "registration mark" geometry, centered on the anchor point. `HALF` is reused to
 // left-align the typed labels to the marker box's left edge.
 const MARKER = 52;
 const HALF = MARKER / 2;
 
-// Theme-dependent NERV accent: hot orange in day (light), cool terminal green at night
-// (dark). Applied to the markers and the typed readouts via `data-theme` selectors.
+// Theme-dependent accent: orange in light, terminal green in dark. Applied to the markers
+// and the typed readouts via `data-theme` selectors.
 const ORANGE = "#ff6a1a";
 const GREEN = "#2effb0";
 
@@ -32,8 +32,20 @@ export const anchor = style({
   height: 0,
 });
 
-// The crosshair-in-a-box marker. Idle: the accent colour at reduced opacity with a soft
-// glow, so it reads against the photo without shouting. Hover/focus: comes alive (below).
+// The WebGL morph canvas: fills the image div behind the markers and renders the day<->night
+// skyline cross-dissolve mesh-morph. The CSS `background-image` on `.image` stays as a no-JS
+// (and pre-hydration) fallback beneath it.
+export const canvas = style({
+  position: "absolute",
+  inset: 0,
+  width: "100%",
+  height: "100%",
+  display: "block",
+  pointerEvents: "none",
+});
+
+// The crosshair-in-a-box marker. Idle: accent colour at reduced opacity with a soft glow.
+// Hover/focus intensifies it (see markerActive).
 export const marker = style({
   position: "absolute",
   left: 0,
