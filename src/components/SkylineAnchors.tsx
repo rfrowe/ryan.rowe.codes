@@ -74,8 +74,8 @@ const ANCHORS: Anchor[] = DAY_PTS.map(([dx, dy], i) => {
     index: i,
     imgX: (dx - CROP_X0) * SCALE_X,
     imgY: (dy - CROP_Y0) * SCALE_Y,
-    dayLabel: `${dx}, ${dy}`,
-    nightLabel: `${nx}, ${ny}`,
+    dayLabel: `(${dx}, ${dy})`,
+    nightLabel: `(${nx}, ${ny})`,
   };
 });
 
@@ -210,7 +210,7 @@ const SkylineAnchors = () => {
                   <ConsoleTypist
                     once
                     key={`num-${anchor.index}`}
-                    text={`Anchor ${anchor.index + 1}`}
+                    text={`ANCHOR ${String(anchor.index + 1).padStart(2, "0")}`}
                     onTypingFinished={() => setNumTyped(true)}
                   />
                 </div>
