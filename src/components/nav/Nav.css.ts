@@ -29,8 +29,10 @@ export const bar = style({
   },
 });
 
-// Reproduces MUI's default `Toolbar`: flex row, centered cross-axis, 16px inline padding,
-// min-height 56px below `sm`, 64px at `sm` and up.
+// Reproduces MUI's default `Toolbar`: flex row, centered cross-axis, min-height 56px below
+// `sm` / 64px at `sm`+, and gutter padding 16px below `sm` / 24px at `sm`+ (MUI's
+// `Toolbar` uses `theme.spacing(2)`/`spacing(3)` gutters -- the earlier build hard-coded
+// 16px at all widths, which under-inset the nav on desktop).
 export const toolbar = style({
   display: "flex",
   alignItems: "center",
@@ -39,6 +41,7 @@ export const toolbar = style({
   "@media": {
     [mediaUp("sm")]: {
       minHeight: "64px",
+      padding: spacing(0, 3),
     },
   },
 });
@@ -63,12 +66,15 @@ export const textLink = style({
 });
 
 // Icon links get the tighter `spacing(0, 0.5)` margin from the pre-migration
-// `NavBarIconLink`, and render at `action.active` (IconButton's own default color, which
-// won out over the theme switcher's explicit `color='primary'` -- see
-// src/components/layout/nav/theme.tsx: the emotion `css` prop override is injected after
-// MUI's own styles, so it wins the tie).
+// `NavBarIconLink`, plus `spacing(1)` (8px) padding to reproduce the MUI `IconButton` the
+// original wrapped each icon in -- that padding is what spread the icons apart and inset
+// the first one; omitting it packed the icons too tightly against each other and the edge.
+// Colour is `action.active` (IconButton's own default, which won out over the theme
+// switcher's explicit `color='primary'` -- see the old nav/theme.tsx: the emotion `css`
+// override was injected after MUI's styles and won the tie).
 export const iconLink = style({
   margin: spacing(0, 0.5),
+  padding: spacing(1),
   color: vars.palette.action.active,
 });
 

@@ -82,6 +82,22 @@ async function captureFullPage(browser, { url, viewport, colorScheme, overrideMo
     await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
     await waitForStableFrame(page, pairName);
 
+    // `fullPage: true` and `position: sticky`/`fixed` don't mix: Playwright paints a sticky
+    // element at the scroll offset it would occupy partway through the capture, so a sticky
+    // top nav lands floating in the middle of a tall page (and a scroll-hidden bar may not
+    // appear at all). Demote sticky/fixed elements to `static` and drop any transform -- on
+    // BOTH the live and local captures identically -- so the nav renders once, inline, at
+    // the very top on every page. This is a capture-fidelity fix, not a site change.
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll("*")) {
+        const pos = getComputedStyle(el).position;
+        if (pos === "sticky" || pos === "fixed") {
+          el.style.position = "static";
+          el.style.transform = "none";
+        }
+      }
+    });
+
     const quineMaskRect = collectQuineMaskRect ? await computeQuineMaskRect(page) : null;
 
     const maskSelectors = maskSelectorsFor(pairName);

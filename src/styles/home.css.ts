@@ -41,28 +41,29 @@ export const banner = style({
   },
 });
 
-// Reproduces `bannerMargin`, applied to both headings below. The original also carried a
-// `&:not(:first-of-type)` exception intended to skip this margin for the second heading
-// below `md` -- but since the two headings are different tag types (h1/h3), each is its
-// own tag's *only* (and therefore first-of-type) element, so that exception never actually
-// matched. Both headings render with the same `marginTop` below `md` today; that's what
-// this reproduces.
+// Reproduces `bannerMargin`, applied to both headings below: `marginLeft: 10%` on desktop
+// (md+), switching to a top margin below `md` where the banner's own `paddingLeft: 10%`
+// takes over the horizontal offset. The MUI `Typography` browser-margin reset is folded in
+// here as explicit per-side zeros (top/right/bottom) rather than a `margin: 0` shorthand:
+// the shorthand, when placed in a *second* composed style object, overrode this class's
+// `marginLeft` (later source order wins the specificity tie), flush-lefting the banner on
+// desktop. Keeping every margin declaration in this one class removes that clobber.
 const bannerMargin = style({
+  marginTop: 0,
+  marginRight: 0,
+  marginBottom: 0,
   marginLeft: "10%",
   "@media": {
     [mediaDown("md")]: {
-      marginLeft: "unset",
+      marginLeft: 0,
       marginTop: "10%",
     },
   },
 });
 
-// MUI's `Typography` resets the element's default browser margin to 0 regardless of
-// variant; both headings below reproduce that alongside their variant's type scale.
 export const heading1 = style([
   bannerMargin,
   {
-    margin: 0,
     fontSize: typography.h1.fontSize,
     fontWeight: typography.h1.fontWeight,
     lineHeight: typography.h1.lineHeight,
@@ -73,7 +74,6 @@ export const heading1 = style([
 export const heading3 = style([
   bannerMargin,
   {
-    margin: 0,
     fontFamily: "monospace",
     fontSize: typography.h3.fontSize,
     fontWeight: typography.h3.fontWeight,

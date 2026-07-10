@@ -3,13 +3,24 @@ import { typography } from "@styles/theme.css.ts";
 import { mediaDown, spacing } from "@styles/theme-utils";
 
 /**
- * Reproduces the pre-migration `templateStyle` (src/pages/blog/{mdx.frontmatter__slug}.tsx):
- * responsive left/right margins that shrink at each breakpoint, plus `alignSelf: stretch`
- * to opt this one child out of Base.astro's `align-items: center` (post content should
- * fill the margin-defined width, not shrink-wrap and center).
+ * Reproduces the pre-migration `templateStyle` (src/pages/blog/{mdx.frontmatter__slug}.tsx),
+ * which was merged onto `PageTemplate`'s `mainStyle`: responsive left/right margins that
+ * shrink at each breakpoint, `alignSelf: stretch` to opt out of Base.astro's
+ * `align-items: center`, AND -- crucially -- the flex column with `justify-content:
+ * space-between` and `flex-grow: 1` that `mainStyle` provided. The title + each MDX block
+ * are direct flex children here, so they distribute across the full viewport height:
+ * on a short post (hello-world) the title pins to the top and the last block to the bottom
+ * with even gaps; on a long post (algorithmic-art) content overflows and simply stacks.
+ * Wrapping the content in a plain block element instead (the earlier regression) bunched
+ * every block tight at the top.
  */
 export const article = style({
+  flexGrow: 1,
   alignSelf: "stretch",
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "space-between",
+  alignItems: "stretch",
   marginTop: spacing(5),
   marginLeft: "20%",
   marginRight: "20%",
