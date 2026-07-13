@@ -12,6 +12,12 @@ export const noFlashThemeScript = `(function(){try{var k=${JSON.stringify(themeS
 
 export type ThemeMode = "light" | "dark";
 
+const isMode = (value: string | undefined): value is ThemeMode => value === "light" || value === "dark";
+
+/** The current `data-theme` on <html>, defaulting to dark. Client-only (reads document). */
+export const readThemeMode = (): ThemeMode =>
+  isMode(document.documentElement.dataset.theme) ? document.documentElement.dataset.theme : "dark";
+
 // Length of the light/dark crossfade; keep in sync with transitions.duration.theme
 // (theme.css.ts), which styles the `.theme-anim` rule.
 export const THEME_TRANSITION_MS = 260;

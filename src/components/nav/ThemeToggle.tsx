@@ -1,34 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
 import { FaSun, FaMoon } from "react-icons/fa6";
-import { toggleThemeMode, type ThemeMode } from "@styles/theme-script";
+import { toggleThemeMode } from "@styles/theme-script";
+import { useThemeMode } from "@lib/useThemeMode";
 import * as styles from "./Nav.css.ts";
 
-const isMode = (value: string | undefined): value is ThemeMode => value === "light" || value === "dark";
-
-// Rendered client:only (see Nav.astro): the seed reads document.documentElement.dataset.theme,
-// which only exists in the browser. client:load would SSR a guessed default and flash the
-// wrong icon before hydration corrects it.
+/**
+ * Rendered client:only (see Nav.astro): `useThemeMode` seeds from `document`, so hydrating
+ * client-side is what lets the correct icon show without a flash.
+ */
 const ThemeToggle = () => {
-  const [mode, setMode] = useState<ThemeMode>(() => {
-    const seeded = document.documentElement.dataset.theme;
-    return isMode(seeded) ? seeded : "dark";
-  });
-
-  // Keep the icon in sync when the theme is toggled from elsewhere -- e.g. clicking a
-  // skyline anchor marker also toggles the theme (both go through `toggleThemeMode`).
-  useEffect(() => {
-    const sync = () => {
-      const seeded = document.documentElement.dataset.theme;
-      setMode(isMode(seeded) ? seeded : "dark");
-    };
-    const observer = new MutationObserver(sync);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
-
-  const toggleMode = useCallback(() => setMode(toggleThemeMode()), []);
-
-  const opposite: ThemeMode = mode === "light" ? "dark" : "light";
+  const mode = useThemeMode();
+  const opposite = mode === "light" ? "dark" : "light";
 
   return (
     <a
@@ -38,14 +19,10 @@ const ThemeToggle = () => {
       className={`${styles.link} ${styles.iconLink}`}
       onClick={event => {
         event.preventDefault();
-        toggleMode();
+        toggleThemeMode();
       }}
     >
-      {opposite === "light" ? (
-        <FaSun className={styles.icon} aria-hidden="true" />
-      ) : (
-        <FaMoon className={styles.icon} aria-hidden="true" />
-      )}
+      {opposite === "light" ? <FaSun className={styles.icon} aria-hidden="true" /> : <FaMoon className={styles.icon} aria-hidden="true" />}
     </a>
   );
 };

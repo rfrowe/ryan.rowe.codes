@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Delaunator from "delaunator";
 import ConsoleTypist from "./ConsoleTypist";
 import { toggleThemeMode } from "@styles/theme-script";
+import { useThemeMode } from "@lib/useThemeMode";
 import { transitions } from "@styles/theme.css.ts";
 import * as styles from "./SkylineAnchors.css.ts";
 
@@ -92,11 +93,6 @@ const ANCHORS: Anchor[] = DAY_PTS.map(([dx, dy], i) => {
     errLabel: `ERR ${ERRS[i].toFixed(1)}px`,
   };
 });
-
-type Mode = "light" | "dark";
-
-const isMode = (value: string | undefined): value is Mode => value === "light" || value === "dark";
-const readThemeMode = (): Mode => (isMode(document.documentElement.dataset.theme) ? document.documentElement.dataset.theme : "dark");
 
 const easeInOut = (p: number): number => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
 
@@ -235,7 +231,7 @@ const SkylineAnchors = () => {
 
   const [size, setSize] = useState<Size | null>(null);
   const [t, setT] = useState(1);
-  const [mode, setMode] = useState<Mode>("dark");
+  const mode = useThemeMode();
   const [hovered, setHovered] = useState<number | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   // Sequenced typewriter reveal for the selected anchor: 0 = "ANCHOR NN", 1 = coordinate,
@@ -447,26 +443,18 @@ const SkylineAnchors = () => {
     return () => observer.disconnect();
   }, [draw]);
 
-  // Theme reactivity: read the initial theme instantly (no morph); animate on later changes,
-  // whoever triggered them (nav toggle or a marker click, both via toggleThemeMode).
+  // Match `t` to the theme: morph on a user toggle (which sets `.theme-anim`; see
+  // toggleThemeMode), snap otherwise (initial resolution, OS change). Anchors ride `t`.
   useEffect(() => {
-    const apply = (animate: boolean) => {
-      const m = readThemeMode();
-      setMode(m);
-      const target = m === "dark" ? 1 : 0;
-      if (animate) {
-        startMorph(target);
-      } else {
-        tRef.current = target;
-        setT(target);
-        draw();
-      }
-    };
-    apply(false);
-    const observer = new MutationObserver(() => apply(true));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, [draw, startMorph]);
+    const target = mode === "dark" ? 1 : 0;
+    if (document.documentElement.classList.contains("theme-anim")) {
+      startMorph(target);
+    } else {
+      tRef.current = target;
+      setT(target);
+      draw();
+    }
+  }, [mode, draw, startMorph]);
 
   // Re-type from "ANCHOR NN" whenever the selection or theme changes.
   useEffect(() => {
