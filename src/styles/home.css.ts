@@ -56,7 +56,7 @@ const bannerMargin = style({
 // headings keep the responsive steps; picking off individual props would drop them.
 export const heading1 = style([bannerMargin, typography.h1]);
 
-export const heading3 = style([bannerMargin, typography.h3, { fontFamily: "monospace" }]);
+export const tagline = style([bannerMargin, typography.h3, { fontFamily: "monospace" }]);
 
 // The banner image: a Kerry Park Seattle skyline that swaps day (light) / night (dark).
 // `backgroundColor` is a fallback tint behind the image (while it loads / if it 404s).

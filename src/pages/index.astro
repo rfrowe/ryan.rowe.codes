@@ -21,9 +21,9 @@ const headlinePosts: HeadlinePost[] = posts.map(post => ({
         Rowe <br />
         Codes
       </h1>
-      <h3 class={styles.heading3}>
+      <h2 class={styles.tagline}>
         <HeadlineCycler client:load posts={headlinePosts} />
-      </h3>
+      </h2>
     </div>
     <div class={styles.image}>
       <SkylineAnchors client:load />
