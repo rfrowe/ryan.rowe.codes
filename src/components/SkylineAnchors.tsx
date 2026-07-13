@@ -487,6 +487,7 @@ const SkylineAnchors = () => {
           <div key={anchor.index} className={styles.anchor} style={{ left: screenX, top: screenY }}>
             <button
               type="button"
+              tabIndex={-1}
               className={`${styles.marker}${isActive ? ` ${styles.markerActive}` : ""}`}
               aria-label={`Homography alignment anchor ${anchor.index + 1} — click to toggle theme`}
               onMouseEnter={() => {

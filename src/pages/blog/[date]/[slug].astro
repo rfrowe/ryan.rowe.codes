@@ -34,6 +34,6 @@ const { Content } = await render(post)
 const fullSource = (post.filePath && rawSources[`/${post.filePath}`]) || post.body
 ---
 
-<BlogPost title={post.data.title}>
+<BlogPost title={post.data.title} description={post.data.headline}>
   <Content components={mdxComponents} source={fullSource} />
 </BlogPost>
