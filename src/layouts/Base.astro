@@ -11,12 +11,16 @@ interface Props {
 }
 
 const { title } = Astro.props;
+
+// Preview builds (any non-production branch) shouldn't be indexed.
+const noindex = process.env.CF_PAGES === "1" && process.env.CF_PAGES_BRANCH !== "main";
 ---
 
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    {noindex && <meta name="robots" content="noindex, nofollow" />}
     <title>{title}</title>
     {/*
       `is:inline` keeps Astro from deferring this as a module -- it must run before first
