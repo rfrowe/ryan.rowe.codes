@@ -4,12 +4,13 @@ import * as styles from "./BlogPost.css.ts";
 
 interface Props {
   title: string;
+  description?: string;
 }
 
-const { title } = Astro.props;
+const { title, description } = Astro.props;
 ---
 
-<Base title={title}>
+<Base title={title} description={description} ogType="article">
   <article class={styles.article}>
     <h1 class={styles.title}>{title}</h1>
     <slot />

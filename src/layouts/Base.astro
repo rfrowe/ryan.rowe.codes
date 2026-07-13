@@ -8,9 +8,15 @@ import "katex/dist/katex.min.css";
 
 interface Props {
   title: string;
+  description?: string;
+  ogType?: "website" | "article";
 }
 
-const { title } = Astro.props;
+const SITE_DESCRIPTION = "Ryan Rowe's corner of the web — writing and experiments on software, graphics, and the occasional interactive toy.";
+const { title, description = SITE_DESCRIPTION, ogType = "website" } = Astro.props;
+
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImage = new URL("/og-image.jpg", Astro.site).href;
 
 // Preview builds (any non-production branch) shouldn't be indexed.
 const noindex = process.env.CF_PAGES === "1" && process.env.CF_PAGES_BRANCH !== "main";
@@ -22,6 +28,23 @@ const noindex = process.env.CF_PAGES === "1" && process.env.CF_PAGES_BRANCH !== 
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
     {noindex && <meta name="robots" content="noindex, nofollow" />}
     <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+
+    {/* Open Graph + Twitter card: rich link previews in iMessage, Slack, social, etc. */}
+    <meta property="og:type" content={ogType} />
+    <meta property="og:site_name" content="ryan.rowe.codes" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
     {/*
       `is:inline` keeps Astro from deferring this as a module -- it must run before first
       paint so `data-theme` is set before the page (and the theme toggle island) render.
