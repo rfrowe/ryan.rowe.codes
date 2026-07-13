@@ -3,22 +3,22 @@
 ![deploy status badge](https://github.com/rfrowe/ryan.rowe.codes/actions/workflows/deploy.yml/badge.svg)
 
 This is the source for [my portfolio site](https://ryan.rowe.codes). It's made with:
-* [Gatsby](https://gatsbyjs.com)
+* [Astro](https://astro.build)
 * [MDX](https://mdxjs.com)
-* [GraphQL](https://graphql.org)
+* [vanilla-extract](https://vanilla-extract.style)
 
 The site is statically generated and deployed through [GitHub Pages](https://pages.github.com)
 
 ## Setup
 Install dependencies:
 ```bash
-yarn install
+npm install
 ```
 
 ## Development
 Start development server:
 ```bash
-yarn develop
+npm run dev
 ```
 
 ## Deploy
@@ -26,7 +26,7 @@ This site is deployed in production with GitHub Pages at [ryan.rowe.codes](https
 
 To build the static site for deployment:
 ```bash
-yarn build
+npm run build
 ```
 
-The deployable artifact will be in `./public`
+The deployable artifact will be in `./dist`

@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Seattle Skyline Anchor Tool</title>
+<style>
+  :root {
+    --bg: #14181d;
+    --panel: #1e242c;
+    --edge: #2c343d;
+    --text: #e6ebf1;
+    --muted: #9aa7b4;
+    --accent: #4cc2ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--edge);
+    background: var(--panel);
+    position: sticky; top: 0; z-index: 50;
+  }
+  header h1 { margin: 0 0 4px; font-size: 16px; font-weight: 650; }
+  header .instructions { color: var(--muted); font-size: 12.5px; }
+  header kbd {
+    background: #10151a; border: 1px solid var(--edge); border-bottom-width: 2px;
+    border-radius: 4px; padding: 0 5px; font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+  }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    padding: 10px 18px; border-bottom: 1px solid var(--edge);
+    background: var(--panel); position: sticky; top: 55px; z-index: 40;
+  }
+  .toolbar .group { display: flex; align-items: center; gap: 7px; }
+  .toolbar label { color: var(--muted); font-size: 12.5px; user-select: none; }
+  button {
+    background: #2b333d; color: var(--text); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: #353f4a; }
+  button:active { background: #3d4956; }
+  button.primary { background: #1f5f86; border-color: #2b7cad; }
+  button.primary:hover { background: #246c99; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  input[type="range"] { width: 150px; }
+  .stat {
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+    color: var(--muted); white-space: nowrap;
+  }
+  .stat b { color: var(--accent); font-weight: 600; }
+
+  main { padding: 16px 18px 60px; }
+  .row { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 12px; }
+  .card h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+
+  .stage {
+    position: relative; overflow: hidden; border-radius: 6px;
+    background: #0c1013; touch-action: none; user-select: none;
+  }
+  .stage img.base { display: block; width: 100%; height: auto; pointer-events: none; -webkit-user-drag: none; }
+
+  .marker {
+    position: absolute; left: 0; top: 0; width: 20px; height: 20px;
+    margin-left: -10px; margin-top: -10px;
+    border-radius: 50%; border: 2px solid #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff;
+    text-shadow: 0 0 3px rgba(0,0,0,.9);
+    cursor: grab; touch-action: none; z-index: 5;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 4px rgba(0,0,0,.5);
+  }
+  .marker:active { cursor: grabbing; }
+  .marker.sel { box-shadow: 0 0 0 3px var(--accent), 0 0 0 5px rgba(0,0,0,.6); z-index: 8; }
+  .marker .lbl {
+    position: absolute; left: 15px; top: -3px; white-space: nowrap;
+    font-size: 10.5px; font-weight: 600; color: #fff;
+    background: rgba(0,0,0,.55); padding: 0 4px; border-radius: 3px;
+    text-shadow: none; pointer-events: none;
+  }
+  .marker .del {
+    position: absolute; right: -9px; top: -9px; width: 15px; height: 15px;
+    border-radius: 50%; background: #111; color: #fff; border: 1px solid #fff;
+    font-size: 11px; line-height: 12px; text-align: center; cursor: pointer;
+    display: none;
+  }
+  .marker.sel .del { display: block; }
+
+  /* Interactive persistent placement loupes (one per image, for the selected anchor). */
+  .loupewrap { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+  .loupecol { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .loupehd { font-size: 12px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase;
+             display: flex; align-items: center; gap: 8px; }
+  .arrowtag { font-size: 10px; padding: 1px 7px; border-radius: 10px; background: #2b333d;
+              color: var(--muted); border: 1px solid var(--edge); visibility: hidden; }
+  .arrowtag.on { visibility: visible; background: #1f5f86; border-color: #2b7cad; color: #fff; }
+  .ploupe {
+    position: relative; width: 300px; height: 300px; border-radius: 50%;
+    border: 2px solid #fff; box-shadow: 0 0 0 1px #000, 0 4px 18px rgba(0,0,0,.6);
+    background-repeat: no-repeat; background-color: #0c1013;
+    background-origin: border-box; background-clip: border-box;
+    image-rendering: auto; cursor: crosshair; z-index: 5;
+  }
+  .ploupe.arm { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 18px rgba(0,0,0,.6); }
+  .ploupe .cx, .ploupe .cy { position: absolute; background: rgba(76,194,255,.95); pointer-events: none; }
+  .ploupe .cx { left: 0; right: 0; top: 50%; height: 1px; margin-top: -0.5px; }
+  .ploupe .cy { top: 0; bottom: 0; left: 50%; width: 1px; margin-left: -0.5px; }
+  .ploupe .dot { position: absolute; left: 50%; top: 50%; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px;
+                 border: 1px solid rgba(76,194,255,.95); border-radius: 50%; pointer-events: none; }
+  .loupecoord { font-family: ui-monospace, Menlo, monospace; font-size: 14px; color: var(--muted); }
+  .loupecoord b { color: var(--accent); font-weight: 650; }
+  .loupehint { margin-top: 12px; color: var(--muted); font-size: 12px; max-width: 680px; }
+  .loupehint b { color: var(--text); }
+
+  .export { width: 100%; }
+  textarea {
+    width: 100%; min-height: 130px; resize: vertical;
+    background: #0c1013; color: #d5f5c9; border: 1px solid var(--edge);
+    border-radius: 8px; padding: 10px; font-family: ui-monospace, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.5;
+  }
+  .export .hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .swatchlegend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+  .swatchlegend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatchlegend i { width: 11px; height: 11px; border-radius: 50%; border: 1px solid #fff; display: inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Seattle Skyline &mdash; Perspective Anchor Tool <span style="color:var(--muted);font-weight:400;font-size:12px">(NIGHT &rarr; DAY homography)</span></h1>
+  <div class="instructions">
+    <b>Click a marker</b> to select it &middot; then <b>click inside its magnified loupe</b> to snap the point to the EXACT pixel under the crosshair (this is the precise placement) &middot; or nudge with <kbd>&larr;&uarr;&rarr;&darr;</kbd> (1px) / <kbd>Shift</kbd>+arrows (10px)
+    <br /><b>Drag</b> a marker for coarse moves &middot; hover a source panel to scan a feature into its loupe &middot; <b>Add</b> new pair at center &middot; <b>Delete</b>/<kbd>Del</kbd> or the <b>&times;</b> removes (min 4)
+    &middot; watch the live 50/50 blend, then <b>Copy</b> the Python at the bottom.
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="group">
+    <button class="primary" id="btnAdd">+ Add anchor</button>
+    <button id="btnDelete">Delete selected</button>
+    <button id="btnReset">Reset to preloaded</button>
+  </div>
+  <div class="group">
+    <label for="opacity">Night overlay</label>
+    <input type="range" id="opacity" min="0" max="100" value="50" />
+    <span class="stat"><b id="opacityVal">50</b>%</span>
+  </div>
+  <div class="group">
+    <label><input type="checkbox" id="showBlendMarkers" checked /> markers on blend</label>
+  </div>
+  <div class="group">
+    <label><input type="checkbox" id="loupeOn" checked /> scan panel &rarr; loupe on hover</label>
+  </div>
+  <div class="group">
+    <span class="stat">sel <b id="tbSel">–</b> &nbsp; day <b id="tbDay">–</b> &nbsp; night <b id="tbNight">–</b></span>
+  </div>
+  <div class="group">
+    <span class="stat">reproj err &nbsp; mean <b id="errMean">–</b>px &nbsp; max <b id="errMax">–</b>px &nbsp;(<b id="nPairs">0</b> pairs)</span>
+  </div>
+</div>
+
+<main>
+  <div class="row" style="margin-bottom:18px">
+    <div class="card">
+      <h2 id="titleDay">DAY</h2>
+      <div class="stage" id="stageDay"><img class="base" id="imgDay" src="photo-day-1.jpg" alt="day" draggable="false" /></div>
+    </div>
+    <div class="card">
+      <h2 id="titleNight">NIGHT</h2>
+      <div class="stage" id="stageNight"><img class="base" id="imgNight" src="photo-night-1.jpg" alt="night" draggable="false" /></div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-bottom:18px">
+    <div class="card">
+      <h2>Precise placement &mdash; click inside a loupe to set the SELECTED anchor to that exact pixel</h2>
+      <div class="loupewrap">
+        <div class="loupecol">
+          <div class="loupehd">DAY loupe <span class="arrowtag" id="tagDay">arrows</span></div>
+          <div class="ploupe" id="loupeDay" data-image="day"><div class="cx"></div><div class="cy"></div><div class="dot"></div></div>
+          <div class="loupecoord">day <b id="coordDay">–</b></div>
+        </div>
+        <div class="loupecol">
+          <div class="loupehd">NIGHT loupe <span class="arrowtag" id="tagNight">arrows</span></div>
+          <div class="ploupe" id="loupeNight" data-image="night"><div class="cx"></div><div class="cy"></div><div class="dot"></div></div>
+          <div class="loupecoord">night <b id="coordNight">–</b></div>
+        </div>
+        <div class="loupecol" style="align-items:flex-start;min-width:220px">
+          <div class="loupehd">selected anchor</div>
+          <div class="loupecoord" style="font-size:15px">#<b id="selLabel">–</b></div>
+          <div class="loupehint" style="margin-top:8px">
+            The crosshair marks the <b>recorded</b> pixel. Click anywhere in a loupe to move the point there;
+            each loupe-pixel is <b>1/zoom</b> natural px. Arrow keys nudge whichever image is armed
+            (<span style="color:var(--accent)">blue ring</span>). Zoom &times;<b id="zoomVal"></b>.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-bottom:18px">
+    <div class="card">
+      <h2>Live 50/50 blend &mdash; night warped into the day frame</h2>
+      <div class="stage" id="stageBlend">
+        <img class="base" id="blendDay" src="photo-day-1.jpg" alt="blend day" draggable="false" style="position:absolute;left:0;top:0;width:auto;transform-origin:0 0;" />
+        <img id="blendNight" src="photo-night-1.jpg" alt="blend night" draggable="false" style="position:absolute;left:0;top:0;width:auto;transform-origin:0 0;opacity:.5;" />
+      </div>
+      <div class="swatchlegend" id="legend"></div>
+    </div>
+  </div>
+
+  <div class="card export">
+    <div class="hd">
+      <h2 style="margin:0">Export (Python / NumPy)</h2>
+      <button class="primary" id="btnCopy">Copy</button>
+    </div>
+    <textarea id="out" spellcheck="false" readonly></textarea>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// ---- image / config ------------------------------------------------------
+const IMG = {
+  day:   { el: null, src: "photo-day-1.jpg",   natW: 4816, natH: 2408 },
+  night: { el: null, src: "photo-night-1.jpg", natW: 5130, natH: 3108 },
+};
+const PANEL_W = 680;   // css display width of each source panel
+const BLEND_W = 760;   // css display width of the blend
+// zoom = css px per natural px inside the loupe; size = loupe border-box diameter (px).
+// A click one loupe-pixel off center moves the natural coord by 1/zoom (rounded to int).
+const LOUPE   = { size: 300, zoom: 5 };
+
+const PALETTE = ["#e6194b","#3cb44b","#4363d8","#f58231","#911eb4","#42d4f4",
+                 "#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9a6324",
+                 "#ffe119","#800000","#000075","#a9a9a9"];
+const color = i => PALETTE[i % PALETTE.length];
+
+// ---- preloaded anchors ---------------------------------------------------
+// 21 index-matched day/night pairs in NATURAL pixel coords -- the set currently shipped in
+// src/components/SkylineAnchors.tsx. Keep these two arrays in sync with that file (and with
+// align-homography.py) if you re-pick.
+const PRELOAD = () => {
+  const day = [
+    [1612,483],[1406,746],[1819,748],[1644,2004],[2244,1017],[3398,1990],[417,883],
+    [1632,1053],[1899,1210],[2176,2007],[1509,2004],[2946,1972],[1633,1387],[1468,1234],
+    [2425,1270],[573,1983],[690,1750],[1038,1807],[2076,1209],[2091,1214],[2429,1964],
+  ];
+  const night = [
+    [2584,358],[2305,709],[2856,712],[2608,2395],[3459,1080],[4943,2394],[1037,887],
+    [2602,1120],[2998,1334],[3323,2409],[2427,2390],[4176,2345],[2599,1568],[2414,1363],
+    [3696,1423],[1211,2344],[1370,2040],[1819,2120],[3230,1335],[3248,1342],[3493,2330],
+  ];
+  return day.map((d,i)=>({ label: "p" + (i+1), day: d.slice(), night: night[i].slice() }));
+};
+
+// ---- state ---------------------------------------------------------------
+let anchors = PRELOAD();
+let selected = { index: 0, image: "day" };
+let scaleDay = 1, scaleNight = 1, blendScale = 1;
+const markerEls = { day: [], night: [], blend: [] };
+// When hovering a source panel we temporarily re-center that image's loupe on the
+// hovered natural point (preview); null means the loupe follows the selected anchor.
+const loupePreview = { day: null, night: null };
+
+// ---- homography (night -> day), inhomogeneous DLT least squares ----------
+// Solve for h0..h7 with H[2][2]=1 via normal equations (A^T A) h = A^T b,
+// then Gaussian elimination with partial pivoting on the 8x8 system.
+function solveLinear(A, b) {
+  const n = b.length;
+  // augmented
+  const M = A.map((row, i) => row.concat([b[i]]));
+  for (let c = 0; c < n; c++) {
+    // partial pivot
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-12) return null; // singular
+    [M[c], M[piv]] = [M[piv], M[c]];
+    const d = M[c][c];
+    for (let k = c; k <= n; k++) M[c][k] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c];
+      if (f === 0) continue;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map(row => row[n]);
+}
+
+function computeH(pairs) {
+  if (pairs.length < 4) return null;
+  const ATA = Array.from({length: 8}, () => new Array(8).fill(0));
+  const ATb = new Array(8).fill(0);
+  for (const p of pairs) {
+    const x = p.night[0], y = p.night[1], u = p.day[0], v = p.day[1];
+    const rows = [
+      [x, y, 1, 0, 0, 0, -u * x, -u * y],   // rhs = u
+      [0, 0, 0, x, y, 1, -v * x, -v * y],   // rhs = v
+    ];
+    const rhs = [u, v];
+    for (let ri = 0; ri < 2; ri++) {
+      const r = rows[ri], b = rhs[ri];
+      for (let i = 0; i < 8; i++) {
+        ATb[i] += r[i] * b;
+        for (let j = 0; j < 8; j++) ATA[i][j] += r[i] * r[j];
+      }
+    }
+  }
+  const h = solveLinear(ATA, ATb);
+  if (!h) return null;
+  return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1]];
+}
+
+function applyH(H, x, y) {
+  const w = H[2][0] * x + H[2][1] * y + H[2][2];
+  return [(H[0][0]*x + H[0][1]*y + H[0][2]) / w,
+          (H[1][0]*x + H[1][1]*y + H[1][2]) / w];
+}
+
+// ---- geometry helpers ----------------------------------------------------
+function scaleOf(image)  { return image === "day" ? scaleDay : scaleNight; }
+function natSize(image)  { return image === "day" ? [IMG.day.natW, IMG.day.natH] : [IMG.night.natW, IMG.night.natH]; }
+function stageOf(image)  { return image === "day" ? el.stageDay : el.stageNight; }
+function clamp(v, lo, hi){ return v < lo ? lo : v > hi ? hi : v; }
+
+// ---- DOM refs ------------------------------------------------------------
+const el = {};
+["stageDay","stageNight","stageBlend","imgDay","imgNight","blendDay","blendNight",
+ "titleDay","titleNight","out","btnAdd","btnDelete","btnReset","btnCopy",
+ "opacity","opacityVal","showBlendMarkers","loupeOn","errMean","errMax","nPairs",
+ "legend","loupeDay","loupeNight","coordDay","coordNight","selLabel","zoomVal",
+ "tagDay","tagNight","tbSel","tbDay","tbNight"].forEach(id => el[id] = document.getElementById(id));
+
+// ---- marker construction -------------------------------------------------
+function makeMarker(image, i) {
+  const m = document.createElement("div");
+  m.className = "marker";
+  m.style.background = color(i);
+  m.dataset.index = i;
+  m.dataset.image = image;
+  m.innerHTML = `<span>${i + 1}</span>` +
+    (image !== "blend" ? `<span class="lbl"></span><span class="del" title="delete">&times;</span>` : "");
+  if (image !== "blend") attachDrag(m, image, i);
+  return m;
+}
+
+function buildMarkers() {
+  for (const key of ["day","night","blend"]) {
+    const stage = key === "day" ? el.stageDay : key === "night" ? el.stageNight : el.stageBlend;
+    markerEls[key].forEach(m => m.remove());
+    markerEls[key] = anchors.map((_, i) => {
+      const m = makeMarker(key, i);
+      stage.appendChild(m);
+      return m;
+    });
+  }
+  syncPositions();
+}
+
+function syncPositions() {
+  anchors.forEach((a, i) => {
+    // day panel
+    let md = markerEls.day[i];
+    md.style.transform = `translate(${a.day[0]*scaleDay}px, ${a.day[1]*scaleDay}px)`;
+    md.querySelector(".lbl").textContent = a.label;
+    md.classList.toggle("sel", selected.index === i && selected.image === "day");
+    // night panel
+    let mn = markerEls.night[i];
+    mn.style.transform = `translate(${a.night[0]*scaleNight}px, ${a.night[1]*scaleNight}px)`;
+    mn.querySelector(".lbl").textContent = a.label;
+    mn.classList.toggle("sel", selected.index === i && selected.image === "night");
+    // blend (at DAY coords)
+    let mb = markerEls.blend[i];
+    mb.style.transform = `translate(${a.day[0]*blendScale}px, ${a.day[1]*blendScale}px)`;
+    mb.style.display = el.showBlendMarkers.checked ? "flex" : "none";
+  });
+}
+
+// ---- dragging (pointer events) ------------------------------------------
+function attachDrag(marker, image, index) {
+  let grabOffX = 0, grabOffY = 0, dragging = false;
+
+  marker.addEventListener("pointerdown", (e) => {
+    if (e.target.classList.contains("del")) return;   // let × handle click
+    e.preventDefault();
+    e.stopPropagation();
+    index = +marker.dataset.index;                    // may have shifted after delete
+    selected = { index, image };
+    loupePreview.day = loupePreview.night = null;      // loupes follow the selected anchor
+    syncPositions();
+    updateLoupes();
+    const a = anchors[index];
+    const rect = stageOf(image).getBoundingClientRect();
+    const sc = scaleOf(image);
+    const centerClientX = rect.left + a[image][0] * sc;
+    const centerClientY = rect.top  + a[image][1] * sc;
+    grabOffX = e.clientX - centerClientX;
+    grabOffY = e.clientY - centerClientY;
+    dragging = true;
+    marker.setPointerCapture(e.pointerId);
+  });
+
+  marker.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const rect = stageOf(image).getBoundingClientRect();
+    const sc = scaleOf(image);
+    const [nW, nH] = natSize(image);
+    let nx = (e.clientX - grabOffX - rect.left) / sc;
+    let ny = (e.clientY - grabOffY - rect.top ) / sc;
+    nx = clamp(Math.round(nx), 0, nW);
+    ny = clamp(Math.round(ny), 0, nH);
+    anchors[index][image] = [nx, ny];
+    syncAll();   // updateLoupes() inside keeps the loupe centered on the dragged point
+  });
+
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    try { marker.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  marker.addEventListener("pointerup", end);
+  marker.addEventListener("pointercancel", end);
+
+  marker.querySelector(".del").addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    deleteAnchor(+marker.dataset.index);
+  });
+}
+
+// ---- add / delete --------------------------------------------------------
+function addAnchor() {
+  const i = anchors.length;
+  anchors.push({
+    label: "pt" + (i + 1),
+    day:   [Math.round(IMG.day.natW / 2),   Math.round(IMG.day.natH / 2)],
+    night: [Math.round(IMG.night.natW / 2), Math.round(IMG.night.natH / 2)],
+  });
+  selected = { index: i, image: "day" };
+  buildMarkers();
+  syncAll();
+}
+
+function deleteAnchor(index) {
+  if (anchors.length <= 4) { flashMin(); return; }
+  anchors.splice(index, 1);
+  if (selected.index >= anchors.length) selected.index = anchors.length - 1;
+  buildMarkers();
+  syncAll();
+}
+
+function flashMin() {
+  el.btnDelete.textContent = "Need ≥ 4 pairs";
+  setTimeout(() => { el.btnDelete.textContent = "Delete selected"; }, 1100);
+}
+
+// ---- blend + export + stats ---------------------------------------------
+function updateBlend() {
+  const H = computeH(anchors);
+  const s = blendScale;
+  // Day: natural -> day-display
+  el.blendDay.style.transform = `scale(${s})`;
+  if (!H) return;
+  // Night: (D · H) maps night-natural -> day-display, D = scale(s)
+  const a = s*H[0][0], b = s*H[0][1], c = s*H[0][2];
+  const d = s*H[1][0], e = s*H[1][1], f = s*H[1][2];
+  const g = H[2][0],   h = H[2][1];
+  // matrix3d is COLUMN-MAJOR: (col1 a,d,0,g)(col2 b,e,0,h)(col3 0,0,1,0)(col4 c,f,0,1)
+  el.blendNight.style.transform =
+    `matrix3d(${a},${d},0,${g}, ${b},${e},0,${h}, 0,0,1,0, ${c},${f},0,1)`;
+  return H;
+}
+
+function updateExport() {
+  const dayRows   = anchors.map(a => `[${Math.round(a.day[0])}, ${Math.round(a.day[1])}]`).join(", ");
+  const nightRows = anchors.map(a => `[${Math.round(a.night[0])}, ${Math.round(a.night[1])}]`).join(", ");
+  el.out.value =
+    `day_pts   = np.float32([${dayRows}])\n` +
+    `night_pts = np.float32([${nightRows}])`;
+}
+
+function updateStats(H) {
+  el.nPairs.textContent = anchors.length;
+  if (!H) { el.errMean.textContent = el.errMax.textContent = "n/a"; return; }
+  let sum = 0, max = 0;
+  for (const a of anchors) {
+    const [mx, my] = applyH(H, a.night[0], a.night[1]);
+    const e = Math.hypot(mx - a.day[0], my - a.day[1]);
+    sum += e; if (e > max) max = e;
+  }
+  el.errMean.textContent = (sum / anchors.length).toFixed(1);
+  el.errMax.textContent  = max.toFixed(1);
+}
+
+function syncAll() {
+  syncPositions();
+  const H = updateBlend();
+  updateExport();
+  updateStats(H || computeH(anchors));
+  updateLoupes();
+}
+
+// ---- loupe (interactive, exact-pixel placement) --------------------------
+function loupeEl(image) { return image === "day" ? el.loupeDay : el.loupeNight; }
+
+// Paint the loupe so that natural point (cx,cy) sits under the center crosshair.
+// backgroundPosition is relative to the border-box (background-origin:border-box),
+// which is exactly what getBoundingClientRect() reports — so a click maps 1:1.
+function drawLoupe(image, cx, cy) {
+  const lp = loupeEl(image);
+  const src = image === "day" ? IMG.day.src : IMG.night.src;
+  const [nW, nH] = natSize(image);
+  const z = LOUPE.zoom, R = LOUPE.size / 2;
+  lp.style.backgroundImage    = `url("${src}")`;
+  lp.style.backgroundSize      = `${nW*z}px ${nH*z}px`;
+  lp.style.backgroundPosition  = `${R - cx*z}px ${R - cy*z}px`;
+}
+
+// Refresh both loupes + all live coordinate readouts for the selected anchor.
+function updateLoupes() {
+  if (el.zoomVal) el.zoomVal.textContent = LOUPE.zoom;
+  const a = anchors[selected.index];
+  if (!a) {
+    el.coordDay.textContent = el.coordNight.textContent = "–";
+    el.tbDay.textContent = el.tbNight.textContent = el.tbSel.textContent = el.selLabel.textContent = "–";
+    return;
+  }
+  // The loupe center follows the hovered point (preview) when scanning a panel,
+  // otherwise it follows the selected anchor so it tracks drags / arrow nudges.
+  const cd = loupePreview.day   || a.day;
+  const cn = loupePreview.night || a.night;
+  drawLoupe("day",   cd[0], cd[1]);
+  drawLoupe("night", cn[0], cn[1]);
+  // Readouts always show the RECORDED anchor coords (what gets exported).
+  const dTxt = `(${a.day[0]}, ${a.day[1]})`;
+  const nTxt = `(${a.night[0]}, ${a.night[1]})`;
+  el.coordDay.textContent  = dTxt;
+  el.coordNight.textContent = nTxt;
+  el.tbDay.textContent  = dTxt;
+  el.tbNight.textContent = nTxt;
+  el.selLabel.textContent = (selected.index + 1) + " " + a.label;
+  el.tbSel.textContent    = (selected.index + 1) + " " + a.label;
+  // Indicate which image the arrow keys / next drag act on ("armed").
+  el.tagDay.classList.toggle("on",   selected.image === "day");
+  el.tagNight.classList.toggle("on", selected.image === "night");
+  el.loupeDay.classList.toggle("arm",   selected.image === "day");
+  el.loupeNight.classList.toggle("arm", selected.image === "night");
+}
+
+// Click inside a loupe -> set the selected anchor's coord for that image to the
+// exact natural pixel under the click. Loupe-local offset (lx,ly) from top-left,
+// center R = size/2; natural pixel = center + (offset - R)/zoom, rounded to int.
+function attachLoupe(image) {
+  const lp = loupeEl(image);
+  lp.addEventListener("click", (e) => {
+    const a = anchors[selected.index];
+    if (!a) return;
+    const rect = lp.getBoundingClientRect();
+    const z = LOUPE.zoom, R = LOUPE.size / 2;
+    const lx = e.clientX - rect.left;
+    const ly = e.clientY - rect.top;
+    const center = loupePreview[image] || a[image];  // the point currently under the crosshair
+    const [nW, nH] = natSize(image);
+    const nx = clamp(Math.round(center[0] + (lx - R) / z), 0, nW);
+    const ny = clamp(Math.round(center[1] + (ly - R) / z), 0, nH);
+    selected = { index: selected.index, image };      // arm this image
+    a[image] = [nx, ny];
+    loupePreview[image] = null;                        // re-center on the new recorded pixel
+    syncAll();
+  });
+}
+
+function attachStageHover(image) {
+  const stage = stageOf(image);
+  stage.addEventListener("pointermove", (e) => {
+    if (!el.loupeOn.checked) return;
+    const rect = stage.getBoundingClientRect();
+    const sc = scaleOf(image);
+    const [nW, nH] = natSize(image);
+    const nx = clamp(Math.round((e.clientX - rect.left) / sc), 0, nW);
+    const ny = clamp(Math.round((e.clientY - rect.top ) / sc), 0, nH);
+    loupePreview[image] = [nx, ny];   // bring the hovered feature into the loupe
+    updateLoupes();
+  });
+  stage.addEventListener("pointerleave", () => {
+    loupePreview[image] = null;       // snap back to the selected anchor
+    updateLoupes();
+  });
+}
+
+// ---- legend --------------------------------------------------------------
+function buildLegend() {
+  el.legend.innerHTML = anchors.map((a, i) =>
+    `<span><i style="background:${color(i)}"></i>${i + 1}. ${a.label}</span>`).join("");
+}
+
+// ---- keyboard ------------------------------------------------------------
+document.addEventListener("keydown", (e) => {
+  if (document.activeElement && document.activeElement.tagName === "TEXTAREA") return;
+  const arrows = { ArrowLeft: [-1,0], ArrowRight: [1,0], ArrowUp: [0,-1], ArrowDown: [0,1] };
+  if (e.key in arrows && anchors[selected.index]) {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    const [dx, dy] = arrows[e.key];
+    const a = anchors[selected.index][selected.image];
+    const [nW, nH] = natSize(selected.image);
+    a[0] = clamp(a[0] + dx * step, 0, nW);
+    a[1] = clamp(a[1] + dy * step, 0, nH);
+    syncAll();
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    if (anchors[selected.index]) { e.preventDefault(); deleteAnchor(selected.index); }
+  }
+});
+
+// ---- controls ------------------------------------------------------------
+el.btnAdd.addEventListener("click", () => { addAnchor(); buildLegend(); });
+el.btnDelete.addEventListener("click", () => { deleteAnchor(selected.index); buildLegend(); });
+el.btnReset.addEventListener("click", () => {
+  anchors = PRELOAD(); selected = { index: 0, image: "day" };
+  buildMarkers(); buildLegend(); syncAll();
+});
+el.btnCopy.addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(el.out.value); }
+  catch (_) { el.out.removeAttribute("readonly"); el.out.select(); document.execCommand("copy"); el.out.setAttribute("readonly",""); }
+  el.btnCopy.textContent = "Copied!";
+  setTimeout(() => { el.btnCopy.textContent = "Copy"; }, 1200);
+});
+el.opacity.addEventListener("input", () => {
+  el.opacityVal.textContent = el.opacity.value;
+  el.blendNight.style.opacity = (+el.opacity.value / 100).toFixed(2);
+});
+el.showBlendMarkers.addEventListener("change", syncPositions);
+el.loupeOn.addEventListener("change", () => {
+  if (!el.loupeOn.checked) { loupePreview.day = loupePreview.night = null; updateLoupes(); }
+});
+
+// ---- init (after both images load so natural sizes are known) -----------
+function whenLoaded(img) {
+  return new Promise(res => { if (img.complete && img.naturalWidth) res(); else img.onload = () => res(); });
+}
+Promise.all([whenLoaded(el.imgDay), whenLoaded(el.imgNight)]).then(() => {
+  // trust real decoded natural sizes
+  IMG.day.el = el.imgDay;   IMG.night.el = el.imgNight;
+  if (el.imgDay.naturalWidth)   { IMG.day.natW = el.imgDay.naturalWidth;   IMG.day.natH = el.imgDay.naturalHeight; }
+  if (el.imgNight.naturalWidth) { IMG.night.natW = el.imgNight.naturalWidth; IMG.night.natH = el.imgNight.naturalHeight; }
+
+  scaleDay   = PANEL_W / IMG.day.natW;
+  scaleNight = PANEL_W / IMG.night.natW;
+  blendScale = BLEND_W / IMG.day.natW;
+
+  // size the source stages
+  el.stageDay.style.width    = PANEL_W + "px";
+  el.stageDay.style.height   = (IMG.day.natH   * scaleDay)   + "px";
+  el.stageNight.style.width  = PANEL_W + "px";
+  el.stageNight.style.height = (IMG.night.natH * scaleNight) + "px";
+
+  // size the blend stage; set explicit natural pixel sizes on the blend imgs
+  el.stageBlend.style.width  = (IMG.day.natW * blendScale) + "px";
+  el.stageBlend.style.height = (IMG.day.natH * blendScale) + "px";
+  el.blendDay.style.width    = IMG.day.natW   + "px";  el.blendDay.style.height   = IMG.day.natH   + "px";
+  el.blendNight.style.width  = IMG.night.natW + "px";  el.blendNight.style.height = IMG.night.natH + "px";
+
+  el.titleDay.textContent   = `DAY  ${IMG.day.natW} × ${IMG.day.natH}`;
+  el.titleNight.textContent = `NIGHT  ${IMG.night.natW} × ${IMG.night.natH}`;
+
+  buildMarkers();
+  buildLegend();
+  attachStageHover("day");
+  attachStageHover("night");
+  attachLoupe("day");
+  attachLoupe("night");
+  syncAll();
+});
+</script>
+</body>
+</html>

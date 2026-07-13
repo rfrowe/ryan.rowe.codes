@@ -1,0 +1,39 @@
+---
+import Nav from "@components/nav/Nav.astro";
+import { noFlashThemeScript } from "@styles/theme-script";
+import * as styles from "./Base.css.ts";
+
+import "@styles/global.css.ts";
+import "katex/dist/katex.min.css";
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+
+// Preview builds (any non-production branch) shouldn't be indexed.
+const noindex = process.env.CF_PAGES === "1" && process.env.CF_PAGES_BRANCH !== "main";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    {noindex && <meta name="robots" content="noindex, nofollow" />}
+    <title>{title}</title>
+    {/*
+      `is:inline` keeps Astro from deferring this as a module -- it must run before first
+      paint so `data-theme` is set before the page (and the theme toggle island) render.
+    */}
+    <script is:inline set:html={noFlashThemeScript} />
+  </head>
+  <body>
+    <div class={styles.container}>
+      <Nav />
+      <main class={styles.main}>
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>

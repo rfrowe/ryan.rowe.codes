@@ -1,0 +1,15 @@
+---
+import * as styles from "./Nav.css.ts";
+
+interface Props {
+  href: string;
+  "aria-label"?: string;
+  class?: string;
+}
+
+const { href, "aria-label": ariaLabel, class: className } = Astro.props;
+---
+
+<a href={href} aria-label={ariaLabel} class:list={[styles.link, className]}>
+  <slot />
+</a>

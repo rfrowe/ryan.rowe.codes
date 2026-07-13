@@ -16,8 +16,6 @@ embedded <abbr title="JavaScript XML">JSX</abbr> all styled through [MUI](https:
 
 For example, the contents of this post look like this:
 
-import { CodeBlock } from '../../components/blog/code'
+import CodeBlock from '../../components/mdx/CodeBlock'
 
-<CodeBlock language='markdown'>
-    {props.source}
-</CodeBlock>
+<CodeBlock language='markdown' source={props.source} client:load />

@@ -1,0 +1,39 @@
+---
+import { getCollection, render, type CollectionEntry } from "astro:content"
+import { formatPostDate } from "@lib/blog"
+import BlogPost from "@layouts/BlogPost.astro"
+import { mdxComponents } from "@components/mdx-components"
+
+// The hello-world post is a QUINE that renders its own full source (see CodeBlock.tsx).
+// `entry.body` strips the YAML frontmatter, so import each post's raw bytes (`?raw`) to feed
+// the MDX its complete source as `source`, frontmatter and all; `entry.body` is the fallback.
+const rawSources = import.meta.glob<string>("/src/content/blog/**/*.mdx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+})
+
+export async function getStaticPaths() {
+  const posts = await getCollection("blog")
+
+  return posts.map(post => ({
+    params: {
+      date: formatPostDate(post.data.created_at),
+      slug: post.data.slug,
+    },
+    props: { post },
+  }))
+}
+
+interface Props {
+  post: CollectionEntry<"blog">
+}
+
+const { post } = Astro.props
+const { Content } = await render(post)
+const fullSource = (post.filePath && rawSources[`/${post.filePath}`]) || post.body
+---
+
+<BlogPost title={post.data.title}>
+  <Content components={mdxComponents} source={fullSource} />
+</BlogPost>

@@ -30,7 +30,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 
-# gatsby
-gatsby-types.d.ts
-/.cache
-/public
+# astro
+dist/
+.astro/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

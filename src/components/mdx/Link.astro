@@ -1,0 +1,24 @@
+---
+import { isExternalHref } from "@lib/util";
+import * as styles from "./Prose.css.ts";
+
+interface Props {
+  href?: string;
+  class?: string;
+}
+
+// External hrefs open in a new tab with rel="noopener noreferrer"; internal ones
+// (relative, hash, mailto:, same-origin) navigate in place.
+const { href, class: className, ...rest } = Astro.props as Props;
+const external = href !== undefined && isExternalHref(href, Astro.site?.hostname);
+---
+
+<a
+  href={href}
+  class:list={[styles.link, className]}
+  target={external ? "_blank" : undefined}
+  rel={external ? "noopener noreferrer" : undefined}
+  {...rest}
+>
+  <slot />
+</a>

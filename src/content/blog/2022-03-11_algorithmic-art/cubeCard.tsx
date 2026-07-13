@@ -1,60 +1,36 @@
-import React, {useState} from "react"
-import {Box, Slider, Typography} from "@mui/material";
-import CalculateIcon from '@mui/icons-material/Calculate';
-import {css} from "@emotion/react";
+import { useState } from "react";
+import { FaCalculator } from "react-icons/fa6";
 import CubeRenderer from "./cubeRenderer";
+import * as styles from "./cubeCard.css.ts";
 
+// Native range input keeps keyboard + screen-reader support without a custom slider.
 const CubeCard = () => {
-    const [cubeIndex, setCubeIndex] = useState(0)
-    const [numCubes, setNumCubes] = useState(0)
+  const [cubeIndex, setCubeIndex] = useState(0);
+  const [numCubes, setNumCubes] = useState(0);
 
-    return (
-        <Box css={theme => css({
-            width: '60%',
-            [theme.breakpoints.between('lg', 'sm')]: {
-                width: '75%',
-            },
-            [theme.breakpoints.down('sm')]: {
-                width: '90%',
-            },
-            margin: theme.spacing('2em', 'auto'),
-            canvas: {
-                width: '100% !important',
-                height: 'unset !important',
-            },
-        })}>
-            <Box css={theme => css({
-                display: 'flex',
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                [theme.breakpoints.down('md')]: {
-                    flexWrap: 'wrap',
-                },
-            })}>
-                <Typography
-                    id='complexity-slider-label'
-                    css={css({flexShrink: 0})}
-                >
-                    Complexity {cubeIndex}
-                </Typography>
-                <CalculateIcon css={theme => css({
-                    margin: theme.spacing(0, 2),
-                    flexShrink: 0,
-                })}/>
-                <Slider
-                    step={1}
-                    min={0}
-                    max={numCubes - 1}
-                    defaultValue={0}
-                    onChange={(_, value) => setCubeIndex(value as number)}
-                    aria-labelledby='complexity-slider-label'
-                    valueLabelDisplay="auto"
-                    marks />
-            </Box>
-            <CubeRenderer index={cubeIndex} onCubesLoaded={setNumCubes} />
-        </Box>
-    )
-}
+  return (
+    <div className={styles.container}>
+      <div className={styles.controls}>
+        <label id="complexity-slider-label" htmlFor="complexity-slider" className={styles.label}>
+          Complexity {cubeIndex}
+        </label>
+        <FaCalculator className={styles.calculateIcon} aria-hidden="true" />
+        <input
+          id="complexity-slider"
+          className={styles.slider}
+          type="range"
+          min={0}
+          max={Math.max(numCubes - 1, 0)}
+          step={1}
+          value={cubeIndex}
+          aria-label="Complexity"
+          aria-valuetext={`Complexity ${cubeIndex}`}
+          onChange={event => setCubeIndex(Number(event.target.value))}
+        />
+      </div>
+      <CubeRenderer index={cubeIndex} onCubesLoaded={setNumCubes} />
+    </div>
+  );
+};
 
-export default CubeCard
+export default CubeCard;

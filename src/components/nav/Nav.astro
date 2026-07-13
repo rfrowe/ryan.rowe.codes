@@ -1,0 +1,73 @@
+---
+import { FaGithub, FaEnvelope, FaHouse } from "react-icons/fa6";
+import NavLink from "./NavLink.astro";
+import ThemeToggle from "./ThemeToggle";
+import * as styles from "./Nav.css.ts";
+
+const isRoot = Astro.url.pathname === "/";
+---
+
+<header class={styles.bar} id="site-nav" data-hidden="false">
+  <nav class={styles.toolbar}>
+    <ThemeToggle client:only="react" />
+
+    <NavLink
+      href="https://github.com/rfrowe"
+      aria-label="Check out my GitHub"
+      class={styles.iconLink}
+    >
+      <FaGithub className={styles.icon} aria-hidden="true" />
+    </NavLink>
+
+    <NavLink
+      href="mailto:ryan@rowe.codes"
+      aria-label="Send me an email"
+      class={`${styles.iconLink} ${styles.emailTrigger}`}
+    >
+      <FaEnvelope className={styles.icon} aria-hidden="true" />
+    </NavLink>
+
+    {!isRoot && (
+      <>
+        <NavLink href="/" class={`${styles.iconLink} ${styles.showOnMobile}`}>
+          <FaHouse className={styles.icon} aria-hidden="true" />
+        </NavLink>
+
+        <NavLink
+          href="/"
+          class={`${styles.textLink} ${styles.showOnDesktop} ${styles.homeLink}`}
+        >
+          {"ryan"}<span class={styles.at}>@</span><span
+            class={styles.dot}
+            aria-hidden="true">.</span
+          >{"rowe"}.{"codes"}
+        </NavLink>
+      </>
+    )}
+
+    <span class={styles.spacer}>
+      <NavLink href="/blog" class={styles.textLink}>Blog</NavLink>
+      <NavLink href="/about" class={styles.textLink}>About</NavLink>
+    </span>
+  </nav>
+</header>
+
+<script>
+  // Hide the bar while scrolling down past 25px; any upward scroll shows it again.
+  const bar = document.getElementById("site-nav");
+  if (bar) {
+    const threshold = 25;
+    let previous = window.scrollY;
+
+    window.addEventListener(
+      "scroll",
+      () => {
+        const current = window.scrollY;
+        const hidden = current > previous && current > threshold;
+        bar.dataset.hidden = String(hidden);
+        previous = current;
+      },
+      { passive: true },
+    );
+  }
+</script>
