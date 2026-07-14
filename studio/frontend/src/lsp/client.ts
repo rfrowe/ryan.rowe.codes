@@ -6,7 +6,7 @@
 // (no sidecar to talk to) or when no launch token was injected (dev `studio:ui` without a real
 // `npm run studio`).
 
-import { LSPClient, hoverTooltips, serverCompletion, signatureHelp } from "@codemirror/lsp-client";
+import { LSPClient, hoverTooltips, signatureHelp } from "@codemirror/lsp-client";
 import { STUDIO_TOKEN } from "../config";
 import { isMockEnabled } from "../mockServer";
 import { LspTransport, type LspTransportStatus } from "./transport";
@@ -41,9 +41,10 @@ export function getLspClient(): LSPClient | null {
     // The MDX server's first completion/hover after a cold start pays the TS-program load; the
     // library default (3s) times those out. Give it generous headroom (it's rarely hit post-warmup).
     timeout: 20000,
-    // Completion + hover + signature help only. serverDiagnostics() and the
-    // definition/references/rename keymaps are deliberately omitted (deferred to Phase 4).
-    extensions: [serverCompletion(), hoverTooltips(), signatureHelp()],
+    // Hover + signature help only. LSP completion is registered separately in the editor via
+    // docResolvingCompletionSource (which wraps the library's source to add resolved detail/docs);
+    // serverDiagnostics() and the definition/references/rename keymaps are deliberately omitted (Phase 4).
+    extensions: [hoverTooltips(), signatureHelp()],
   });
   transport.onStatus(setLspStatus);
   // The sidecar bridge spawns a fresh, un-initialized language server per WS connection, so a

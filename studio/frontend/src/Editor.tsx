@@ -13,6 +13,7 @@ import { putDoc } from "./api";
 import { frontmatterCompletionSource } from "./editor/frontmatterCompletion";
 import { recipeSnippetSource } from "./editor/recipeSnippets";
 import { filePathToUri, getLspClient } from "./lsp/client";
+import { docResolvingCompletionSource } from "./lsp/completion";
 
 /** Imperative handle so the app can flush pending autosave before dispatching a prompt. */
 export interface EditorHandle {
@@ -108,6 +109,19 @@ const tooltipTheme = EditorView.theme(
     },
     ".cm-tooltip.cm-tooltip-hover, .cm-tooltip-section": { color: "var(--fg)" },
     ".cm-tooltip pre": { margin: "0", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: "12px" },
+    // Resolved completion info: the type signature (detail) above its JSDoc (documentation).
+    ".cm-lsp-completion-detail": {
+      fontFamily: "var(--mono)",
+      fontSize: "11.5px",
+      color: "var(--fg)",
+      whiteSpace: "pre-wrap",
+      paddingBottom: "6px",
+      marginBottom: "6px",
+      borderBottom: "1px solid var(--border-subtle)",
+    },
+    ".cm-lsp-completion-doc": { color: "var(--fg-dim)", fontSize: "12px", lineHeight: "1.5" },
+    ".cm-lsp-completion-doc p": { margin: "0 0 6px" },
+    ".cm-lsp-completion-doc code": { fontFamily: "var(--mono)", background: "var(--bg)", padding: "0.1em 0.3em", borderRadius: "4px" },
   },
   { dark: true },
 );
@@ -340,7 +354,17 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
       md,
       md.language.data.of({ autocomplete: frontmatterCompletionSource }),
       md.language.data.of({ autocomplete: recipeSnippetSource }),
-      ...(lspClient ? [lspClient.plugin(filePathToUri(cb.current.path), "mdx")] : []),
+      ...(lspClient
+        ? [
+            lspClient.plugin(filePathToUri(cb.current.path), "mdx"),
+            // LSP completion with resolved detail/docs (the library's source omits them). Registered
+            // via GLOBAL language data, not markdown-scoped: inside a `<Component …>` tag lang-markdown
+            // switches to the embedded HTML language, so a markdown-scoped source wouldn't be queried
+            // there (you'd get only CodeMirror's HTML attribute completion). This mirrors how the
+            // library's own serverCompletion() registers, and composes with the Phase-1 sources.
+            EditorState.languageData.of(() => [{ autocomplete: docResolvingCompletionSource }]),
+          ]
+        : []),
       // After the LSP plugin so it overrides that plugin's bundled tooltip theme.
       tooltipTheme,
       EditorView.lineWrapping,
