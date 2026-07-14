@@ -256,10 +256,9 @@ export interface StoreDeps {
   /** Default branch worktrees fork from; resolved via `gh` lazily when omitted (tests pass it). */
   defaultBranch?: string;
   /**
-   * Git ref a brand-new post's worktree forks from. Defaults to `origin/<defaultBranch>` (author a
-   * post off published main). Override (e.g. to the local working branch) to make post worktrees
-   * carry uncommitted-to-main studio changes — needed to test studio changes against the current
-   * branch before they've merged to main. Set from STUDIO_FORK_BASE in the sidecar.
+   * Git ref a new post's worktree forks from. Defaults to `origin/<defaultBranch>`. Override (e.g.
+   * the local branch) so worktrees carry studio changes not yet on main, to test them before they
+   * merge. Set from STUDIO_FORK_BASE.
    */
   forkBase?: string;
   /** Preview origin (defaults to the Astro dev server). */
@@ -368,11 +367,10 @@ export interface StudioStore extends Store {
    *  isn't open. Lets a path-scoped consumer resolve the owning worktree even during a switch race. */
   getWorktreeFor(canonicalPath: string): ActiveWorktree | null;
   /**
-   * The absolute on-disk worktree file backing the open post at `canonicalPath` (not necessarily the
-   * active one); null if it isn't open. The forward (canonical → worktree) companion to
-   * {@link getDocByWatchPath}: the LSP bridge uses it to rewrite a browser's canonical
-   * `textDocument.uri` to the worktree path TS resolves against. Path-keyed, not "active", so a
-   * tab-switch race can't misattribute an incoming URI.
+   * Worktree file backing the open post at `canonicalPath` (not necessarily the active one); null if
+   * it isn't open. The canonical-to-worktree companion to {@link getDocByWatchPath}: the LSP bridge
+   * rewrites a browser's `textDocument.uri` to the worktree path TS resolves against. Path-keyed so a
+   * tab-switch race can't misattribute a URI.
    */
   getWorktreeFilePath(canonicalPath: string): string | null;
   /** Absolute on-disk file the active post's watcher should follow; null if none. */

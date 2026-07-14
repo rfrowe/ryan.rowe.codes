@@ -96,7 +96,7 @@ function nid(): string {
 
 const WAITING_PREVIEW: PreviewState = { valid: false, url: null, errors: ["Waiting for the sidecar preview…"] };
 
-// ---- stack-status dot mapping (SocketStatus / LspStatus / MCP status → a shared health level) ----
+// ---- stack-status dot mapping (SocketStatus / LspStatus / MCP status to a shared health level) ----
 type Health = StackComponent["status"];
 function socketHealth(s: SocketStatus): Health {
   return s === "open" ? "ok" : s === "connecting" ? "connecting" : "down";

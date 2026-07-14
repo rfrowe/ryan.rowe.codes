@@ -1,19 +1,8 @@
-// Bridges a browser `/lsp` WebSocket to the MDX language-server child. The browser speaks raw
-// JSON-RPC strings (one message per WS frame, no Content-Length); the child speaks Content-Length-
-// framed JSON-RPC over stdio. This module does the framing on both sides and rewrites document URIs
-// so the browser stays ignorant of the per-post git worktrees:
-//
-//   - client → server: `initialize` gets initializationOptions.typescript = { enabled, tsdk } and a
-//     repo-root rootUri/workspaceFolders injected (TS is off in the MDX server otherwise); any
-//     `textDocument.uri` is rewritten from the canonical main-tree path to the post's worktree path,
-//     so TS resolves against the worktree's committed tsconfig + symlinked node_modules.
-//   - server → client: a `publishDiagnostics`/other `uri` is rewritten back to the canonical path.
-//
-// It never throws into the child: a malformed frame or an unmappable URI is logged and the message
-// is passed through / dropped rather than crashing the bridge. One active session at a time
-// (last-connection-wins); each connect restarts the child for a clean `initialize`, and the child
-// is killed when the socket closes. A child crash closes the socket so the browser's reconnect
-// re-attaches.
+// Bridges a browser `/lsp` WebSocket to the MDX language-server child. The browser sends raw
+// JSON-RPC strings; the child wants Content-Length-framed JSON-RPC over stdio, so we frame both
+// ways. Also rewrites `textDocument.uri` between the canonical main-tree path and the post's git
+// worktree path, so the browser stays worktree-agnostic and TS resolves against the worktree's
+// tsconfig and node_modules. One session at a time, last connection wins.
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -26,10 +15,8 @@ export interface LspBridge {
   /** Attach a `/lsp` WebSocket, superseding any prior one and restarting the child. */
   connect(ws: WebSocket): void;
   /**
-   * Tell the language server about out-of-editor file changes (e.g. the agent editing a component)
-   * as a `workspace/didChangeWatchedFiles` notification, since the browser client can't watch the
-   * filesystem. Paths are worktree paths (the server's native paths), so no URI rewrite is needed.
-   * No-op when no child is running (a fresh child reads current disk on its next spawn).
+   * Send out-of-editor file changes to the server as `workspace/didChangeWatchedFiles`, since the
+   * browser client can't watch the filesystem. Paths are worktree paths, so no rewrite is needed.
    */
   notifyFilesChanged(changes: Array<{ path: string; type: 1 | 2 | 3 }>): void;
 }
@@ -42,7 +29,7 @@ interface LspBridgeDeps {
   tsdk: string;
 }
 
-/** A JSON-RPC message object; deliberately loose — we only touch a few well-known fields. */
+/** A JSON-RPC message object; deliberately loose, since we only touch a few well-known fields. */
 type RpcMessage = { method?: string; params?: unknown; [k: string]: unknown };
 
 function frame(json: string): string {
@@ -60,7 +47,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
   // Warn once per unmappable canonical URI so a missing worktree surfaces without flooding the log.
   const warnedCanonical = new Set<string>();
 
-  /** canonical main-tree file URI → the open post's worktree file URI (unchanged if not open). */
+  /** Canonical main-tree file URI to the open post's worktree file URI (unchanged if not open). */
   function toWorktreeUri(uri: string): string {
     if (!uri.startsWith("file:")) return uri;
     try {
@@ -79,7 +66,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
     }
   }
 
-  /** worktree file URI → the canonical main-tree file URI (unchanged if the file isn't an open post). */
+  /** Worktree file URI to the canonical main-tree file URI (unchanged if the file isn't an open post). */
   function toCanonicalUri(uri: string): string {
     if (!uri.startsWith("file:")) return uri;
     try {
@@ -91,7 +78,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
     }
   }
 
-  /** Rewrite a client→server message in place: inject TS options on initialize, canonicalize URIs. */
+  /** Rewrite a client-to-server message in place: inject TS options on initialize, map URIs. */
   function rewriteToServer(msg: RpcMessage): RpcMessage {
     if (msg.method === "initialize" && msg.params && typeof msg.params === "object") {
       const params = msg.params as Record<string, unknown>;
@@ -109,7 +96,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
     return msg;
   }
 
-  /** Rewrite a server→client message in place: canonicalize any worktree URI it carries. */
+  /** Rewrite a server-to-client message in place: canonicalize any worktree URI it carries. */
   function rewriteToClient(msg: RpcMessage): RpcMessage {
     const params = msg.params as { uri?: unknown; textDocument?: { uri?: unknown } } | undefined;
     if (params && typeof params.uri === "string") params.uri = toCanonicalUri(params.uri);
@@ -119,7 +106,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
     return msg;
   }
 
-  // ---- child stdout → browser: de-frame, rewrite, forward as a plain JSON string ----
+  // Child stdout to browser: de-frame, rewrite, forward as a plain JSON string.
   lsp.onStdout((chunk) => {
     inbuf = Buffer.concat([inbuf, chunk]);
     for (;;) {
@@ -157,17 +144,15 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
 
   return {
     connect(ws: WebSocket) {
-      // Last connection wins: drop any prior session's socket before taking over. The close code
-      // 4000 (application range) tells that socket's transport NOT to reconnect — otherwise two open
-      // SPA tabs would ping-pong the single session forever, each supersede triggering the other's
-      // reconnect. Newest tab wins; older tabs go dormant until reloaded.
+      // Last connection wins. Close code 4000 tells the old socket not to reconnect, so two open
+      // tabs don't ping-pong the single session forever; the newest tab wins.
       const prev = currentWs;
       if (prev && prev !== ws && prev.readyState === prev.OPEN) prev.close(4000, "superseded by a new LSP connection");
       currentWs = ws;
       inbuf = Buffer.alloc(0);
 
-      // Fresh child per session → a single clean `initialize` (the browser client re-initializes on
-      // every reconnect, which a reused, already-initialized server would reject).
+      // Fresh child per session, since the client re-initializes on every reconnect and a reused,
+      // already-initialized server would reject that.
       if (!lsp.restart()) {
         ws.close(1011, "language server unavailable");
         return;

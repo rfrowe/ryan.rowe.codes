@@ -1,13 +1,8 @@
-// Watches the active post's worktree source tree and forwards changes to the MDX language server as
-// `workspace/didChangeWatchedFiles`. The server registers dynamic file watching and relies on the
-// LSP client to report dependency-file changes — but the browser client has no filesystem access,
-// so an out-of-editor edit (the agent modifying a component, say) would leave the server's TS
-// program stale and its completions/hovers behind. The sidecar does have fs access, so it watches
-// on the client's behalf.
-//
-// Scope: `<worktree>/src` recursively, TypeScript/JS/JSON source files only. The open post's own
-// `.mdx` is deliberately excluded — the editor already syncs it via didChange, and a competing
-// disk-change notification for an open document could fight that authoritative in-memory version.
+// Watches the active post's worktree `src/` tree and forwards changes to the MDX language server as
+// `workspace/didChangeWatchedFiles`. The server relies on the LSP client to report dependency
+// changes, but the browser client has no filesystem access, so out-of-editor edits (the agent
+// touching a component) would leave the server's TS program stale. The open post's own `.mdx` is
+// excluded, since the editor already syncs it via didChange and a disk notification would fight that.
 
 import path from "node:path";
 
@@ -22,8 +17,8 @@ export interface LspWatcher {
   close(): Promise<void>;
 }
 
-// TS-relevant source extensions the MDX server's TS project depends on. `.mdx` is excluded (see the
-// module comment); component styles are `.css.ts`, covered by `.ts`.
+// Source extensions the MDX server's TS project depends on. `.mdx` is excluded (see the module
+// comment); `.css.ts` styles are covered by `.ts`.
 const WATCHED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json"]);
 const DEBOUNCE_MS = 120;
 

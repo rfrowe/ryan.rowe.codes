@@ -1,6 +1,5 @@
-// Functional coverage for the two MDX editor completion sources, exercised against a real
-// CodeMirror EditorState + CompletionContext (no browser needed). Verifies gating (frontmatter vs
-// body) and the offered options for each region.
+// Coverage for the two MDX completion sources against a real EditorState and CompletionContext.
+// Verifies gating (frontmatter vs body) and the offered options.
 
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";

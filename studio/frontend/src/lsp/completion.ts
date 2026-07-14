@@ -1,13 +1,10 @@
-// A CodeMirror completion source that wraps @codemirror/lsp-client's serverCompletionSource to add
-// the documentation the library omits. TypeScript/Volar returns completion items with no `detail`
-// or `documentation` inline — both are deferred to a `completionItem/resolve` round-trip — and
-// lsp-client@6.2.5 never resolves, so LSP completions render as bare labels. This wrapper keeps the
-// library's correct insertion behavior (snippets, auto-import via additionalTextEdits) and attaches
-// a lazy `info` that resolves the highlighted item, rendering its type signature + JSDoc.
+// Wraps @codemirror/lsp-client's serverCompletionSource to add the docs the library omits. Volar
+// defers `detail` and `documentation` to a completionItem/resolve round-trip that lsp-client@6.2.5
+// never makes, so completions render as bare labels. This keeps the library's insertion behavior
+// and attaches a lazy `info` that resolves the highlighted item.
 //
-// It re-issues the completion request to recover the raw LSP items (the library maps them 1:1 to
-// options in order but discards the items), then aligns by index — guarded by a length + label
-// check so a stale/mismatched response can never attach the wrong docs to an option.
+// It re-issues the completion request to recover the raw LSP items (the library discards them), then
+// aligns by index, guarded by a length and label check so a stale response can't mis-attach docs.
 
 import type { Completion, CompletionResult, CompletionSource } from "@codemirror/autocomplete";
 import { LSPPlugin, serverCompletionSource } from "@codemirror/lsp-client";
@@ -40,7 +37,7 @@ export const docResolvingCompletionSource: CompletionSource = async (context) =>
     );
     items = Array.isArray(raw) ? raw : (raw?.items ?? []);
   } catch {
-    return result; // docs are best-effort — fall back to the library's options
+    return result; // docs are best-effort; fall back to the library's options
   }
   if (items.length !== result.options.length) return result; // can't trust the index alignment
 
@@ -53,7 +50,7 @@ export const docResolvingCompletionSource: CompletionSource = async (context) =>
   return { ...result, options };
 };
 
-/** Resolve an item's detail + documentation and render them into the completion info popout. */
+/** Resolve an item's detail and documentation into the completion info popout. */
 async function resolveInfo(plugin: LSPPlugin, item: LspItem): Promise<Node | null> {
   let resolved: LspItem = item;
   try {

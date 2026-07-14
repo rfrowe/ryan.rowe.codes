@@ -1,21 +1,17 @@
-// A CodeMirror completion source for the leading `---`…`---` frontmatter block of an MDX post.
-// In key position it offers the frontmatter keys (each inserting `key: <value>` with the value as a
-// tab stop, and the field's description as the completion info); after a `key:` it offers that
-// field's value snippet. The field metadata comes from the shared FRONTMATTER_FIELDS spec
-// (@lib/frontmatter) — the very spec the Astro content-collection schema is built from — so the
-// editor's hints cannot drift from what the schema actually accepts.
+// A CodeMirror completion source for an MDX post's leading `---`…`---` frontmatter block. In key
+// position it offers the keys; after a `key:` it offers that field's value snippet. Metadata comes
+// from the shared FRONTMATTER_FIELDS spec (@lib/frontmatter) that the Astro schema is built from, so
+// the hints can't drift from what the schema accepts.
 //
-// Gating is by document position, not by the syntax tree: `@codemirror/lang-markdown` parses the
-// `---` block as ordinary markdown (it doesn't enable YAML frontmatter parsing), so there's no
-// reliable node to key off; detecting the leading fenced block from the text is simpler and robust.
+// Gating is by document position, not the syntax tree: lang-markdown doesn't parse YAML frontmatter,
+// so there's no node to key off; detecting the leading fence from the text is simpler.
 
 import { snippetCompletion, type Completion, type CompletionSource } from "@codemirror/autocomplete";
 import { FRONTMATTER_FIELDS, type FrontmatterField } from "../../../../src/lib/frontmatter";
 
 /**
- * Locate the leading frontmatter block's body: the span between the opening `---` line and the
- * closing `---` line (or end-of-doc when the author hasn't closed it yet). Returns null when the
- * source doesn't open with a `---` fence — i.e. there is no frontmatter block to complete inside.
+ * The frontmatter body: the span between the opening `---` and closing `---` (or end-of-doc if not
+ * yet closed). Null when the source doesn't open with a `---` fence.
  */
 function frontmatterBody(doc: string): { from: number; to: number } | null {
   const bomOffset = doc.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -52,13 +48,13 @@ export const frontmatterCompletionSource: CompletionSource = (context) => {
   const doc = context.state.doc.toString();
   const body = frontmatterBody(doc);
   if (!body) return null;
-  // Fire only inside the block body — never on the `---` fences or in the post body below it.
+  // Fire only inside the block body, not on the `---` fences or the post body below.
   if (context.pos < body.from || context.pos > body.to) return null;
 
   const line = context.state.doc.lineAt(context.pos);
   const before = line.text.slice(0, context.pos - line.from);
 
-  // Value position — after `key:` on this line. Offer that key's value snippet.
+  // Value position: after `key:` on this line. Offer that key's value snippet.
   const valueMatch = /^[ \t]*([A-Za-z0-9_-]+)[ \t]*:[ \t]*(.*)$/.exec(before);
   if (valueMatch) {
     const field = FRONTMATTER_FIELDS.find((f) => f.name === valueMatch[1]);
@@ -67,8 +63,7 @@ export const frontmatterCompletionSource: CompletionSource = (context) => {
     return { from: context.pos - typed.length, to: context.pos, options: [valueSnippet(field)], validFor: /.*/ };
   }
 
-  // Key position — only whitespace then a partial key so far. Offer the keys, minus those already
-  // present on other lines of the block (so it suggests what's still missing).
+  // Key position: whitespace then a partial key. Offer the keys not already present in the block.
   const keyMatch = /^[ \t]*([A-Za-z0-9_-]*)$/.exec(before);
   if (!keyMatch) return null;
   const partial = keyMatch[1];

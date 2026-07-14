@@ -13,14 +13,10 @@ const createdAtSchema = z
   })
   .transform((v) => parsePostDate(v));
 
-// Build the collection schema literally from the shared FRONTMATTER_FIELDS spec (@lib/frontmatter):
-// the schema's keys ARE the spec's keys, so they cannot drift — which is why the old runtime drift
-// guard is gone. Every field is a plain string except `created_at`, which the schema transforms via
-// `parsePostDate`. The output type is derived from the same spec and cast onto the dynamically-built
-// schema so `entry.data` stays precisely typed (created_at: PostDate, the rest string) for the pages
-// that read it (e.g. `created_at.day`); a bare `z.object(fromEntries(...))` would otherwise widen the
-// value type. The cast target is `ReturnType<typeof z.custom<BlogData>>` — a `ZodType<BlogData>`
-// obtained via a value handle, since Astro 7's re-exported `z` is not a type namespace.
+// Build the collection schema from the shared FRONTMATTER_FIELDS spec (@lib/frontmatter), so the
+// schema's keys can't drift from it. Every field is a plain string except `created_at`, which
+// transforms via `parsePostDate`. The output type is cast from the same spec so `entry.data` stays
+// precisely typed (created_at: PostDate, the rest string); a bare z.object would widen it.
 type BlogData = {
   [Field in (typeof FRONTMATTER_FIELDS)[number] as Field["name"]]: Field["zodType"] extends "date"
     ? ReturnType<typeof parsePostDate>

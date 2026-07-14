@@ -65,9 +65,8 @@ async function main(): Promise<void> {
     fs: nodeFs,
     git,
     repoRoot: REPO_ROOT,
-    // Fork new-post worktrees from origin/<default> by default; STUDIO_FORK_BASE overrides it (e.g.
-    // to the local working branch) so worktrees carry studio changes not yet merged to main — used
-    // to test studio changes end-to-end against the current branch before shipping them.
+    // Fork new-post worktrees from origin/<default>; STUDIO_FORK_BASE overrides it (e.g. the local
+    // branch) so worktrees carry studio changes not yet on main, to test them before shipping.
     forkBase: process.env.STUDIO_FORK_BASE || undefined,
     // Symlink node_modules into a freshly-created/reused worktree so Astro and the agent's tools run.
     prepareWorktree: linkNodeModules,
@@ -97,11 +96,10 @@ async function main(): Promise<void> {
   const astro = createAstroManager();
   await astro.stopStrayDaemons();
 
-  // The MDX language server + its browser bridge (Phase 2). One long-lived child, spawned on the
-  // first `/lsp` connection and restarted per connection for a clean `initialize`; the bridge
-  // rewrites the browser's canonical URIs to the active post's worktree so TS resolves against the
-  // worktree's tsconfig + symlinked node_modules. Best-effort: if the child can't start, `/lsp` is
-  // refused and the editor keeps its Phase-1 completion sources.
+  // The MDX language server and its browser bridge. One long-lived child, restarted per `/lsp`
+  // connection for a clean `initialize`; the bridge rewrites the browser's canonical URIs to the
+  // active post's worktree so TS resolves against its tsconfig. Best-effort: if it can't start,
+  // `/lsp` is refused and the editor keeps its built-in completion sources.
   const lspServer = createMdxLspServer({ repoRoot: REPO_ROOT });
   const lspBridge = createLspBridge({
     lsp: lspServer,

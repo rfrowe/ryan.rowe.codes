@@ -1,10 +1,8 @@
-// The single, module-level LSP client for the editor. Lives outside React so StrictMode's
-// double-mount (dev) can't thrash a lifecycle-tied client: it's created and connected once and never
-// disposed on unmount. The Editor only adds `client.plugin(fileUri)` to its mount-once extensions.
+// The single module-level LSP client for the editor. Lives outside React so StrictMode's
+// double-mount can't thrash it; created and connected once, never disposed on unmount.
 //
-// Returns null — so the Editor keeps only its Phase-1 completion sources — under the in-browser mock
-// (no sidecar to talk to) or when no launch token was injected (dev `studio:ui` without a real
-// `npm run studio`).
+// Returns null (editor keeps only its built-in completion sources) under the in-browser mock, or
+// when no launch token was injected.
 
 import { LSPClient, hoverTooltips, signatureHelp } from "@codemirror/lsp-client";
 import { STUDIO_TOKEN } from "../config";
@@ -38,17 +36,13 @@ export function getLspClient(): LSPClient | null {
   }
   const transport = new LspTransport();
   const client = new LSPClient({
-    // The MDX server's first completion/hover after a cold start pays the TS-program load; the
-    // library default (3s) times those out. Give it generous headroom (it's rarely hit post-warmup).
+    // First completion/hover after a cold start pays the TS-program load; the 3s default times out.
     timeout: 20000,
-    // Hover + signature help only. LSP completion is registered separately in the editor via
-    // docResolvingCompletionSource (which wraps the library's source to add resolved detail/docs);
-    // serverDiagnostics() and the definition/references/rename keymaps are deliberately omitted (Phase 4).
+    // Hover and signature help only; LSP completion is registered separately via docResolvingCompletionSource.
     extensions: [hoverTooltips(), signatureHelp()],
   });
   transport.onStatus(setLspStatus);
-  // The sidecar bridge spawns a fresh, un-initialized language server per WS connection, so a
-  // transparent reconnect must re-run the initialize handshake against it.
+  // The sidecar spawns a fresh language server per connection, so a reconnect must re-initialize.
   transport.onReopen(() => {
     client.disconnect();
     client.connect(transport);
@@ -60,9 +54,8 @@ export function getLspClient(): LSPClient | null {
 }
 
 /**
- * Browser-side absolute POSIX path → `file://` URI. Node's `pathToFileURL` isn't available in the
- * bundle; this mirrors its output for ordinary paths and round-trips through the sidecar bridge's
- * `fileURLToPath` back to the exact canonical path the store keys open posts on.
+ * Absolute POSIX path to a `file://` URI. Node's `pathToFileURL` isn't in the bundle; this mirrors
+ * it and round-trips through the sidecar's `fileURLToPath` back to the canonical path.
  */
 export function filePathToUri(path: string): string {
   return "file://" + path.split("/").map(encodeURIComponent).join("/");

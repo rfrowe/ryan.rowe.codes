@@ -49,9 +49,8 @@ export interface ServerOptions {
   token: string;
   webPort: number;
   /**
-   * Attach a `/lsp` WebSocket to the MDX language-server bridge (Phase 2). Omitted when the LSP
-   * feature is unavailable, in which case `/lsp` upgrades are refused and the editor degrades to the
-   * Phase-1 completion sources.
+   * Attach a `/lsp` WebSocket to the MDX language-server bridge. Omitted when the LSP feature is
+   * unavailable, in which case `/lsp` upgrades are refused and the editor uses its built-in sources.
    */
   lspConnect?: (ws: WebSocket) => void;
 }

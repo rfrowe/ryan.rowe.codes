@@ -1,13 +1,9 @@
-// CodeMirror completion source offering the blog-authoring recipe snippets (the SKILL.md
-// vocabulary): static figures, interactive-island import + client:load / client:only="react"
-// usage, KaTeX inline/display/aligned math, fenced code, and the client-rendered CodeBlock island.
-// Each is a `snippetCompletion` with tab stops. Keyed to a memorable label so typing e.g. "figure"
-// or "math" filters to it.
+// Completion source offering the blog-authoring recipe snippets from SKILL.md: figures, island
+// imports and usage, KaTeX math, fenced code, and the CodeBlock island. Each is a snippetCompletion
+// with tab stops, keyed to a memorable label so typing e.g. "figure" or "math" filters to it.
 //
-// Gated to the MDX body: the source returns null while the caret is inside the leading `---`…`---`
-// frontmatter block (that region belongs to frontmatterCompletionSource). Templates are plain
-// strings (not JS template literals), so their `${…}` sequences reach snippetCompletion literally
-// as tab stops rather than being interpolated at build time.
+// Gated to the MDX body: returns null inside the leading frontmatter block. Templates are plain
+// strings, not template literals, so their `${…}` reach snippetCompletion literally as tab stops.
 
 import { snippetCompletion, type Completion, type CompletionSource } from "@codemirror/autocomplete";
 

@@ -10,11 +10,9 @@
  */
 
 /**
- * Declarative spec for every frontmatter field: the single source the Astro content-collection
- * schema (`src/content.config.ts`) builds from and the studio editor's frontmatter completion
- * source reads its key descriptions and value hints from. One spec means the schema keys, the
- * required-key contract, and the editor's hints cannot drift — which is why `content.config.ts`
- * no longer carries a runtime drift guard. Astro-free like the rest of this module.
+ * Declarative spec for every frontmatter field: the one source the content-collection schema and
+ * the studio editor's frontmatter completion both build from, so the schema keys, required-key
+ * contract, and editor hints can't drift. Astro-free like the rest of this module.
  */
 export interface FrontmatterField {
   /** The frontmatter key, e.g. `created_at`. */
@@ -31,9 +29,8 @@ export interface FrontmatterField {
   zodType: "string" | "date";
 }
 
-// `as const satisfies` (rather than a `: readonly FrontmatterField[]` annotation) preserves the
-// literal `name`/`zodType` types, so the schema output type and REQUIRED_FRONTMATTER_KEYS below can
-// be derived from this one spec.
+// `as const satisfies` (not a `: readonly FrontmatterField[]` annotation) preserves the literal
+// `name`/`zodType` types, so the schema output type and REQUIRED_FRONTMATTER_KEYS derive from it.
 export const FRONTMATTER_FIELDS = [
   {
     name: "title",

@@ -1,9 +1,7 @@
-// A `@codemirror/lsp-client` Transport over a WebSocket to the sidecar's `/lsp` endpoint. The wire
-// is plain JSON-RPC strings (one message per WS frame) — the sidecar bridge does the Content-Length
-// framing on the child side. Reuses the token-query auth of the app socket (config.wsUrl) with a
-// `/lsp` path, and reconnects with capped backoff (mirroring StudioSocket). Sends are buffered until
-// the socket is open so the client's initial `initialize` can be issued before the connection lands;
-// a genuine failure only surfaces once the transport is disposed.
+// A `@codemirror/lsp-client` Transport over a WebSocket to the sidecar's `/lsp` endpoint. The wire is
+// plain JSON-RPC strings, one per frame; the sidecar does the Content-Length framing. Reuses the app
+// socket's token-query auth, and reconnects with capped backoff. Sends are buffered until the socket
+// is open so the client's initial `initialize` doesn't have to wait for the connection.
 
 import type { Transport } from "@codemirror/lsp-client";
 import { STUDIO_TOKEN, WS_BASE } from "../config";
@@ -61,8 +59,7 @@ export class LspTransport implements Transport {
     ws.onclose = (ev: CloseEvent) => {
       if (this.ws === ws) this.ws = null;
       this.setStatus("closed");
-      // 4000 = the sidecar superseded this socket with a newer tab's connection; going dormant (no
-      // reconnect) is what prevents two tabs from ping-ponging the single LSP session.
+      // 4000 = a newer tab superseded this socket; stay dormant so two tabs don't ping-pong the session.
       if (ev.code === SUPERSEDED_CODE) return;
       this.scheduleReconnect();
     };

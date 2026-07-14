@@ -1,12 +1,8 @@
-// Owns the MDX language-server child process (`mdx-language-server --stdio`, Volar-based). Modeled
-// on createAstroManager in main.ts: it only spawns/pipes/kills the process and exposes raw stdio
-// seams — the Content-Length framing and the canonical↔worktree URI rewriting live in lspBridge.ts.
-//
-// TS support in the MDX server is OFF unless the client's `initialize` carries
-// `initializationOptions.typescript = { enabled: true, tsdk }` (the bridge injects it). On an
-// unexpected child exit the server logs and marks itself not-running; the bridge closes the socket
-// so the browser's reconnect re-attaches (and re-spawns) — graceful degradation, the Phase-1
-// completion sources keep working meanwhile.
+// Owns the MDX language-server child (`mdx-language-server --stdio`, Volar-based). Only spawns,
+// pipes, and kills the process; the Content-Length framing and worktree URI rewriting live in
+// lspBridge.ts. TS support is off unless the client's `initialize` carries
+// `initializationOptions.typescript = { enabled: true, tsdk }`, which the bridge injects. On an
+// unexpected exit it marks itself not-running and lets the bridge close the socket to reconnect.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -37,10 +33,8 @@ export function createMdxLspServer({ repoRoot }: { repoRoot: string }): MdxLspSe
   const exitHandlers = new Set<(info: { code: number | null; signal: NodeJS.Signals | null; expected: boolean }) => void>();
 
   let child: ChildProcess | null = null;
-  // Children we killed on purpose (restart/close). Keyed per-process, not a shared flag: the `exit`
-  // event fires asynchronously, so a shared boolean reset right after kill() would already be back to
-  // false by the time exit runs — making our own SIGTERM look like a crash and triggering a
-  // socket-close → reconnect → restart loop.
+  // Children we killed on purpose. Per-process, not a shared flag: `exit` fires async, so a shared
+  // boolean would look reset by then, making our own SIGTERM look like a crash and loop reconnects.
   const expectedExit = new WeakSet<ChildProcess>();
 
   /** Kill a specific child, marking its imminent exit as expected. */

@@ -67,12 +67,10 @@ const SAVE_RETRY_MAX = 5;
 // Marks transactions the app applied programmatically, so they don't trigger autosave.
 const remoteAnnotation = Annotation.define<boolean>();
 
-// Dark theme for the editor's tooltips: the autocomplete dropdown, the completion info popout, and
-// the LSP hover / signature-help tooltips. The studio styles the editor surface via plain CSS rather
-// than a CodeMirror theme, so CodeMirror still believes it's light and renders light, low-contrast
-// tooltips whose injected styles beat plain `.cm-tooltip` CSS. `{ dark: true }` flips CodeMirror's own
-// tooltip base theme to its dark variant, and these rules — carrying theme-level specificity that
-// wins over both the base theme and the LSP client's bundled theme — paint them with the app tokens.
+// Dark theme for the editor's tooltips (autocomplete dropdown, completion info, LSP hover and
+// signature help). The studio styles the surface via plain CSS, so CodeMirror thinks it's light and
+// renders low-contrast tooltips; `{ dark: true }` flips its tooltip base theme and these rules,
+// carrying theme-level specificity, repaint them with the app tokens.
 const tooltipTheme = EditorView.theme(
   {
     ".cm-tooltip": {
@@ -339,15 +337,12 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     const parent = hostRef.current;
     if (!parent) return;
 
-    // One markdown instance, so the completion sources register against the same language whose
-    // data basicSetup's autocompletion() reads. Registering via language data (not
-    // autocompletion({override})) lets these compose with each other and with the Phase 3 LSP
-    // plugin's own language-data source — an `override` would suppress all of them.
+    // Register the completion sources via language data (not autocompletion({override})) so they
+    // compose with each other and with the LSP plugin's source; an override would suppress them.
     const md = markdown();
-    // The MDX language server (completion + hover + signature help), when a real sidecar is present.
-    // Its completion source composes with the two Phase-1 language-data sources above (serverCompletion
-    // registers as an additional source, not an override); languageId "mdx" is mandatory or the server
-    // won't attach its MDX/TS service. Null under the mock / tokenless dev → Phase-1 sources only.
+    // The MDX language server (completion, hover, signature help), when a real sidecar is present.
+    // Composes with the two built-in sources above; languageId "mdx" is mandatory or the server
+    // won't attach its MDX/TS service. Null under the mock / tokenless dev.
     const lspClient = getLspClient();
     const extensions = [
       basicSetup,
@@ -358,10 +353,8 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
         ? [
             lspClient.plugin(filePathToUri(cb.current.path), "mdx"),
             // LSP completion with resolved detail/docs (the library's source omits them). Registered
-            // via GLOBAL language data, not markdown-scoped: inside a `<Component …>` tag lang-markdown
-            // switches to the embedded HTML language, so a markdown-scoped source wouldn't be queried
-            // there (you'd get only CodeMirror's HTML attribute completion). This mirrors how the
-            // library's own serverCompletion() registers, and composes with the Phase-1 sources.
+            // via global language data, not markdown-scoped: inside a `<Component …>` tag markdown
+            // switches to embedded HTML, so a markdown-scoped source wouldn't fire there.
             EditorState.languageData.of(() => [{ autocomplete: docResolvingCompletionSource }]),
           ]
         : []),
