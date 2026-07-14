@@ -5,7 +5,7 @@ import globals from "globals";
 
 export default [
   {
-    ignores: ["dist/", ".astro/", "node_modules/", "src/content/blog/2022-03-11_algorithmic-art/assets/"],
+    ignores: ["dist/", "**/dist/", ".astro/", "node_modules/", "src/content/blog/2022-03-11_algorithmic-art/assets/"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

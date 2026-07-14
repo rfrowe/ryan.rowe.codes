@@ -34,6 +34,10 @@ yarn-error.log*
 dist/
 .astro/
 
+# blog authoring studio: per-post git worktrees (one per open post)
+.claude/worktrees/
+studio/node_modules/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
