@@ -20,6 +20,8 @@ import type { Fs, GitRunner } from "../shared/seams";
 import type { Store } from "../shared/services";
 import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/types";
 import type { PostFrontmatter } from "../../src/lib/frontmatter";
+import { FRONTMATTER_BLOCK, FRONTMATTER_LINE, frontmatterTitle } from "../../src/lib/frontmatter";
+import { postStem, slugFromPath, stemParts } from "../shared/slug";
 import { applyEdits, revsEqual } from "./applyEdits";
 import { DEFAULT_PREVIEW_BASE, deriveUrl } from "../preview/deriveUrl";
 import { sha256Hex } from "../sidecar/hash";
@@ -156,55 +158,6 @@ interface OpenDoc {
   text: string;
   rev: DocRev;
   title: string;
-}
-
-// A key: value line inside the leading `---`…`---` frontmatter block.
-const FRONTMATTER_LINE = /^([A-Za-z0-9_-]+)[ \t]*:[ \t]*(.*)$/;
-const FRONTMATTER_BLOCK = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
-
-/** Best-effort tab title from a post's frontmatter `title` (unquoted); null if absent. */
-function frontmatterTitle(text: string): string | null {
-  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-  const block = FRONTMATTER_BLOCK.exec(src);
-  if (!block) return null;
-  for (const rawLine of block[1].split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const pair = FRONTMATTER_LINE.exec(line);
-    if (pair && pair[1] === "title") {
-      const value = pair[2].trim();
-      if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[value.length - 1] === value[0]) {
-        return value.slice(1, -1) || null;
-      }
-      return value || null;
-    }
-  }
-  return null;
-}
-
-/**
- * Slug of a post from its path; mirrors the SPA's `slugFromPath`. A simple post is
- * `YYYY-MM-DD_slug.mdx`; a folder post is `.../YYYY-MM-DD_slug/post.mdx`. Strips the date
- * prefix when present. This is the human-facing slug (used for display), not the worktree key:
- * it is not unique (two posts on different dates can share it); `postStem` is the unique key.
- */
-function slugFromPath(p: string): string {
-  const base = p.replace(/\/post\.mdx$/, "").replace(/\.mdx$/, "");
-  const name = base.split("/").pop() ?? "";
-  const m = name.match(/^\d{4}-\d{2}-\d{2}[_-](.+)$/);
-  return m ? m[1] : name;
-}
-
-/**
- * Canonical post-identity stem from a path: the date-qualified filename stem, `<YYYY-MM-DD>_<slug>`
- * for a simple post, or the folder name for a `.../YYYY-MM-DD_slug/post.mdx` folder post (the bare
- * basename when there is no date prefix). Unlike the date-stripped `slug`, this is unique per post
- * (same-slug/different-date posts get distinct stems), and it is both filesystem-safe (it is a real
- * path segment) and git-ref-safe, so it keys each post's worktree dir and isolation branch without
- * collision.
- */
-function postStem(p: string): string {
-  const base = p.replace(/\/post\.mdx$/, "").replace(/\.mdx$/, "");
-  return base.split("/").pop() ?? "";
 }
 
 /**
@@ -775,7 +728,7 @@ export function createStore(deps: StoreDeps): StudioStore {
         // dir moves).
         const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
         const oldName = isFolder ? path.basename(path.dirname(doc.canonicalPath)) : path.basename(doc.canonicalPath, ".mdx");
-        const datePrefix = /^(\d{4}-\d{2}-\d{2}[_-])/.exec(oldName)?.[1] ?? "";
+        const { datePrefix } = stemParts(oldName);
         const newName = `${datePrefix}${newSlug}`;
         const newCanonical = isFolder
           ? path.join(path.dirname(path.dirname(doc.canonicalPath)), newName, "post.mdx")

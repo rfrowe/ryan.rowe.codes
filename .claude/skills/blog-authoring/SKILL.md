@@ -45,7 +45,11 @@ headline: A skyline that follows the sun
 - `title` — page/post title.
 - `slug` + `created_at` — together derive the URL `/blog/<YYYY-MM-DD>/<slug>`
   (date formatted via `formatPostDate` in `src/lib/blog.ts`, UTC, so it's
-  stable regardless of the host machine's timezone). `created_at` is ISO 8601.
+  stable regardless of the host machine's timezone). `created_at` is ISO 8601,
+  and must be **timezone-unambiguous**: use a date-only `YYYY-MM-DD` or a
+  datetime that carries `Z`/an explicit offset (e.g. `2026-07-10T12:00:00Z`).
+  Never a bare timezone-less time like `2026-07-10T12:00:00` — its date would
+  differ between the local studio and the UTC build, so the studio rejects it.
 - `headline` — feeds the animated typist on the home page; keep it short.
 
 Never drop or rename these keys, and never touch frontmatter you weren't

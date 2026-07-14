@@ -65,26 +65,25 @@ describe("deriveUrl — invalid frontmatter", () => {
     if (!result.valid) expect(result.errors).toContain("missing or empty frontmatter key: slug");
   });
 
-  it("reports a malformed created_at date", () => {
+  it("rejects a malformed created_at value", () => {
     const result = deriveUrl(post({ ...complete, created_at: "not-a-date" }));
     expect(result.valid).toBe(false);
-    if (!result.valid) expect(result.errors).toContain("invalid created_at date: not-a-date");
+    if (!result.valid) expect(result.errors.some((e) => /not a valid date/.test(e))).toBe(true);
   });
 });
 
-describe("deriveUrl — created_at matches the Astro route", () => {
-  // The built route derives its date from the same frontmatter via a two-stage parse:
-  // Astro's content loader runs js-yaml, then `z.coerce.date()` (i.e. `new Date`) coerces
-  // the result, and formatPostDate slices `toISOString()` in UTC. The two parsers only
-  // disagree for a timezone-less datetime, and there quoting decides which one wins:
-  //   - Unquoted: js-yaml produces a Date read as UTC.
-  //   - Quoted:   js-yaml produces a string, so z.coerce.date does `new Date(str)`, read as local.
-  // deriveUrl must reproduce both, so each case below pins the expected date to what the
-  // js-yaml to z.coerce.date to formatPostDate pipeline yields.
+describe("deriveUrl — created_at timezone rule", () => {
+  // The built route derives its date from the same frontmatter via a two-stage parse: Astro's
+  // content loader runs js-yaml, then `z.coerce.date()` (`new Date`) coerces the result, and
+  // formatPostDate slices `toISOString()` in UTC. Those two parsers only disagree for a *timezone-
+  // less datetime*, and there quoting used to decide which one won (js-yaml reads it as UTC; a
+  // quoted string reaches `new Date` and is read as local). Rather than reproduce that fork, the
+  // studio now REJECTS every timezone-less datetime (see `createdAtError`): the only values that
+  // reach a URL are date-only or tz-carrying, and those resolve to the same instant however they're
+  // parsed, so deriveUrl and the built route can never disagree.
   //
-  // We pin a non-UTC zone so the near-midnight cases would fail if deriveUrl ever parsed
-  // the wrong way, and so the quoted/unquoted pair lands on different days, even on a
-  // UTC CI runner.
+  // We pin a non-UTC zone so a near-midnight accepted case would visibly drift if deriveUrl ever
+  // parsed the wrong way — it must not, even on a UTC CI runner.
   const originalTz = process.env.TZ;
   beforeAll(() => {
     process.env.TZ = "America/Chicago"; // CDT (UTC-5) in July
@@ -93,37 +92,30 @@ describe("deriveUrl — created_at matches the Astro route", () => {
     process.env.TZ = originalTz;
   });
 
-  it("parses a date-only value as UTC midnight (quoting is irrelevant)", () => {
+  it("accepts a date-only value as UTC midnight (quoting is irrelevant)", () => {
     // `2026-07-10` is UTC midnight under both js-yaml and `new Date`, quoted or not, so 2026-07-10.
     const result = deriveUrl(post({ ...complete, created_at: "2026-07-10" }));
     expect(result).toMatchObject({ valid: true, date: "2026-07-10" });
   });
 
-  it("parses an UNQUOTED timezone-less datetime as UTC (js-yaml), not local time", () => {
-    // Unquoted `2026-07-10T22:00:00`: js-yaml reads it as 22:00 UTC, so the route slices to 2026-07-10.
-    // A naive local parse in CDT would roll it forward to 2026-07-11, the drift this prevents.
+  it("rejects an UNQUOTED timezone-less datetime as ambiguous", () => {
+    // Unquoted `2026-07-10T22:00:00` would resolve to a different date in dev (local) vs. the UTC
+    // build; the studio refuses it rather than let the URL/filename drift between environments.
     const result = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00" }));
-    expect(result).toMatchObject({ valid: true, date: "2026-07-10" });
-    expect(result.valid && result.url.includes("/blog/2026-07-10/")).toBe(true);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.errors.some((e) => /time but no timezone/.test(e))).toBe(true);
   });
 
-  it("parses a QUOTED timezone-less datetime as LOCAL, differing from the unquoted form", () => {
-    // Quoted `"2026-07-10T22:00:00"` reaches z.coerce.date as a plain string, so `new Date`
-    // reads it in CDT = 2026-07-11 03:00 UTC, so the route slices to 2026-07-11. This is the edge
-    // a blanket force-to-UTC would get wrong (it would produce 2026-07-10, a day early vs the route).
-    const quoted = deriveUrl(post({ ...complete, created_at: '"2026-07-10T22:00:00"' }));
-    expect(quoted).toMatchObject({ valid: true, date: "2026-07-11" });
-    expect(quoted.valid && quoted.url.includes("/blog/2026-07-11/")).toBe(true);
-
-    // Same instant, opposite quoting, different day. Pins the quoted/unquoted divergence.
-    const unquoted = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00" }));
-    expect(unquoted.valid && unquoted.date).toBe("2026-07-10");
-    expect(quoted.valid && quoted.date).not.toBe(unquoted.valid && unquoted.date);
+  it("rejects a QUOTED timezone-less datetime too (quoting doesn't rescue it)", () => {
+    // The rule keys off the value's shape, not its quoting: a bare time is ambiguous either way.
+    const result = deriveUrl(post({ ...complete, created_at: '"2026-07-10T22:00:00"' }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.errors.some((e) => /time but no timezone/.test(e))).toBe(true);
   });
 
   it("honors an explicit timezone offset (same instant as the route either way)", () => {
-    // 22:00 at -05:00 is 2026-07-11 03:00 UTC; the route slices that to 2026-07-11, and so
-    // must deriveUrl. Both js-yaml and `new Date` respect an explicit offset identically.
+    // 22:00 at -05:00 is 2026-07-11 03:00 UTC; the route slices that to 2026-07-11, and so must
+    // deriveUrl. Both js-yaml and `new Date` respect an explicit offset identically.
     const result = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00-05:00" }));
     expect(result).toMatchObject({ valid: true, date: "2026-07-11" });
     expect(result.valid && result.url.includes("/blog/2026-07-11/")).toBe(true);

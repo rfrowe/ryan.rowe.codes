@@ -13,6 +13,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ShipService, Store, StudioTools } from "../shared/services";
 import type { StudioStore } from "../state/store";
 import { STUDIO_TOOLS } from "../shared/mcpTools";
+import { frontmatterTitle } from "../../src/lib/frontmatter";
 import type {
   DescribeResult,
   GetEditorContextResult,
@@ -228,8 +229,6 @@ export function toCallToolResult(value: unknown): CallToolResult {
 
 // ---- listPosts helpers (best-effort content-tree scan) ----
 
-const TITLE_RE = /^\s*title:\s*(.+?)\s*$/m;
-
 /** Scan `<blogRoot>/src/content/blog` for simple and folder posts. Best-effort; never throws. */
 async function scanPosts(blogRoot: string): Promise<PostSummary[]> {
   const root = join(blogRoot, BLOG_CONTENT_DIR);
@@ -263,9 +262,9 @@ async function isFile(path: string): Promise<boolean> {
 async function summarize(path: string): Promise<PostSummary> {
   let title = path;
   try {
-    const text = await readFile(path, "utf8");
-    const match = TITLE_RE.exec(text);
-    if (match) title = match[1].replace(/^['"]|['"]$/g, "");
+    // Shared frontmatter parser: block-aware, BOM-tolerant, and strips a matched quote pair — a
+    // small improvement over the old single-line title regex, and the one title source of truth.
+    title = frontmatterTitle(await readFile(path, "utf8")) ?? path;
   } catch {
     // fall through to path-as-title
   }
