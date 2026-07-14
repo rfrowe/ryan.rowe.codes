@@ -255,6 +255,13 @@ export interface StoreDeps {
   repoRoot: string;
   /** Default branch worktrees fork from; resolved via `gh` lazily when omitted (tests pass it). */
   defaultBranch?: string;
+  /**
+   * Git ref a brand-new post's worktree forks from. Defaults to `origin/<defaultBranch>` (author a
+   * post off published main). Override (e.g. to the local working branch) to make post worktrees
+   * carry uncommitted-to-main studio changes — needed to test studio changes against the current
+   * branch before they've merged to main. Set from STUDIO_FORK_BASE in the sidecar.
+   */
+  forkBase?: string;
   /** Preview origin (defaults to the Astro dev server). */
   previewBase?: string;
   /** Prepare a freshly-created/reused worktree (e.g. symlink node_modules). Omitted in tests. */
@@ -513,12 +520,13 @@ export function createStore(deps: StoreDeps): StudioStore {
         }
       }
 
-      // Adopt local, then adopt remote-only (create a tracking branch), then fork fresh off the default.
+      // Adopt local, then adopt remote-only (create a tracking branch), then fork fresh off the base
+      // (forkBase override, else origin/<default>).
       const args = localExists
         ? ["worktree", "add", worktreePath, branch]
         : remoteExists
           ? ["worktree", "add", "--track", "-b", branch, worktreePath, `origin/${branch}`]
-          : ["worktree", "add", worktreePath, "-b", branch, `origin/${await defaultBranch()}`];
+          : ["worktree", "add", worktreePath, "-b", branch, deps.forkBase ?? `origin/${await defaultBranch()}`];
       const res = await git.git(args, { cwd: repoRoot, timeoutMs: 120_000 });
       if (res.code !== 0) {
         throw new Error(`git worktree add (${stem}) failed: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}`);

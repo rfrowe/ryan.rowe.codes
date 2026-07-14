@@ -64,6 +64,10 @@ async function main(): Promise<void> {
     fs: nodeFs,
     git,
     repoRoot: REPO_ROOT,
+    // Fork new-post worktrees from origin/<default> by default; STUDIO_FORK_BASE overrides it (e.g.
+    // to the local working branch) so worktrees carry studio changes not yet merged to main — used
+    // to test studio changes end-to-end against the current branch before shipping them.
+    forkBase: process.env.STUDIO_FORK_BASE || undefined,
     // Symlink node_modules into a freshly-created/reused worktree so Astro and the agent's tools run.
     prepareWorktree: linkNodeModules,
     // Rename a file/dir on disk (used by post.rename).
