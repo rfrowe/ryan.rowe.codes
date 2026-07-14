@@ -30,6 +30,7 @@ import { createMcpHttpServer } from "../mcp/httpServer";
 import { createServer } from "./server";
 import { createMdxLspServer } from "./lspServer";
 import { createLspBridge } from "./lspBridge";
+import { createLspWatcher } from "./lspWatcher";
 import type { StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
@@ -108,6 +109,10 @@ async function main(): Promise<void> {
     repoRoot: REPO_ROOT,
     tsdk: path.join(NODE_MODULES, "typescript", "lib"),
   });
+  // Watch the active post's worktree source tree and relay changes to the language server as
+  // workspace/didChangeWatchedFiles, so out-of-editor edits (e.g. the agent modifying a component)
+  // aren't stranded behind the server's stale TS program (the browser client can't watch the fs).
+  const lspWatcher = createLspWatcher((changes) => lspBridge.notifyFilesChanged(changes));
 
   // The doc-sync watcher follows the active post's worktree file. It's created on the first
   // activation (there may be no openable post at bootstrap) and retargeted on every switch.
@@ -115,6 +120,7 @@ async function main(): Promise<void> {
   store.onActiveChange((info) => {
     if (docSync) docSync.retarget(info.worktreeFilePath);
     else docSync = createDocSync(store, { filePath: info.worktreeFilePath });
+    lspWatcher.retarget(info.worktreePath);
     void astro.switchTo(info.worktreePath);
   });
 
@@ -164,7 +170,14 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (closing) return;
     closing = true;
-    await Promise.allSettled([docSync?.close() ?? Promise.resolve(), web.close(), mcp.close(), astro.close(), lspServer.close()]);
+    await Promise.allSettled([
+      docSync?.close() ?? Promise.resolve(),
+      lspWatcher.close(),
+      web.close(),
+      mcp.close(),
+      astro.close(),
+      lspServer.close(),
+    ]);
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

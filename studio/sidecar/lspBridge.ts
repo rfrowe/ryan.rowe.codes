@@ -25,6 +25,13 @@ import type { MdxLspServer } from "./lspServer";
 export interface LspBridge {
   /** Attach a `/lsp` WebSocket, superseding any prior one and restarting the child. */
   connect(ws: WebSocket): void;
+  /**
+   * Tell the language server about out-of-editor file changes (e.g. the agent editing a component)
+   * as a `workspace/didChangeWatchedFiles` notification, since the browser client can't watch the
+   * filesystem. Paths are worktree paths (the server's native paths), so no URI rewrite is needed.
+   * No-op when no child is running (a fresh child reads current disk on its next spawn).
+   */
+  notifyFilesChanged(changes: Array<{ path: string; type: 1 | 2 | 3 }>): void;
 }
 
 interface LspBridgeDeps {
@@ -191,6 +198,13 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
           /* already closing */
         }
       });
+    },
+
+    notifyFilesChanged(changes) {
+      if (changes.length === 0 || !lsp.running()) return;
+      const params = { changes: changes.map((c) => ({ uri: pathToFileURL(c.path).href, type: c.type })) };
+      const json = JSON.stringify({ jsonrpc: "2.0", method: "workspace/didChangeWatchedFiles", params });
+      lsp.write(frame(json));
     },
   };
 }
