@@ -35,6 +35,8 @@ interface TabBarProps {
   status: SocketStatus;
   /** Per-component stack health (sidecar, LSP, preview, MCP…) for the connection-dot popover. */
   stackStatus: StackComponent[];
+  /** The studio's own branch/worktree, shown as a chip + in the popover; null until the sidecar reports it. */
+  studio: { ref: string; worktree: string } | null;
   /** Canonical paths of open posts that are drafts (unshipped work); drives the tab dot and
    *  gates "Delete draft…" in the right-click menu. */
   dirtyPaths: Set<string>;
@@ -51,6 +53,7 @@ export function TabBar({
   activePath,
   status,
   stackStatus,
+  studio,
   dirtyPaths,
   onSelect,
   onClose,
@@ -196,7 +199,14 @@ export function TabBar({
       <div className="tabbar__status" tabIndex={0} role="status" aria-label={`Stack status — sidecar ${status}`}>
         <span className={`tabbar__conn tabbar__conn--${status}`} aria-hidden="true" />
         <div className="tabbar__statuspop" role="tooltip">
-          <div className="statuspop__title">Stack</div>
+          <div className="statuspop__title statuspop__title--stack">
+            Stack
+            {studio && (
+              <span className="statuspop__titleref" title={`${studio.ref} · ${studio.worktree}`}>
+                {studio.ref}
+              </span>
+            )}
+          </div>
           {stackStatus.map((c) => (
             <div
               className="statuspop__row"

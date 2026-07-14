@@ -69,8 +69,25 @@ export class SelfWriteGuard {
 
 /** Relative dir (from repo root) that holds authored posts; the jail for every open post. */
 const BLOG_CONTENT_DIR = "src/content/blog";
-/** Worktree parent dir, relative to the repo root. One worktree per post, keyed by its stem. */
-const WORKTREES_DIR = ".claude/worktrees/blog";
+/**
+ * Worktree parent dir, relative to the repo root (the same `.worktrees` tree dev-session worktrees
+ * live in). Post worktrees live under `<base>/<prefixSeg>/blog/<stem>`: `<base>/blog/<stem>` for a
+ * primary session (empty prefix) and `<base>/<sanitized-branch>/blog/<stem>` for a non-primary one, so
+ * simultaneous studios on different branches never share a dir. One worktree per post, keyed by its
+ * stem (the dir basename stays the stem).
+ */
+const WORKTREES_BASE = ".worktrees";
+
+/**
+ * Sanitize a branch name into a single path/ref segment: git refs can't contain `:` `~` `^` `?` `*`
+ * `[` `\` or spaces, and `/` would nest under an existing branch ref, so everything outside
+ * `[A-Za-z0-9._-]` collapses to `-` (and leading/trailing separators are trimmed). `feat/worktree`
+ * becomes `feat-worktree`. Empty input (or an all-invalid name) falls back to `wt`.
+ */
+export function sanitizeBranchSegment(branch: string): string {
+  const seg = branch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  return seg.length > 0 ? seg : "wt";
+}
 
 const NO_ACTIVE_PREVIEW: PreviewState = { valid: false, url: null, errors: ["no active document"] };
 
@@ -233,12 +250,22 @@ export interface StoreDeps {
   /** git/gh runner rooted at the repo (worktree add / branch -m / worktree move). */
   git: GitRunner;
   repoRoot: string;
-  /** Default branch worktrees fork from; resolved via `gh` lazily when omitted (tests pass it). */
+  /**
+   * The branch the studio was launched on (`git rev-parse --abbrev-ref HEAD` in the repo root), i.e.
+   * the "primary" branch: new post worktrees fork from its local tip, ship targets it, and (when it
+   * differs from the repo default) its sanitized name namespaces every post branch/worktree so
+   * studios on different branches don't collide.
+   */
+  sessionBranch: string;
+  /**
+   * Repo default branch, used only to decide whether this is a primary session (no branch prefix).
+   * Resolved lazily (offline-first: `origin/HEAD`, then `gh`, then `main`) when omitted; tests pass it.
+   */
   defaultBranch?: string;
   /**
-   * Git ref a new post's worktree forks from. Defaults to `origin/<defaultBranch>`. Override (e.g.
-   * the local branch) so worktrees carry studio changes not yet on main, to test them before they
-   * merge. Set from STUDIO_FORK_BASE.
+   * Git ref a new post's worktree forks from. Defaults to the local {@link sessionBranch} tip, so
+   * worktrees carry the session branch's committed studio changes for preview/LSP. Override via
+   * STUDIO_FORK_BASE for an explicit base.
    */
   forkBase?: string;
   /** Preview origin (defaults to the Astro dev server). */
@@ -356,13 +383,17 @@ export interface StudioStore extends Store {
   reloadByWatchPath(worktreeFilePath: string, text: string, origin: "external" | "agent"): Promise<ActiveDoc | null>;
   /** Register a callback fired whenever the active post switches; returns an unsubscribe fn. */
   onActiveChange(listener: (info: ActiveChangeInfo) => void): () => void;
+  /**
+   * Absolute parent dir this session's post worktrees live under (`<repo>/.worktrees[/<seg>]/blog`).
+   * Session-scoped by the branch prefix; the sidecar's Astro manager uses it to clear stray daemons.
+   */
+  sessionWorktreesRoot(): Promise<string>;
 }
 
 export function createStore(deps: StoreDeps): StudioStore {
-  const { fs, git, repoRoot } = deps;
+  const { fs, git, repoRoot, sessionBranch } = deps;
   const previewBase = deps.previewBase ?? DEFAULT_PREVIEW_BASE;
   const blogContentRoot = path.resolve(repoRoot, BLOG_CONTENT_DIR);
-  const worktreesRoot = path.resolve(repoRoot, WORKTREES_DIR);
   const mutex = new Mutex();
   const guard = new SelfWriteGuard();
   const listeners = new Set<(message: ServerMessage) => void>();
@@ -395,19 +426,63 @@ export function createStore(deps: StoreDeps): StudioStore {
     };
   }
 
-  /** Repo default branch (worktrees fork from origin/<this>). Resolved once via `gh`, then cached. */
+  /**
+   * Repo default branch, used only to decide whether this is a primary session. Resolved once then
+   * cached, offline-first: `origin/HEAD` (set at clone, no network), then `gh`, then `main` as a last
+   * resort, so the prefix decision and fork base never hard-fail offline.
+   */
   async function defaultBranch(): Promise<string> {
     if (cachedDefaultBranch) return cachedDefaultBranch;
+    const sym = await git.git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { cwd: repoRoot });
+    const symName = sym.stdout.trim().replace(/^origin\//, "");
+    if (sym.code === 0 && symName) return (cachedDefaultBranch = symName);
     const res = await git.gh(
       ["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
       { cwd: repoRoot, timeoutMs: 120_000 },
     );
     const name = res.stdout.trim();
-    if (res.code !== 0 || !name) {
-      throw new Error(`could not resolve default branch via gh: ${res.stderr.trim() || `exit ${res.code}`}`);
-    }
-    cachedDefaultBranch = name;
-    return name;
+    if (res.code === 0 && name) return (cachedDefaultBranch = name);
+    return (cachedDefaultBranch = "main");
+  }
+
+  /**
+   * This session's branch-namespace segment: `""` for a primary session (session branch == repo
+   * default), else the sanitized session branch. Resolved once (needs the default branch), then cached.
+   */
+  let cachedPrefixSeg: string | undefined;
+  async function prefixSeg(): Promise<string> {
+    if (cachedPrefixSeg !== undefined) return cachedPrefixSeg;
+    const def = await defaultBranch();
+    cachedPrefixSeg = sessionBranch === def ? "" : sanitizeBranchSegment(sessionBranch);
+    return cachedPrefixSeg;
+  }
+
+  /** A post's isolation branch: `blog/<stem>` (primary) or `<seg>/blog/<stem>` (non-primary). */
+  async function branchFor(stem: string): Promise<string> {
+    const seg = await prefixSeg();
+    return seg ? `${seg}/blog/${stem}` : `blog/${stem}`;
+  }
+
+  /** Absolute parent dir this session's worktrees live under (`<repo>/.worktrees[/<seg>]/blog`). */
+  async function worktreesRoot(): Promise<string> {
+    return path.join(repoRoot, WORKTREES_BASE, await prefixSeg(), "blog");
+  }
+
+  /** Absolute worktree dir for post `stem` (basename stays the stem). */
+  async function worktreePathFor(stem: string): Promise<string> {
+    return path.join(await worktreesRoot(), stem);
+  }
+
+  /**
+   * The ref a post branch's unshipped commits are measured against: `origin/<sessionBranch>` when that
+   * remote-tracking ref exists (what ship targets), else the local session branch (the fork point).
+   * Offline-safe: reads refs on disk, never fetches.
+   */
+  async function aheadBase(): Promise<string> {
+    const hasRemote =
+      (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${sessionBranch}`], { cwd: repoRoot }))
+        .code === 0;
+    return hasRemote ? `origin/${sessionBranch}` : sessionBranch;
   }
 
   /** Canonicalize + root-jail a path to the blog content tree. Returns null if it escapes. */
@@ -424,7 +499,7 @@ export function createStore(deps: StoreDeps): StudioStore {
    * forking over one.
    */
   async function branchRefs(stem: string): Promise<{ local: boolean; remote: boolean }> {
-    const branch = `blog/${stem}`;
+    const branch = await branchFor(stem);
     const local = (await git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot })).code === 0;
     const remote =
       (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: repoRoot })).code === 0;
@@ -439,17 +514,17 @@ export function createStore(deps: StoreDeps): StudioStore {
     const { local, remote } = await branchRefs(stem);
     if (!local && !remote) return null;
     const where = local && remote ? "locally and on origin" : local ? "locally" : "on origin";
-    return `a draft already exists on that slug/date (branch blog/${stem} ${where}); open it from ⌘P instead.`;
+    return `a draft already exists on that slug/date (branch ${await branchFor(stem)} ${where}); open it from ⌘P instead.`;
   }
 
   /**
    * Ensure (or reuse) the worktree for post `stem`. Reuses when the dir already holds a `.git` link;
-   * else adopts an existing `blog/<stem>` draft (local directly, remote-only via `--track`) so a
-   * draft started elsewhere opens instead of being forked over; else forks fresh off origin/<default>.
+   * else adopts an existing draft branch (local directly, remote-only via `--track`) so a draft
+   * started elsewhere opens instead of being forked over; else forks fresh off the local session branch.
    */
   async function ensureWorktree(stem: string): Promise<{ worktreePath: string; branch: string }> {
-    const branch = `blog/${stem}`;
-    const worktreePath = path.join(worktreesRoot, stem);
+    const branch = await branchFor(stem);
+    const worktreePath = await worktreePathFor(stem);
 
     if (!(await fs.exists(path.join(worktreePath, ".git")))) {
       // Clear any stale registration for a dir that was removed out-of-band.
@@ -470,12 +545,12 @@ export function createStore(deps: StoreDeps): StudioStore {
       }
 
       // Adopt local, then adopt remote-only (create a tracking branch), then fork fresh off the base
-      // (forkBase override, else origin/<default>).
+      // (forkBase override, else the local session-branch tip).
       const args = localExists
         ? ["worktree", "add", worktreePath, branch]
         : remoteExists
           ? ["worktree", "add", "--track", "-b", branch, worktreePath, `origin/${branch}`]
-          : ["worktree", "add", worktreePath, "-b", branch, deps.forkBase ?? `origin/${await defaultBranch()}`];
+          : ["worktree", "add", worktreePath, "-b", branch, deps.forkBase ?? sessionBranch];
       const res = await git.git(args, { cwd: repoRoot, timeoutMs: 120_000 });
       if (res.code !== 0) {
         throw new Error(`git worktree add (${stem}) failed: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}`);
@@ -491,13 +566,14 @@ export function createStore(deps: StoreDeps): StudioStore {
    * checkout). Parses `git worktree list --porcelain`. Shared by the dirty-scan and draft enumeration.
    */
   async function worktreePathsOnDisk(): Promise<string[]> {
+    const root = await worktreesRoot();
     const listRes = await git.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
     const wtPaths: string[] = [];
     for (const block of listRes.stdout.split(/\r?\n\r?\n/)) {
       const m = /^worktree (.+)$/m.exec(block);
       if (!m) continue;
       const wtPath = m[1].trim();
-      if (wtPath === worktreesRoot || wtPath.startsWith(worktreesRoot + path.sep)) wtPaths.push(wtPath);
+      if (wtPath === root || wtPath.startsWith(root + path.sep)) wtPaths.push(wtPath);
     }
     return wtPaths;
   }
@@ -654,9 +730,9 @@ export function createStore(deps: StoreDeps): StudioStore {
     if (open.has(newCanonical)) return { ok: false, error: `a post is already open at that slug` };
     const newRel = path.relative(repoRoot, newCanonical);
     // Branch + worktree key on the full stem (`newName`), not the bare slug, keeping the post's
-    // collision-free identity.
-    const newBranch = `blog/${newName}`;
-    const newWorktreePath = path.join(worktreesRoot, newName);
+    // collision-free identity (and this session's branch prefix).
+    const newBranch = await branchFor(newName);
+    const newWorktreePath = await worktreePathFor(newName);
 
     // The unit within the worktree that moves: the folder for a folder post, else the file.
     const oldUnitInWt = isFolder ? path.dirname(doc.worktreeFilePath) : doc.worktreeFilePath;
@@ -842,8 +918,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         text = await fs.readFile(worktreeFilePath);
       } catch {
         throw new Error(
-          `post not found in its worktree (${relPath}). Open an existing post that is committed to ` +
-            `origin/${cachedDefaultBranch ?? "the default branch"} or has a blog/<stem> draft branch.`,
+          `post not found in its worktree (${relPath}). Open an existing post that is committed on the ` +
+            `primary branch (${sessionBranch}) or has a ${await branchFor(postStem(jailed))} draft branch.`,
         );
       }
       const doc: OpenDoc = {
@@ -894,7 +970,7 @@ export function createStore(deps: StoreDeps): StudioStore {
           return { ok: false, error: err instanceof Error ? err.message : "worktree setup failed" };
         }
         const worktreeFilePath = path.join(worktreePath, relPath);
-        // The worktree forked from origin/<default>, so a collision here means an existing post;
+        // The worktree forked from the primary branch, so a collision here means an existing post;
         // never overwrite.
         if (await fs.exists(worktreeFilePath)) {
           return { ok: false, error: `a post already exists at ${relPath}` };
@@ -1034,8 +1110,8 @@ export function createStore(deps: StoreDeps): StudioStore {
       let ahead = 0;
       let base: string | null = null;
       try {
-        base = await defaultBranch();
-        const revRes = await git.git(["rev-list", "--count", `origin/${base}..HEAD`], { cwd });
+        base = await aheadBase();
+        const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd });
         if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
       } catch {
         // Base unresolved (offline / no gh): can't count unmerged commits, so report 0 rather than
@@ -1048,7 +1124,7 @@ export function createStore(deps: StoreDeps): StudioStore {
       const parts: string[] = [];
       if (base) {
         const tracked = await git.git(
-          ["-c", "core.quotePath=false", "diff", "-M", `origin/${base}`, "--", BLOG_CONTENT_DIR],
+          ["-c", "core.quotePath=false", "diff", "-M", base, "--", BLOG_CONTENT_DIR],
           { cwd },
         );
         if (tracked.stdout.trim().length > 0) parts.push(tracked.stdout);
@@ -1083,8 +1159,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         // means "can't tell", so report 0 rather than block on the network.
         let ahead = 0;
         try {
-          const base = await defaultBranch();
-          const revRes = await git.git(["rev-list", "--count", `origin/${base}..HEAD`], { cwd: wtPath });
+          const base = await aheadBase();
+          const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd: wtPath });
           if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
         } catch {
           // offline / no gh: treat as 0, as above.
@@ -1107,13 +1183,15 @@ export function createStore(deps: StoreDeps): StudioStore {
     },
 
     async listDrafts() {
-      // Enumerate blog/* branches locally and on origin. Offline-safe: reads refs on disk (a stale
-      // origin/* is the accepted tradeoff). A branch with no post file is skipped, not guessed.
-      const localStems = await refStems(["for-each-ref", "--format=%(refname)", "refs/heads/blog"], "refs/heads/blog/");
-      const remoteStems = await refStems(
-        ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/blog"],
-        "refs/remotes/origin/blog/",
-      );
+      // Enumerate this session's draft branches locally and on origin, scoped to its own namespace
+      // (`[<seg>/]blog/*`) so a non-primary session never lists or adopts another session's drafts.
+      // Offline-safe: reads refs on disk (a stale origin/* is the accepted tradeoff). A branch with no
+      // post file is skipped, not guessed.
+      const seg = await prefixSeg();
+      const localRoot = seg ? `refs/heads/${seg}/blog` : "refs/heads/blog";
+      const remoteRoot = seg ? `refs/remotes/origin/${seg}/blog` : "refs/remotes/origin/blog";
+      const localStems = await refStems(["for-each-ref", "--format=%(refname)", localRoot], `${localRoot}/`);
+      const remoteStems = await refStems(["for-each-ref", "--format=%(refname)", remoteRoot], `${remoteRoot}/`);
 
       // A "draft w/o worktree" is one whose stem has neither a live worktree on disk nor an open tab.
       const liveStems = new Set((await worktreePathsOnDisk()).map((p) => path.basename(p)));
@@ -1124,7 +1202,7 @@ export function createStore(deps: StoreDeps): StudioStore {
         if (liveStems.has(stem) || openStems.has(stem)) continue;
         const isLocal = localStems.has(stem);
         const isRemote = remoteStems.has(stem);
-        const ref = isLocal ? `blog/${stem}` : `origin/blog/${stem}`;
+        const ref = isLocal ? await branchFor(stem) : `origin/${await branchFor(stem)}`;
         const rel = await draftUnitRel(ref, stem);
         if (!rel) continue;
         drafts.push({
@@ -1169,7 +1247,7 @@ export function createStore(deps: StoreDeps): StudioStore {
       }
 
       // Remove the worktree (--force: it carries the draft's uncommitted changes) then force-delete
-      // the branch (-D: it may hold commits not merged to origin/<default>). origin is never touched.
+      // the branch (-D: it may hold commits not merged to the primary branch). origin is never touched.
       const rmRes = await git.git(["worktree", "remove", "--force", worktreePath], { cwd: repoRoot });
       if (rmRes.code !== 0) {
         return { ok: false, error: `git worktree remove failed: ${rmRes.stderr.trim() || `exit ${rmRes.code}`}` };
@@ -1210,6 +1288,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         activeChangeListeners.delete(listener);
       };
     },
+
+    sessionWorktreesRoot: worktreesRoot,
 
     writeByPath: writeByPathImpl,
 

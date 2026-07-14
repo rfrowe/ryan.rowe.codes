@@ -32,7 +32,7 @@ function postPath(date: string, slug: string): string {
 }
 /** Astro dev URL a valid post previews at (`/blog/<date>/<slug>`). */
 function previewUrl(date: string, slug: string): string {
-  return `http://127.0.0.1:4321/blog/${date}/${slug}`;
+  return `http://localhost:4321/blog/${date}/${slug}`;
 }
 
 function frontmatter(title: string, slug: string, date: string, headline: string): string {
@@ -205,6 +205,7 @@ class MockBackend {
     socket.deliver(this.tabsMsg());
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
+    socket.deliver({ type: "studio.branch", ref: "origin/main", worktree: "/repo/ryan.rowe.codes" });
     this.deliverActive(socket);
     const active = this.docs.get(this.activePath);
     if (active?.agent.sessionId) socket.deliver({ type: "session", sessionId: active.agent.sessionId, mode: active.agent.mode });

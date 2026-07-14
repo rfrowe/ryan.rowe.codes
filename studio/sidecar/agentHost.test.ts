@@ -8,7 +8,7 @@ import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import type { StudioTools } from "../shared/services";
 import { createAgentHost, decisionToPermissionResult, mutationTarget, withinAnyDir, worktreeAskHook } from "./agentHost";
 
-const WT = "/repo/.claude/worktrees/blog/2026-07-10_a-post";
+const WT = "/repo/.worktrees/blog/2026-07-10_a-post";
 
 /** A minimal PreToolUse HookInput for the jail hook. */
 function preToolUse(toolName: string, toolInput: Record<string, unknown>): HookInput {

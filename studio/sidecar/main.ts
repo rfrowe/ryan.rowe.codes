@@ -3,8 +3,8 @@
 // StreamableHTTP for external clients.
 //
 // The sidecar owns the Astro dev daemon. It's project-scoped (registry in <worktree>/.astro), so we
-// run exactly one at a time on port 4321, restarting it in the active worktree on every active
-// change; the restart re-runs getStaticPaths so a new post's route exists (dev memoizes it).
+// run exactly one at a time on the studio's Astro port, restarting it in the active worktree on every
+// active change; the restart re-runs getStaticPaths so a new post's route exists (dev memoizes it).
 //
 // Invoked by `npm run studio:sidecar` (the orchestrator injects STUDIO_TOKEN, and may pass the
 // target post via `--post <path>` / STUDIO_POST; otherwise the newest post is opened).
@@ -28,16 +28,20 @@ import { createServer } from "./server";
 import { createMdxLspServer } from "./lspServer";
 import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
+import { copyWorktreeIncludes } from "./worktreeInclude";
 import type { StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const BLOG_CONTENT_ROOT = path.join(REPO_ROOT, "src", "content", "blog");
-const WORKTREES_ROOT = path.join(REPO_ROOT, ".claude", "worktrees", "blog");
 const NODE_MODULES = path.join(REPO_ROOT, "node_modules");
 const ASTRO_BIN_NAME = process.platform === "win32" ? "astro.cmd" : "astro";
-const WEB_PORT = 4319;
-const ASTRO_PORT = 4321;
+// Ports come from the orchestrator (a free set per launch, so studios run side by side); the defaults
+// let `npm run studio:sidecar` run standalone.
+const WEB_PORT = Number(process.env.STUDIO_WEB_PORT) || 4319;
+const MCP_PORT = Number(process.env.STUDIO_MCP_PORT) || 4318;
+const ASTRO_PORT = Number(process.env.STUDIO_ASTRO_PORT) || 4321;
+const SPA_PORT = Number(process.env.STUDIO_SPA_PORT) || 5199;
 // How long to wait for a fresh Astro daemon to answer before declaring the preview unavailable.
 const ASTRO_HEALTH_TIMEOUT_MS = 30_000;
 
@@ -57,15 +61,26 @@ async function main(): Promise<void> {
 
   // ---- construct concretes ----
   const git = createGitRunner({ cwd: REPO_ROOT });
+  // The branch the studio launched on: the fork base for new post worktrees and the ship target.
+  const sessionBranch = await resolveSessionBranch(git);
+
+  // Prepare a freshly-created/reused worktree: symlink node_modules, then copy the .worktreeinclude
+  // files so gitignored local config (e.g. .env.local) is present in the worktree too.
+  const prepareWorktree = async (worktreePath: string): Promise<void> => {
+    await linkNodeModules(worktreePath);
+    await copyWorktreeIncludes({ git, srcRoot: REPO_ROOT, worktreePath });
+  };
+
   const store = createStore({
     fs: nodeFs,
     git,
     repoRoot: REPO_ROOT,
-    // Fork new-post worktrees from origin/<default>; STUDIO_FORK_BASE overrides it (e.g. the local
-    // branch) so worktrees carry studio changes not yet on main, to test them before shipping.
+    sessionBranch,
+    // Preview URLs point at the sidecar-owned Astro daemon.
+    previewBase: `http://localhost:${ASTRO_PORT}`,
+    // New post worktrees fork from the local session-branch tip; STUDIO_FORK_BASE overrides the base.
     forkBase: process.env.STUDIO_FORK_BASE || undefined,
-    // Symlink node_modules into a freshly-created/reused worktree so Astro and the agent's tools run.
-    prepareWorktree: linkNodeModules,
+    prepareWorktree,
     // Rename a file/dir on disk (used by post.rename).
     movePath: async (from, to) => {
       await mkdir(path.dirname(to), { recursive: true });
@@ -82,6 +97,7 @@ async function main(): Promise<void> {
 
   const ship = createShipService({
     git,
+    sessionBranch,
     getActiveWorktree: () => store.getActiveWorktree(),
     getActiveNameSync: () => store.getActiveNameSync(),
   });
@@ -89,7 +105,7 @@ async function main(): Promise<void> {
   const tools = createStudioTools({ store, ship, blogRoot: REPO_ROOT, conventions });
 
   // The sidecar-owned Astro daemon, restarted in the active worktree on every active change.
-  const astro = createAstroManager();
+  const astro = createAstroManager(await store.sessionWorktreesRoot());
   await astro.stopStrayDaemons();
 
   // The MDX language server and its browser bridge. One long-lived child, restarted per `/lsp`
@@ -149,14 +165,22 @@ async function main(): Promise<void> {
   const services: StudioServices = { store, agentHost, tools, ship, sessions };
 
   // ---- start faces ----
-  const web = createServer(services, { token, webPort: WEB_PORT, lspConnect: (ws) => lspBridge.connect(ws) });
+  const web = createServer(services, {
+    token,
+    webPort: WEB_PORT,
+    spaPort: SPA_PORT,
+    lspConnect: (ws) => lspBridge.connect(ws),
+    // Computed fresh per connection so a reload reflects new commits/pushes without a restart.
+    getStudioBranch: () => resolveStudioBranch(git, sessionBranch),
+  });
   await web.listen();
-  const mcp = createMcpHttpServer(tools, { token, instructions: conventions });
+  const mcp = createMcpHttpServer(tools, { token, instructions: conventions, port: MCP_PORT });
 
   const active = store.getActive();
   console.error(
-    `[sidecar] up — web http://127.0.0.1:${WEB_PORT}  mcp http://127.0.0.1:${mcp.port}/mcp  ` +
-      `astro http://localhost:${ASTRO_PORT}  post=${active ? path.relative(REPO_ROOT, active.path) : "(none)"}`,
+    `[sidecar] up — branch ${sessionBranch}  web http://localhost:${WEB_PORT}  ` +
+      `mcp http://localhost:${mcp.port}/mcp  astro http://localhost:${ASTRO_PORT}  ` +
+      `post=${active ? path.relative(REPO_ROOT, active.path) : "(none)"}`,
   );
 
   // ---- teardown ----
@@ -201,7 +225,7 @@ async function linkNodeModules(worktreePath: string): Promise<void> {
  * (registry in <cwd>/.astro), so we track the current worktree and, on switch, stop the old daemon
  * then start a fresh one in the new worktree (which re-runs getStaticPaths for the new post's route).
  */
-function createAstroManager() {
+function createAstroManager(worktreesRoot: string) {
   let current: string | null = null;
   // Serialize daemon ops so rapid tab switches don't race two `astro dev` onto the same port.
   let queue: Promise<void> = Promise.resolve();
@@ -225,11 +249,11 @@ function createAstroManager() {
     async stopStrayDaemons(): Promise<void> {
       let entries: string[];
       try {
-        entries = await readdir(WORKTREES_ROOT);
+        entries = await readdir(worktreesRoot);
       } catch {
         return; // no worktrees yet
       }
-      for (const name of entries) await stopAt(path.join(WORKTREES_ROOT, name));
+      for (const name of entries) await stopAt(path.join(worktreesRoot, name));
     },
 
     /**
@@ -326,6 +350,39 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<boolean> {
     }
   }
   return false;
+}
+
+/**
+ * The branch the studio launched on, the "primary" branch. `STUDIO_PRIMARY_BRANCH` overrides it; a
+ * detached HEAD (no branch name) falls back to the short commit SHA so it still namespaces cleanly.
+ */
+async function resolveSessionBranch(git: ReturnType<typeof createGitRunner>): Promise<string> {
+  const override = process.env.STUDIO_PRIMARY_BRANCH?.trim();
+  if (override) return override;
+  const head = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: REPO_ROOT });
+  const name = head.stdout.trim();
+  if (head.code === 0 && name && name !== "HEAD") return name;
+  const sha = await git.git(["rev-parse", "--short", "HEAD"], { cwd: REPO_ROOT });
+  return sha.stdout.trim() || "HEAD";
+}
+
+/**
+ * The studio's branch label for the status popover: `origin/<branch>` when the local session branch
+ * is in sync with (or behind) its origin counterpart, else the bare `<branch>` when it carries commits
+ * origin doesn't have or has no origin ref at all. Offline-safe: reads refs on disk, never fetches.
+ */
+async function resolveStudioBranch(
+  git: ReturnType<typeof createGitRunner>,
+  sessionBranch: string,
+): Promise<{ ref: string; worktree: string }> {
+  const worktree = REPO_ROOT;
+  const onOrigin =
+    (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${sessionBranch}`], { cwd: REPO_ROOT }))
+      .code === 0;
+  if (!onOrigin) return { ref: sessionBranch, worktree };
+  const counted = await git.git(["rev-list", "--count", `origin/${sessionBranch}..${sessionBranch}`], { cwd: REPO_ROOT });
+  const ahead = Number.parseInt(counted.stdout.trim() || "0", 10) || 0;
+  return { ref: ahead > 0 ? sessionBranch : `origin/${sessionBranch}`, worktree };
 }
 
 /** Parse `--post <path>` or `--post=<path>` from argv. */

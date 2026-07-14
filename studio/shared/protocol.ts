@@ -79,6 +79,11 @@ export type ServerMessage =
   | { type: "mcp.status"; servers: { name: string; status: string; enabled: boolean }[] }
   // Authoritative permission mode, broadcast on connect and whenever it changes.
   | { type: "mode.status"; mode: PermissionMode }
+  // The studio's own branch/worktree (the "primary" branch new posts fork from and ship targets),
+  // for the status popover. `ref` is a display label: `origin/<branch>` when the local branch is in
+  // sync with (or behind) origin, else the bare `<branch>` when it carries commits origin doesn't
+  // have (or has no origin ref). `worktree` is the absolute repo root the studio launched from.
+  | { type: "studio.branch"; ref: string; worktree: string }
   // The agent wants to run a tool the current mode won't auto-approve. promptId routes the card to the
   // owning tab; title/description/reason are the SDK's prompt text.
   | { type: "permission.request"; promptId: string; requestId: string; toolName: string; input: unknown; title?: string; description?: string; reason?: string }

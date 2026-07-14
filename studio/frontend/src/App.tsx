@@ -18,6 +18,7 @@ import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveCo
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
 import { getDirtyPosts } from "./api";
+import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { PromptContext, ServerMessage } from "../../shared/protocol";
 
@@ -60,6 +61,8 @@ interface StudioState {
   tabs: TabState[];
   activePath: string | null;
   mcp: McpServerStatus[];
+  /** The studio's own branch/worktree (from `studio.branch`), shown in the status popover. */
+  studio: { ref: string; worktree: string } | null;
   /** Authoritative permission mode (from `mode.status`), shown + edited via the mode chip. */
   mode: PermissionMode;
   /** The single in-flight turn (the backend serializes one at a time) and the tab that owns it. */
@@ -124,6 +127,7 @@ const initialState: StudioState = {
   tabs: [],
   activePath: null,
   mcp: [],
+  studio: null,
   mode: "auto",
   turn: null,
   promptOwners: {},
@@ -337,6 +341,9 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
 
     case "mode.status":
       return { ...state, mode: msg.mode };
+
+    case "studio.branch":
+      return { ...state, studio: { ref: msg.ref, worktree: msg.worktree } };
 
     case "permission.request":
       // Route to the owning tab (like tool.start). De-dupe on requestId in case a replay repeats it.
@@ -757,17 +764,17 @@ export default function App() {
   const [lspStatus, setLspStatus] = useState<LspStatus>("disabled");
   useEffect(() => onLspStatus(setLspStatus), []);
 
-  // Per-component stack health for the connection-dot popover. Endpoints are the studio's fixed
-  // loopback ports (see studio/bin/studio.mjs); shown faded.
+  // Per-component stack health for the connection-dot popover. Endpoints are the studio's loopback
+  // ports for this launch (see config.ts); shown faded.
   const stackStatus = useMemo<StackComponent[]>(() => {
     const preview = activeTab?.preview;
     return [
-      { label: "Sidecar", status: socketHealth(status), endpoint: "127.0.0.1:4319" },
-      { label: "MDX language server", status: lspHealth(lspStatus), endpoint: "127.0.0.1:4319/lsp" },
+      { label: "Sidecar", status: socketHealth(status), endpoint: SIDECAR_ENDPOINT },
+      { label: "MDX language server", status: lspHealth(lspStatus), endpoint: `${SIDECAR_ENDPOINT}/lsp` },
       {
         label: "Preview (Astro)",
         status: !preview ? "connecting" : preview.valid ? "ok" : "connecting",
-        endpoint: "localhost:4321",
+        endpoint: PREVIEW_ENDPOINT,
       },
       ...state.mcp.map((m) => ({ label: `MCP · ${m.name}`, status: mcpHealth(m.status, m.enabled) })),
     ];
@@ -832,6 +839,7 @@ export default function App() {
         activePath={state.activePath}
         status={status}
         stackStatus={stackStatus}
+        studio={state.studio}
         dirtyPaths={dirtyPaths}
         onSelect={openPost}
         onClose={onCloseTab}

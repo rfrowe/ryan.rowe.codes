@@ -5,7 +5,17 @@ import globals from "globals";
 
 export default [
   {
-    ignores: ["dist/", "**/dist/", ".astro/", "node_modules/", "src/content/blog/2022-03-11_algorithmic-art/assets/"],
+    // Skip build output, deps, and the studio's per-post git worktrees (each an isolated checkout of
+    // the whole repo, not source to lint; nested tsconfigs otherwise confuse the parser).
+    ignores: [
+      "dist/",
+      "**/dist/",
+      ".astro/",
+      "node_modules/",
+      ".worktrees/",
+      ".claude/worktrees/",
+      "src/content/blog/2022-03-11_algorithmic-art/assets/",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

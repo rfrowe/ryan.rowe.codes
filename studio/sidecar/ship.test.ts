@@ -30,7 +30,7 @@ function makeGit(handler: Handler): { git: GitRunner; calls: Recorded[]; lines: 
   return { git: { git: run("git"), gh: run("gh") }, calls, lines: () => calls.map((c) => c.line) };
 }
 
-const WT_PATH = "/repo/.claude/worktrees/blog/aligning-a-skyline";
+const WT_PATH = "/repo/.worktrees/blog/aligning-a-skyline";
 const BLOG_PATH = "src/content/blog/2026-07-10_aligning-a-skyline.mdx";
 const PR_URL = "https://github.com/rfrowe/ryan.rowe.codes/pull/1";
 
@@ -54,11 +54,11 @@ function subcommand(args: readonly string[]): string {
 function happy(bin: "git" | "gh", args: readonly string[]): Partial<RunResult> {
   const a = subcommand(args);
   if (bin === "gh") {
-    if (a.startsWith("repo view")) return { stdout: "main\n" };
     if (a.startsWith("pr create")) return { stdout: `${PR_URL}\n` };
     return {};
   }
   if (a.startsWith("rev-parse --abbrev-ref HEAD")) return { stdout: "blog/aligning-a-skyline\n" };
+  // The session branch exists on origin (the ship gate); `--verify` falls through to code 0 below.
   if (a.startsWith("status --porcelain")) return { stdout: ` M ${BLOG_PATH}\n` };
   if (a.startsWith("status --short")) return { stdout: ` M ${BLOG_PATH}\n` };
   if (a.startsWith("diff --name-only")) return { stdout: `${BLOG_PATH}\n` }; // scope assertion
@@ -76,8 +76,13 @@ function withOverride(base: Handler, override: Handler): Handler {
   };
 }
 
-const ship = (handler: Handler, wt: ActiveWorktree | null = WORKTREE) =>
-  createShipService({ git: makeGit(handler).git, getActiveWorktree: () => wt, getActiveNameSync: () => ({ synced: true }) });
+const ship = (handler: Handler, wt: ActiveWorktree | null = WORKTREE, sessionBranch = "main") =>
+  createShipService({
+    git: makeGit(handler).git,
+    sessionBranch,
+    getActiveWorktree: () => wt,
+    getActiveNameSync: () => ({ synced: true }),
+  });
 
 const baseInput: OpenPrInput = {
   branch: "nobug/blog-aligning-a-skyline",
@@ -90,7 +95,7 @@ const baseInput: OpenPrInput = {
 describe("createShipService.openPr", () => {
   it("runs the simplified happy-path sequence and returns the PR URL", async () => {
     const { git, calls, lines } = makeGit(happy);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
 
     const res = await svc.openPr(baseInput);
     expect(res).toEqual({ ok: true, prUrl: PR_URL });
@@ -110,7 +115,7 @@ describe("createShipService.openPr", () => {
     expect(seq.some((l) => l.includes("commit") && l.includes("user.name=Ryan Rowe") && l.includes("user.email=ryan@rowe.codes"))).toBe(true);
     // Push the worktree's own branch as-is (blog/<slug>); no refspec, no nobug/ translation.
     expect(seq).toContain("git push -u origin blog/aligning-a-skyline");
-    // PR opens against the default base, from that same branch.
+    // PR opens against the session branch, from that same branch.
     expect(seq.some((l) => l.includes("pr create") && l.includes("--base main") && l.includes("--head blog/aligning-a-skyline"))).toBe(true);
 
     // Ordering: assert-branch, add, commit, identity check, push, pr create.
@@ -121,9 +126,44 @@ describe("createShipService.openPr", () => {
     expect(idx("push")).toBeLessThan(idx("pr create"));
   });
 
+  it("targets the session branch as the PR base", async () => {
+    const { git, lines } = makeGit(happy);
+    const svc = createShipService({
+      git,
+      sessionBranch: "feat/x",
+      getActiveWorktree: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.openPr(baseInput);
+    expect(res).toEqual({ ok: true, prUrl: PR_URL });
+    expect(lines().some((l) => l.includes("pr create") && l.includes("--base feat/x"))).toBe(true);
+    // Unshipped-scope + range checks measure against origin/<sessionBranch>.
+    expect(lines()).toContain("git -c core.quotePath=false diff --name-only origin/feat/x...HEAD");
+  });
+
+  it("refuses to ship when the session branch is not on origin, before any commit or push", async () => {
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("rev-parse --verify") ? { code: 1 } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "feat/x",
+      getActiveWorktree: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.openPr(baseInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/isn't on origin/);
+    const seq = lines();
+    expect(seq.some((l) => l.includes("commit"))).toBe(false);
+    expect(seq.some((l) => l.includes("push"))).toBe(false);
+    expect(seq.some((l) => l.includes("pr create"))).toBe(false);
+  });
+
   it("blocks on the confirm gate with no git/gh side effects", async () => {
     const { git, calls } = makeGit(happy);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr({ ...baseInput, confirm: false });
     expect(res).toEqual({ ok: false, error: "confirmation required" });
     expect(calls).toHaveLength(0);
@@ -133,6 +173,7 @@ describe("createShipService.openPr", () => {
     const { git, calls } = makeGit(happy);
     const svc = createShipService({
       git,
+      sessionBranch: "main",
       getActiveWorktree: () => WORKTREE,
       getActiveNameSync: () => ({
         synced: false,
@@ -151,7 +192,7 @@ describe("createShipService.openPr", () => {
 
   it("errors when there is no active post to ship", async () => {
     const { git, calls } = makeGit(happy);
-    const svc = createShipService({ git, getActiveWorktree: () => null, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => null, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr(baseInput);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/no active post/);
@@ -163,7 +204,7 @@ describe("createShipService.openPr", () => {
       bin === "git" && subcommand(args).startsWith("rev-parse --abbrev-ref HEAD") ? { stdout: "some-other-branch\n" } : {},
     );
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr(baseInput);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/expected the post's branch/);
@@ -175,7 +216,7 @@ describe("createShipService.openPr", () => {
       bin === "git" && args.join(" ").startsWith("log -1") ? { stdout: "Someone Else <x@example.com>\n" } : {},
     );
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr(baseInput);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/identity assertion failed/);
@@ -190,7 +231,7 @@ describe("createShipService.openPr", () => {
       bin === "git" && args.join(" ").includes("status --porcelain") ? { stdout: ` M ${BLOG_PATH}\n?? .indeed/\n` } : {},
     );
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr({ ...baseInput, scope: "all" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/\.indeed\//);
@@ -202,7 +243,7 @@ describe("createShipService.openPr", () => {
       bin === "git" && args.join(" ").startsWith("push") ? { code: 1, stderr: "remote: rejected" } : {},
     );
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr(baseInput);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/committed locally.*not pushed/s);
@@ -226,7 +267,7 @@ describe("createShipService.openPr", () => {
         : {},
     );
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr(baseInput);
     expect(res.ok).toBe(false);
     if (!res.ok) {
@@ -247,7 +288,7 @@ describe("createShipService.openPr", () => {
       return {};
     });
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr(baseInput);
     expect(res).toEqual({ ok: true, prUrl: PR_URL });
     expect(lines()).toContain("git -c core.quotePath=false status --porcelain");
@@ -258,7 +299,7 @@ describe("createShipService.openPr", () => {
 describe("createShipService.diff", () => {
   it('scopes to the blog dir for "post" and runs inside the worktree', async () => {
     const { git, calls, lines } = makeGit(happy);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.diff("post");
     expect(res.status).toContain(BLOG_PATH);
     expect(res.diff).toContain("diff --git");
@@ -271,7 +312,7 @@ describe("createShipService.diff", () => {
 
   it("returns empty output when there is no active post", async () => {
     const { git, calls } = makeGit(happy);
-    const svc = createShipService({ git, getActiveWorktree: () => null, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => null, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.diff("post");
     expect(res).toEqual({ status: "", diff: "" });
     expect(calls).toHaveLength(0);
@@ -289,7 +330,7 @@ describe("createShipService.diff", () => {
       return {};
     });
     const { git, lines } = makeGit(handler);
-    const svc = createShipService({ git, getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.diff("post");
     expect(res.diff).toContain("brand new untracked body");
     expect(lines()).toContain(`git diff --no-index -- /dev/null ${NEW_POST}`);

@@ -11,7 +11,7 @@ import { SelfWriteGuard, createStore } from "../state/store";
 
 const REPO = "/repo";
 const BLOG = `${REPO}/src/content/blog`;
-const WT = `${REPO}/.claude/worktrees/blog`;
+const WT = `${REPO}/.worktrees/blog`;
 const CANON = `${BLOG}/2026-07-10_aligning-a-skyline.mdx`;
 // Worktrees key on the full date-qualified stem (<YYYY-MM-DD>_<slug>), not the bare slug.
 const WT_FILE = `${WT}/2026-07-10_aligning-a-skyline/src/content/blog/2026-07-10_aligning-a-skyline.mdx`;
@@ -70,7 +70,14 @@ function makeGit(fs: FakeFs): GitRunner {
 
 function newStore(seed: Record<string, string> = { [WT_FILE]: VALID_DOC }) {
   const fs = makeFs(seed);
-  const store = createStore({ fs, git: makeGit(fs), repoRoot: REPO, defaultBranch: "main", prepareWorktree: async () => {} });
+  const store = createStore({
+    fs,
+    git: makeGit(fs),
+    repoRoot: REPO,
+    sessionBranch: "main",
+    defaultBranch: "main",
+    prepareWorktree: async () => {},
+  });
   return { fs, store };
 }
 
