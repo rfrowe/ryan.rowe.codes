@@ -33,6 +33,11 @@ export type ClientMessage =
   // active post's slug (renames the file, runs `git branch -m blog/<old> blog/<new>`, and moves the worktree).
   | { type: "post.close"; requestId: string; path: string }
   | { type: "post.rename"; requestId: string; path: string; newSlug: string }
+  // Resolve a frontmatter⇄filename desync by renaming the file/worktree/branch to match the post's
+  // own frontmatter (slug and/or date). The server derives the target from the post's frontmatter —
+  // no target on the wire — and runs the same rename path as post.rename (so the session/transcript
+  // migration and preview refresh apply identically).
+  | { type: "post.completeRename"; requestId: string; path: string }
   // Delete a draft post: remove its worktree and branch (never touches origin/main). Revert a post's
   // uncommitted edits to the branch's last commit (HEAD). Both are gated: with `confirm: false` the
   // sidecar replies `post.confirm` (what would be lost) instead of acting when content is at risk.
@@ -73,6 +78,14 @@ export type ServerMessage =
   // fresh at the new path and the conversation + resumable SDK session are silently lost. `branch`
   // is the post's new isolation branch. Applies to both tab-bar rename and Complete-rename.
   | { type: "post.renamed"; oldPath: string; newPath: string; title: string; branch: string }
+  // Frontmatter⇄filename name-sync status for the ACTIVE post (no path, like `preview.url`), published
+  // at the same cadence. `synced:false` means the frontmatter-derived stem `${date}_${slug}` differs
+  // from the filename/worktree/branch stem: the editor shows a warning banner and ship is blocked. It
+  // is mutually exclusive with a preview error (it requires a valid derivation), so a bad-frontmatter
+  // post shows the preview error instead. `expectedStem`/`currentStem` describe the mismatch;
+  // `canComplete`/`reason` say whether a Complete-rename can proceed (false e.g. when the target stem
+  // is already an open tab). Always `{ synced: true }` when there is no active post or it is in sync.
+  | { type: "post.namesync"; synced: boolean; expectedStem?: string; currentStem?: string; canComplete?: boolean; reason?: string }
   // The active post changed (open/create/switch/rename); `file.changed` and `preview.url` follow.
   // `branch` is the post's real isolation branch (`blog/<date>_<slug>`), the branch the ship flow
   // pushes; the SPA displays it read-only rather than deriving (or inviting) a branch name.

@@ -3,6 +3,18 @@
 // import so nothing node-only leaks into the browser bundle — this is the first runtime *value*
 // import from `studio/shared` into the frontend, safe only because the module is pure.
 
+/**
+ * A post slug: lowercase letters/digits and hyphens, starting with an alphanumeric. It names the
+ * URL segment, the filename stem, and the isolation branch, so the studio holds every derivation to
+ * this one shape (preview-URL derivation, rename, and complete-rename all consult it).
+ */
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/** Whether `slug` is a valid post slug (see {@link SLUG_RE}). */
+export function isValidSlug(slug: string): boolean {
+  return SLUG_RE.test(slug);
+}
+
 /** Derive a kebab-case slug from free text (title): lowercase, non-alphanumerics to hyphens. */
 export function kebabSlug(input: string): string {
   return input

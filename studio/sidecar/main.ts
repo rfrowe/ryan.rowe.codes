@@ -78,7 +78,11 @@ async function main(): Promise<void> {
     },
   });
 
-  const ship = createShipService({ git, getActiveWorktree: () => store.getActiveWorktree() });
+  const ship = createShipService({
+    git,
+    getActiveWorktree: () => store.getActiveWorktree(),
+    getActiveNameSync: () => store.getActiveNameSync(),
+  });
   const sessions = createSessionsService({ blogRepoDir: REPO_ROOT });
   const tools = createStudioTools({ store, ship, blogRoot: REPO_ROOT, conventions });
 

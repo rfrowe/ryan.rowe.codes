@@ -224,6 +224,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       ws.send(JSON.stringify(snapshot));
     }
     ws.send(JSON.stringify({ type: "preview.url", preview: store.getPreview() } satisfies ServerMessage));
+    // Replay the active post's name-sync so a reconnecting client re-raises the desync banner + ship
+    // gate without waiting for the next edit. (Snapshot omits `canComplete`; the next refresh refines it.)
+    ws.send(JSON.stringify({ type: "post.namesync", ...store.getActiveNameSync() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mcp.status", servers: agentHost.getMcpStatus() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mode.status", mode: agentHost.getPermissionMode() } satisfies ServerMessage));
 
@@ -338,7 +341,25 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       // rename (the store already broadcast `post.renamed` for the clients' tab migration).
       case "post.rename": {
         const { requestId, path } = message;
-        store.renamePost(path, message.newSlug).then(
+        store.renamePost(path, { slug: message.newSlug }).then(
+          (result) => {
+            if (result.ok) agentHost.renameSessionKey(path, result.path);
+            sendPostResult(
+              ws,
+              requestId,
+              result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
+            );
+          },
+          (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
+        );
+        return;
+      }
+
+      // Resolve a frontmatter⇄filename desync: rename to match the post's own frontmatter. Same seam
+      // as post.rename (session re-key + post.renamed migration); the store derives the target itself.
+      case "post.completeRename": {
+        const { requestId, path } = message;
+        store.completeRename(path).then(
           (result) => {
             if (result.ok) agentHost.renameSessionKey(path, result.path);
             sendPostResult(

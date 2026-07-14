@@ -70,6 +70,12 @@ describe("deriveUrl — invalid frontmatter", () => {
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.errors.some((e) => /not a valid date/.test(e))).toBe(true);
   });
+
+  it("rejects a slug that isn't a valid stem (so it's preview-invalid, never a false desync)", () => {
+    const result = deriveUrl(post({ ...complete, slug: '"Not A Slug"' }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.errors.some((e) => /invalid slug/.test(e))).toBe(true);
+  });
 });
 
 describe("deriveUrl — created_at timezone rule", () => {

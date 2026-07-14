@@ -26,10 +26,15 @@ export interface ShipDeps {
   git: GitRunner;
   /** The active post's worktree (branch/paths); ship runs entirely inside it. */
   getActiveWorktree: () => ActiveWorktree | null;
+  /**
+   * The active post's frontmatter⇄filename name-sync status. Ship refuses a desynced post (its live
+   * URL wouldn't match where it deploys); the author resolves it via Complete-rename or Revert first.
+   */
+  getActiveNameSync: () => { synced: boolean; expectedStem?: string; currentStem?: string };
 }
 
 export function createShipService(deps: ShipDeps): ShipService {
-  const { git, getActiveWorktree } = deps;
+  const { git, getActiveWorktree, getActiveNameSync } = deps;
 
   /** Read the diff for the ship review UI, from the active post's worktree. */
   async function diff(scope: "post" | "all"): Promise<{ status: string; diff: string }> {
@@ -71,6 +76,19 @@ export function createShipService(deps: ShipDeps): ShipService {
     const wt = getActiveWorktree();
     if (!wt) {
       return { ok: false, error: "no active post to ship" };
+    }
+    // Refuse a frontmatter⇄filename desync before any git/gh side effect: the post's live URL
+    // (from its frontmatter slug/date) wouldn't match where it deploys (its filename/branch). The
+    // author resolves it first via the editor banner's Complete-rename or Revert.
+    const nameSync = getActiveNameSync();
+    if (!nameSync.synced) {
+      return {
+        ok: false,
+        error:
+          `refusing to ship: the post's frontmatter (slug/date) doesn't match its filename/branch ` +
+          `(frontmatter → "${nameSync.expectedStem}", file → "${nameSync.currentStem}"). ` +
+          `Complete the rename or revert the frontmatter first.`,
+      };
     }
     const cwd = wt.worktreePath;
 

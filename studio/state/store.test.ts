@@ -524,7 +524,7 @@ describe("store.renamePost", () => {
     const { store, fs, lines, messages } = newStore({ [HELLO_WT_FILE]: HELLO });
     await store.openPost(HELLO_CANON);
     const before = messages.length;
-    const result = await store.renamePost(HELLO_CANON, "goodbye");
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -567,14 +567,14 @@ describe("store.renamePost", () => {
   it("rejects an invalid slug", async () => {
     const { store } = newStore({ [HELLO_WT_FILE]: HELLO });
     await store.openPost(HELLO_CANON);
-    const result = await store.renamePost(HELLO_CANON, "Not A Slug");
+    const result = await store.renamePost(HELLO_CANON, { slug: "Not A Slug" });
     expect(result.ok).toBe(false);
   });
 
   it("falls back to a filesystem move for an untracked (never-committed) post", async () => {
     const { store, fs, lines } = newStore({ [HELLO_WT_FILE]: HELLO }, { untracked: true });
     await store.openPost(HELLO_CANON);
-    const result = await store.renamePost(HELLO_CANON, "goodbye");
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -920,9 +920,97 @@ describe("store.createPost / renamePost refuse a taken draft branch", () => {
       { remoteBranchExists: true },
     );
     await store.openPost(HELLO_CANON);
-    const result = await store.renamePost(HELLO_CANON, "goodbye");
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/draft already exists/);
     expect(lines().some((l) => l.includes("branch -m"))).toBe(false); // refused before any mutation
+  });
+});
+
+describe("store name-sync (frontmatter⇄filename)", () => {
+  it("reports synced when the frontmatter stem matches the filename", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_CANON);
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+  });
+
+  it("reports desynced (with expected/current stems) when the frontmatter slug diverges, and broadcasts it", async () => {
+    const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: new-slug");
+    const before = messages.length;
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+
+    expect(store.getActiveNameSync()).toEqual({
+      synced: false,
+      expectedStem: "2026-07-10_new-slug",
+      currentStem: "2026-07-10_aligning-a-skyline",
+    });
+    // The autosave re-broadcasts name-sync on the same cadence as preview.url.
+    const ns = messages.slice(before).filter((m) => m.type === "post.namesync").at(-1);
+    expect(ns).toMatchObject({ synced: false, expectedStem: "2026-07-10_new-slug", currentStem: "2026-07-10_aligning-a-skyline" });
+  });
+
+  it("reports synced (banner suppressed) when the frontmatter is invalid — the preview error owns it", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    // A timezone-less datetime is invalid frontmatter (WS1), so it's preview-invalid, not a desync.
+    const edited = SKYLINE.replace("created_at: 2026-07-10", "created_at: 2026-07-10T22:00:00");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+  });
+});
+
+describe("store.completeRename (resolve a desync from the frontmatter)", () => {
+  it("renames the file/branch/worktree to match the frontmatter (slug + date), without rewriting it", async () => {
+    const { store, fs, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    // Desync the frontmatter: a new slug AND a new (still date-only, valid) date.
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: skyline").replace("created_at: 2026-07-10", "created_at: 2026-08-01");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    expect(store.getActiveNameSync()).toMatchObject({ synced: false, expectedStem: "2026-08-01_skyline" });
+
+    const result = await store.completeRename(SKYLINE_CANON);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const newCanon = `${BLOG}/2026-08-01_skyline.mdx`;
+    expect(result.path).toBe(newCanon);
+    // The date change flows through the same branch/worktree machinery (keyed on the new stem).
+    expect(lines()).toContain("git -C /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline branch -m blog/2026-08-01_skyline");
+    expect(lines()).toContain(
+      "git worktree move /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline /repo/.claude/worktrees/blog/2026-08-01_skyline",
+    );
+    // Frontmatter is the source of truth: it's left verbatim, and the post is now synced.
+    const newWtFile = `${WT}/2026-08-01_skyline/src/content/blog/2026-08-01_skyline.mdx`;
+    expect(fs.store.get(newWtFile)).toContain("slug: skyline");
+    expect(fs.store.get(newWtFile)).toContain("created_at: 2026-08-01");
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+  });
+
+  it("emits post.renamed so the transcript/session migrate (same seam as tab-bar rename)", async () => {
+    const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: skyline");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    const before = messages.length;
+    const result = await store.completeRename(SKYLINE_CANON);
+    expect(result.ok).toBe(true);
+    const renamed = messages.slice(before).find((m) => m.type === "post.renamed");
+    expect(renamed).toMatchObject({
+      type: "post.renamed",
+      oldPath: SKYLINE_CANON,
+      newPath: `${BLOG}/2026-07-10_skyline.mdx`,
+    });
+  });
+
+  it("refuses when the frontmatter is invalid (nothing to derive a target from)", async () => {
+    const { store, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: Not A Slug");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    const result = await store.completeRename(SKYLINE_CANON);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/invalid/);
+    expect(lines().some((l) => l.includes("branch -m"))).toBe(false);
   });
 });

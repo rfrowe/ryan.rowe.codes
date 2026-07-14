@@ -10,6 +10,7 @@ import {
   createdAtError,
   parseFrontmatter,
 } from "../../src/lib/frontmatter";
+import { isValidSlug } from "../shared/slug";
 
 export type DeriveUrlResult =
   | { valid: true; url: string; date: string; slug: string }
@@ -40,6 +41,15 @@ export function deriveUrl(mdxSource: string, opts?: { base?: string }): DeriveUr
     if (entry === undefined || entry.value.trim() === "") {
       errors.push(`missing or empty frontmatter key: ${key}`);
     }
+  }
+
+  // The slug names the URL segment, the filename, and the branch, so a slug that isn't a valid stem
+  // is invalid frontmatter — the preview error path owns it (and a desync check keys off validity,
+  // so this keeps a bad slug out of the "frontmatter⇄filename desync" banner). Only checked once the
+  // key is present and non-empty (an absent/empty one is already reported above).
+  const slugEntry = data["slug"];
+  if (slugEntry && slugEntry.value.trim() !== "" && !isValidSlug(slugEntry.value)) {
+    errors.push(`invalid slug: ${slugEntry.value} (use lowercase letters, digits, and hyphens)`);
   }
 
   // Only validate the date once the key is present and non-empty (an absent/empty one already

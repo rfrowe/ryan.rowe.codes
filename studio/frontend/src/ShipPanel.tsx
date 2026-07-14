@@ -14,12 +14,15 @@ interface ShipPanelProps {
    *  Display-only: the sidecar derives and pushes this branch regardless of anything the SPA sends.
    *  Null before a post is active. */
   branch: string | null;
+  /** Frontmatter⇄filename name-sync. When `synced` is false, ship is blocked (the sidecar refuses a
+   *  desynced post too — this disables the button and explains why up front). */
+  nameSync: { synced: boolean; expectedStem?: string; currentStem?: string };
   onClose: () => void;
 }
 
 type Phase = "editing" | "confirming" | "shipping" | "result";
 
-export function ShipPanel({ branch, onClose }: ShipPanelProps) {
+export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
   const [scope, setScope] = useState<"post" | "all">("post");
   const [status, setStatus] = useState<string>("");
   const [diff, setDiff] = useState<string | null>(null);
@@ -57,8 +60,9 @@ export function ShipPanel({ branch, onClose }: ShipPanelProps) {
     };
   }, [scope]);
 
-  // Can't ship until the active post's branch has resolved (null = no active post / still activating).
-  const canShip = !!branch && subject.trim().length > 0;
+  // Can't ship until the active post's branch has resolved (null = no active post / still activating),
+  // and never while its frontmatter⇄filename is desynced (the sidecar refuses it too).
+  const canShip = !!branch && subject.trim().length > 0 && nameSync.synced;
 
   async function doShip(): Promise<void> {
     setPhase("shipping");
@@ -96,6 +100,12 @@ export function ShipPanel({ branch, onClose }: ShipPanelProps) {
 
       {phase !== "result" && (
         <section className="ship__form">
+          {!nameSync.synced && (
+            <p className="ship__error">
+              Frontmatter⇄filename desync: this post would deploy at <code>{nameSync.expectedStem}</code> but lives at{" "}
+              <code>{nameSync.currentStem}</code>. Complete the rename or revert the frontmatter before shipping.
+            </p>
+          )}
           <div className="ship__field">
             <span>Branch</span>
             <code className="ship__branch">{branch ?? "resolving…"}</code>

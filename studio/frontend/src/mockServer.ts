@@ -237,8 +237,9 @@ class MockBackend {
     return { type: "mcp.status", servers: this.mcp.map((s) => ({ ...s })) };
   }
 
-  // Push the active post's `active`, doc, and preview to one socket (or all if omitted). Mirrors
-  // the real sidecar: switching the active post is always followed by its file and preview.
+  // Push the active post's `active`, doc, preview, and name-sync to one socket (or all if omitted).
+  // Mirrors the real sidecar: switching the active post is always followed by its file, preview, and
+  // name-sync.
   private deliverActive(target?: MockWebSocket): void {
     const doc = this.docs.get(this.activePath);
     if (!doc) return;
@@ -246,6 +247,32 @@ class MockBackend {
     send({ type: "active", path: doc.path, title: doc.title, branch: doc.branch });
     send({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "external" });
     send({ type: "preview.url", preview: doc.preview });
+    send(this.nameSyncMsg(doc));
+  }
+
+  // Frontmatter⇄filename name-sync for a doc: compare the frontmatter-derived stem to the path stem,
+  // mirroring the sidecar (a bad slug / non-date created_at is "preview-invalid", reported synced so
+  // the preview-error path owns it). Lets ?mock reproduce the desync banner by editing the slug/date.
+  private nameSyncMsg(doc: MockDoc): ServerMessage {
+    const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
+    const date = doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
+    const [pathDate, pathSlug] = splitPath(doc.path);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return { type: "post.namesync", synced: true };
+    }
+    const expectedStem = `${date}_${slug}`;
+    const currentStem = `${pathDate}_${pathSlug}`;
+    if (expectedStem === currentStem) return { type: "post.namesync", synced: true };
+    const targetPath = postPath(date, slug);
+    const openCollision = targetPath !== doc.path && this.open.includes(targetPath);
+    return {
+      type: "post.namesync",
+      synced: false,
+      expectedStem,
+      currentStem,
+      canComplete: !openCollision,
+      reason: openCollision ? `a post is already open at ${expectedStem}` : undefined,
+    };
   }
 
   // ---- REST ----
@@ -255,6 +282,9 @@ class MockBackend {
     if (req.baseRev.n !== doc.rev.n) return { ok: false, error: "stale-rev", currentRev: doc.rev };
     doc.text = req.text;
     doc.rev = makeRev(doc.rev.n + 1, req.text);
+    // Re-broadcast name-sync (like the sidecar's refreshPreview) so editing the frontmatter slug/date
+    // raises/clears the desync banner live in ?mock.
+    if (doc.path === this.activePath) this.broadcast(this.nameSyncMsg(doc));
     return { ok: true, rev: doc.rev };
   }
 
@@ -326,6 +356,9 @@ class MockBackend {
         break;
       case "post.rename":
         this.renamePost(msg.requestId, msg.path, msg.newSlug);
+        break;
+      case "post.completeRename":
+        this.completeRename(msg.requestId, msg.path);
         break;
       case "post.delete":
         this.deletePost(msg.requestId, msg.path, msg.confirm);
@@ -416,24 +449,49 @@ class MockBackend {
       this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
       return;
     }
+    // Tab-bar rename: keep the current date, rewrite the frontmatter slug to match the new filename.
     const [date] = splitPath(path);
-    const nextPath = postPath(date, newSlug);
-    if (nextPath !== path && this.docs.has(nextPath)) {
-      this.broadcast({ type: "post.result", requestId, ok: false, error: `a post already exists at ${newSlug}` });
+    this.relocateDoc(requestId, path, date, newSlug, true);
+  }
+
+  private completeRename(requestId: string, path: string): void {
+    const doc = this.docs.get(path);
+    if (!doc) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
+      return;
+    }
+    // Derive the target from the post's own frontmatter (the source of truth); leave the text alone.
+    const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
+    const date = doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: "cannot complete rename: invalid frontmatter" });
+      return;
+    }
+    this.relocateDoc(requestId, path, date, slug, false);
+  }
+
+  // Move the doc at `oldPath` to the stem `<date>_<slug>` (rewriting the frontmatter slug only for a
+  // tab-bar rename), then broadcast post.renamed → tabs → active (which carries the now-synced
+  // name-sync). Shared by the tab-bar rename and Complete-rename.
+  private relocateDoc(requestId: string, oldPath: string, date: string, slug: string, rewriteFrontmatter: boolean): void {
+    const doc = this.docs.get(oldPath)!;
+    const nextPath = postPath(date, slug);
+    if (nextPath !== oldPath && this.docs.has(nextPath)) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `a post already exists at ${slug}` });
       return;
     }
     doc.path = nextPath;
     doc.branch = branchFromPath(nextPath);
-    doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${newSlug}`);
+    if (rewriteFrontmatter) doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${slug}`);
     doc.rev = makeRev(doc.rev.n + 1, doc.text);
-    doc.preview = { valid: true, url: previewUrl(date, newSlug) };
-    this.docs.delete(path);
+    doc.preview = { valid: true, url: previewUrl(date, slug) };
+    this.docs.delete(oldPath);
     this.docs.set(nextPath, doc);
-    this.open = this.open.map((p) => (p === path ? nextPath : p));
-    if (this.activePath === path) this.activePath = nextPath;
+    this.open = this.open.map((p) => (p === oldPath ? nextPath : p));
+    if (this.activePath === oldPath) this.activePath = nextPath;
     // Announce the rename (old→new) BEFORE the tabs/active rebuild so the client migrates the tab's
     // transcript + session onto the new path (doc.agent already moved with the doc object above).
-    this.broadcast({ type: "post.renamed", oldPath: path, newPath: nextPath, title: doc.title, branch: doc.branch });
+    this.broadcast({ type: "post.renamed", oldPath, newPath: nextPath, title: doc.title, branch: doc.branch });
     this.broadcast(this.tabsMsg());
     this.deliverActive();
     this.broadcast({ type: "post.result", requestId, ok: true, path: nextPath });

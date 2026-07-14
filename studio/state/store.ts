@@ -21,7 +21,7 @@ import type { Store } from "../shared/services";
 import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/types";
 import type { PostFrontmatter } from "../../src/lib/frontmatter";
 import { FRONTMATTER_BLOCK, FRONTMATTER_LINE, frontmatterTitle } from "../../src/lib/frontmatter";
-import { postStem, slugFromPath, stemParts } from "../shared/slug";
+import { isValidSlug, postStem, slugFromPath, stemParts } from "../shared/slug";
 import { applyEdits, revsEqual } from "./applyEdits";
 import { DEFAULT_PREVIEW_BASE, deriveUrl } from "../preview/deriveUrl";
 import { sha256Hex } from "../sidecar/hash";
@@ -88,8 +88,16 @@ export type CreatePostResult =
   | { ok: true; path: string; url: string; doc: ActiveDoc }
   | { ok: false; error: string };
 
-/** Result of renamePost. */
+/** Result of renamePost / completeRename. */
 export type RenamePostResult = { ok: true; path: string } | { ok: false; error: string };
+
+/**
+ * A rename target: a new slug, and optionally a new date. The tab-bar rename supplies only a slug
+ * (the current date prefix is kept) and rewrites the frontmatter slug to match the new filename; a
+ * Complete-rename derives both slug and date from the post's own frontmatter and leaves the text
+ * alone (the frontmatter is already the source of truth the filename is being made to match).
+ */
+export type RenameTarget = { slug: string; date?: string };
 
 /** PUT /doc outcome (mirrors the frozen PutDocResponse). */
 export type WriteResult =
@@ -272,8 +280,20 @@ export interface StudioStore extends Store {
    * the same path as {@link deletePost}, so browsing-then-closing leaves no orphaned worktree.
    */
   closePost(canonicalPath: string): Promise<void>;
-  /** Rename the active post's slug: move the file, `git branch -m`, `git worktree move`. */
-  renamePost(canonicalPath: string, newSlug: string): Promise<RenamePostResult>;
+  /**
+   * Rename a post to a new slug (and optionally date): move the file, `git branch -m`, `git worktree
+   * move`, and — for a slug-driven (tab-bar) rename — rewrite the frontmatter slug to match. Emits
+   * `post.renamed` (session/transcript migration) then re-activates. Refuses when the target stem
+   * collides with an open tab, an on-disk file, or an existing draft branch.
+   */
+  renamePost(canonicalPath: string, target: RenameTarget): Promise<RenamePostResult>;
+  /**
+   * Resolve a frontmatter⇄filename desync by renaming the file/worktree/branch to match the post's
+   * OWN frontmatter (deriving date+slug from its text). Runs the same path as {@link renamePost} but
+   * leaves the frontmatter untouched (it is already the source of truth). Refuses when the derivation
+   * is invalid or the target stem is taken.
+   */
+  completeRename(canonicalPath: string): Promise<RenamePostResult>;
   /** What deleting / reverting a post would discard (uncommitted files, unmerged commits, diff). */
   postLossPreview(canonicalPath: string, op: "delete" | "revert"): Promise<PostLossPreview>;
   /**
@@ -304,6 +324,12 @@ export interface StudioStore extends Store {
   writeByPath(canonicalPath: string, text: string, baseRev: DocRev): Promise<WriteResult>;
   /** The active post as { path, title, branch } (path = canonical) for the tab bar / snapshot; null if none. */
   getActive(): { path: string; title: string; branch: string } | null;
+  /**
+   * The active post's frontmatter⇄filename name-sync status (synchronous): `synced:false` with the
+   * expected/current stems when the frontmatter-derived stem differs from the filename/branch stem.
+   * The ship flow reads this to refuse a desynced post, and the connection snapshot replays it.
+   */
+  getActiveNameSync(): { synced: boolean; expectedStem?: string; currentStem?: string };
   /** Authoritative open tab set for the `tabs` broadcast. */
   getOpenTabs(): { path: string; title: string }[];
   /** The active post's worktree (for ship + the astro manager); null if none. */
@@ -521,9 +547,47 @@ export function createStore(deps: StoreDeps): StudioStore {
     return result.valid ? { valid: true, url: result.url } : { valid: false, url: null, errors: result.errors };
   }
 
+  /** The canonical path a post at `doc` would take if renamed to stem `newName` (simple vs folder). */
+  function targetCanonicalFor(doc: OpenDoc, newName: string): string {
+    const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
+    return isFolder
+      ? path.join(path.dirname(path.dirname(doc.canonicalPath)), newName, "post.mdx")
+      : path.join(path.dirname(doc.canonicalPath), `${newName}.mdx`);
+  }
+
+  /**
+   * The active-post name-sync status: whether the frontmatter-derived stem `${date}_${slug}` matches
+   * the post's filename/worktree/branch stem. Synchronous (deriveUrl + a stem compare). Reported as
+   * synced when there's no active post, or when the frontmatter is invalid (the preview-error path
+   * owns that case — a bad slug/date is not a "desync"). When desynced, `canComplete` is false only
+   * for the sync-knowable collision (the target stem is already an open tab); an on-disk-file or
+   * draft-branch collision is enforced by the rename itself and surfaces as an error on the attempt.
+   */
+  function computeNameSync(doc: OpenDoc | null): Extract<ServerMessage, { type: "post.namesync" }> {
+    if (!doc) return { type: "post.namesync", synced: true };
+    const derived = deriveUrl(doc.text, { base: previewBase });
+    if (!derived.valid) return { type: "post.namesync", synced: true };
+    const expectedStem = `${derived.date}_${derived.slug}`;
+    const currentStem = postStem(doc.canonicalPath);
+    if (expectedStem === currentStem) return { type: "post.namesync", synced: true };
+    const openCollision = open.has(targetCanonicalFor(doc, expectedStem));
+    return {
+      type: "post.namesync",
+      synced: false,
+      expectedStem,
+      currentStem,
+      canComplete: !openCollision,
+      reason: openCollision ? `a post is already open at ${expectedStem}` : undefined,
+    };
+  }
+
   function refreshPreview(): void {
-    preview = computePreview(activeDoc());
+    const doc = activeDoc();
+    preview = computePreview(doc);
     publish({ type: "preview.url", preview });
+    // Name-sync rides the same cadence/code path as the preview URL (activation, autosave-when-active,
+    // agent edit), and is active-post-scoped (no path) exactly like preview.url.
+    publish(computeNameSync(doc));
   }
 
   function publishTabs(): void {
@@ -582,6 +646,99 @@ export function createStore(deps: StoreDeps): StudioStore {
 
   function getOpenTabs(): { path: string; title: string }[] {
     return [...open.values()].map((d) => ({ path: d.canonicalPath, title: d.title }));
+  }
+
+  /**
+   * The shared rename body (no mutex — callers hold it), driving both the tab-bar rename and the
+   * Complete-rename off one path. Moves the file/folder (`git mv` when tracked, else a plain move),
+   * renames the branch (`git branch -m`) and worktree (`git worktree move`) to the new date-qualified
+   * stem, then (for a slug-driven rename only) rewrites the frontmatter slug so it stays in sync with
+   * the filename. Refuses when the target stem collides with an open tab, an on-disk file, or a draft
+   * branch. Emits `post.renamed` (so clients migrate the tab's transcript/session) before
+   * re-activating. A no-op (ok) when the target resolves to the current stem.
+   */
+  async function renameInternal(
+    doc: OpenDoc,
+    target: RenameTarget,
+    opts: { fromFrontmatter: boolean },
+  ): Promise<RenamePostResult> {
+    if (!isValidSlug(target.slug)) return { ok: false, error: `invalid slug: ${target.slug}` };
+    if (!deps.movePath) return { ok: false, error: "rename is unavailable (no movePath)" };
+
+    // A simple post `…/<date>_<old>.mdx` → `…/<newdate>_<new>.mdx`; a folder post
+    // `…/<date>_<old>/post.mdx` → `…/<newdate>_<new>/post.mdx` (its parent dir moves).
+    const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
+    const oldName = isFolder ? path.basename(path.dirname(doc.canonicalPath)) : path.basename(doc.canonicalPath, ".mdx");
+    // A Complete-rename supplies the frontmatter date; a tab-bar rename keeps the current date prefix.
+    const datePrefix = target.date ? `${target.date}_` : stemParts(oldName).datePrefix;
+    const newName = `${datePrefix}${target.slug}`;
+    const oldCanonical = doc.canonicalPath;
+    if (newName === oldName) return { ok: true, path: oldCanonical }; // nothing to do
+
+    const newCanonical = targetCanonicalFor(doc, newName);
+    if (open.has(newCanonical)) return { ok: false, error: `a post is already open at that slug` };
+    const newRel = path.relative(repoRoot, newCanonical);
+    // Branch + worktree key on the full date-qualified stem (`newName`), not the bare slug, so the
+    // renamed post keeps its collision-free identity (see `postStem`).
+    const newBranch = `blog/${newName}`;
+    const newWorktreePath = path.join(worktreesRoot, newName);
+
+    // The unit within the worktree that moves: the folder for a folder post, else the file.
+    const oldUnitInWt = isFolder ? path.dirname(doc.worktreeFilePath) : doc.worktreeFilePath;
+    const newUnitInWt = isFolder ? path.join(doc.worktreePath, path.dirname(newRel)) : path.join(doc.worktreePath, newRel);
+    if (await fs.exists(newUnitInWt)) return { ok: false, error: `a post already exists at ${newRel}` };
+    // Refuse if the target stem already has a draft branch (local or remote-only): `git branch -m`
+    // would fail on a local collision anyway, and would silently fork over a remote-only one. The
+    // author should adopt that draft from ⌘P rather than diverge from it.
+    const taken = await draftBranchTaken(newName);
+    if (taken) return { ok: false, error: taken };
+
+    // Rename the branch, move the post file/folder, then move the worktree dir to match the new
+    // stem. Order matters: move the file while the worktree is still at its old path. A tracked
+    // (already-committed) post is renamed via `git mv` so git's index records a rename instead of a
+    // delete+add; a brand-new untracked post falls back to a plain filesystem move.
+    const brRes = await git.git(["-C", doc.worktreePath, "branch", "-m", newBranch], { cwd: repoRoot });
+    if (brRes.code !== 0) return { ok: false, error: `git branch -m failed: ${brRes.stderr.trim() || `exit ${brRes.code}`}` };
+    const tracked =
+      (await git.git(["-C", doc.worktreePath, "ls-files", "--error-unmatch", "--", oldUnitInWt], { cwd: repoRoot })).code === 0;
+    if (tracked) {
+      const mvRes = await git.git(["-C", doc.worktreePath, "mv", oldUnitInWt, newUnitInWt], { cwd: repoRoot });
+      if (mvRes.code !== 0) return { ok: false, error: `git mv failed: ${mvRes.stderr.trim() || `exit ${mvRes.code}`}` };
+    } else {
+      await deps.movePath!(oldUnitInWt, newUnitInWt);
+    }
+    const wtMvRes = await git.git(["worktree", "move", doc.worktreePath, newWorktreePath], { cwd: repoRoot });
+    if (wtMvRes.code !== 0) {
+      return { ok: false, error: `git worktree move failed: ${wtMvRes.stderr.trim() || `exit ${wtMvRes.code}`}` };
+    }
+    if (deps.prepareWorktree) await deps.prepareWorktree(newWorktreePath);
+
+    const newWorktreeFilePath = path.join(newWorktreePath, newRel);
+    // Slug-driven rename: rewrite the frontmatter slug to match the new filename. Frontmatter-driven
+    // (Complete-rename): the frontmatter is already the truth the filename is being made to match, so
+    // leave the text as-is.
+    const nextText = opts.fromFrontmatter ? doc.text : rewriteSlug(doc.text, target.slug);
+    const nextRev: DocRev = { n: doc.rev.n + 1, hash: sha256Hex(nextText) };
+    guard.expect(nextRev.hash, "self");
+    await fs.writeFile(newWorktreeFilePath, nextText);
+
+    open.delete(oldCanonical);
+    doc.slug = target.slug;
+    doc.branch = newBranch;
+    doc.canonicalPath = newCanonical;
+    doc.relPath = newRel;
+    doc.worktreePath = newWorktreePath;
+    doc.worktreeFilePath = newWorktreeFilePath;
+    doc.text = nextText;
+    doc.rev = nextRev;
+    doc.title = frontmatterTitle(nextText) ?? doc.title;
+    open.set(newCanonical, doc);
+    // Announce the rename old→new BEFORE publishActivation's tabs/active/file.changed rebuild, so every
+    // client migrates the tab's transcript + session onto the new path first (else the tab is rebuilt
+    // fresh and the conversation is lost). Server-side session re-key is done by the caller (server.ts).
+    publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title, branch: doc.branch });
+    publishActivation(doc);
+    return { ok: true, path: newCanonical };
   }
 
   /** The open post whose worktree file is `worktreeFilePath` (may not be the active one). */
@@ -647,6 +804,11 @@ export function createStore(deps: StoreDeps): StudioStore {
     getActive() {
       const doc = activeDoc();
       return doc ? { path: doc.canonicalPath, title: doc.title, branch: doc.branch } : null;
+    },
+
+    getActiveNameSync() {
+      const m = computeNameSync(activeDoc());
+      return { synced: m.synced, expectedStem: m.expectedStem, currentStem: m.currentStem };
     },
 
     getOpenTabs,
@@ -805,88 +967,27 @@ export function createStore(deps: StoreDeps): StudioStore {
       }
     },
 
-    renamePost(canonicalPath, newSlug) {
+    renamePost(canonicalPath, target) {
       return mutex.runExclusive(async (): Promise<RenamePostResult> => {
-        const jailed = resolveJailed(canonicalPath) ?? canonicalPath;
-        const doc = open.get(jailed);
+        const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
         if (!doc) return { ok: false, error: "post is not open" };
-        if (!/^[a-z0-9][a-z0-9-]*$/.test(newSlug)) return { ok: false, error: `invalid slug: ${newSlug}` };
-        if (newSlug === doc.slug) return { ok: true, path: doc.canonicalPath };
-        if (!deps.movePath) return { ok: false, error: "rename is unavailable (no movePath)" };
+        // Slug-driven (tab-bar) rename: rewrite the frontmatter slug to match the new filename so the
+        // two stay in sync (never introduce a desync).
+        return renameInternal(doc, target, { fromFrontmatter: false });
+      });
+    },
 
-        // New identities. A simple post `…/<date>_<old>.mdx` renames to `…/<date>_<new>.mdx`; a
-        // folder post `…/<date>_<old>/post.mdx` renames to `…/<date>_<new>/post.mdx` (its parent
-        // dir moves).
-        const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
-        const oldName = isFolder ? path.basename(path.dirname(doc.canonicalPath)) : path.basename(doc.canonicalPath, ".mdx");
-        const { datePrefix } = stemParts(oldName);
-        const newName = `${datePrefix}${newSlug}`;
-        const newCanonical = isFolder
-          ? path.join(path.dirname(path.dirname(doc.canonicalPath)), newName, "post.mdx")
-          : path.join(path.dirname(doc.canonicalPath), `${newName}.mdx`);
-        if (open.has(newCanonical)) return { ok: false, error: `a post is already open at that slug` };
-        const newRel = path.relative(repoRoot, newCanonical);
-        // Branch + worktree key on the full date-qualified stem (`newName`), not the bare slug, so
-        // the renamed post keeps its collision-free identity (see `postStem`).
-        const newBranch = `blog/${newName}`;
-        const newWorktreePath = path.join(worktreesRoot, newName);
-
-        // The unit within the worktree that moves: the folder for a folder post, else the file.
-        const oldUnitInWt = isFolder ? path.dirname(doc.worktreeFilePath) : doc.worktreeFilePath;
-        const newUnitInWt = isFolder ? path.join(doc.worktreePath, path.dirname(newRel)) : path.join(doc.worktreePath, newRel);
-        if (await fs.exists(newUnitInWt)) return { ok: false, error: `a post already exists at ${newRel}` };
-        // Refuse if the target stem already has a draft branch (local or remote-only): `git branch -m`
-        // would fail on a local collision anyway, and would silently fork over a remote-only one. The
-        // author should adopt that draft from ⌘P rather than diverge from it.
-        const taken = await draftBranchTaken(newName);
-        if (taken) return { ok: false, error: taken };
-
-        // Rename the branch, move the post file/folder, then move the worktree dir to match
-        // the new slug. Order matters: move the file while the worktree is still at its old path.
-        // A tracked (already-committed) post is renamed via `git mv` so git's index records a
-        // rename instead of a delete+add; a brand-new untracked post falls back to a plain
-        // filesystem move, since `git mv` errors on paths git doesn't know about.
-        const brRes = await git.git(["-C", doc.worktreePath, "branch", "-m", newBranch], { cwd: repoRoot });
-        if (brRes.code !== 0) return { ok: false, error: `git branch -m failed: ${brRes.stderr.trim() || `exit ${brRes.code}`}` };
-        const tracked =
-          (await git.git(["-C", doc.worktreePath, "ls-files", "--error-unmatch", "--", oldUnitInWt], { cwd: repoRoot })).code === 0;
-        if (tracked) {
-          const mvRes = await git.git(["-C", doc.worktreePath, "mv", oldUnitInWt, newUnitInWt], { cwd: repoRoot });
-          if (mvRes.code !== 0) return { ok: false, error: `git mv failed: ${mvRes.stderr.trim() || `exit ${mvRes.code}`}` };
-        } else {
-          await deps.movePath(oldUnitInWt, newUnitInWt);
+    completeRename(canonicalPath) {
+      return mutex.runExclusive(async (): Promise<RenamePostResult> => {
+        const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
+        if (!doc) return { ok: false, error: "post is not open" };
+        // Derive the target from the post's OWN frontmatter (the source of truth), so the filename /
+        // worktree / branch are made to match it. Leave the text alone (fromFrontmatter).
+        const derived = deriveUrl(doc.text, { base: previewBase });
+        if (!derived.valid) {
+          return { ok: false, error: `cannot complete rename: the frontmatter is invalid (${derived.errors.join("; ")})` };
         }
-        const mvRes = await git.git(["worktree", "move", doc.worktreePath, newWorktreePath], { cwd: repoRoot });
-        if (mvRes.code !== 0) {
-          return { ok: false, error: `git worktree move failed: ${mvRes.stderr.trim() || `exit ${mvRes.code}`}` };
-        }
-        if (deps.prepareWorktree) await deps.prepareWorktree(newWorktreePath);
-
-        // Keep the frontmatter slug in step with the filename so the derived URL follows the rename.
-        const newWorktreeFilePath = path.join(newWorktreePath, newRel);
-        const nextText = rewriteSlug(doc.text, newSlug);
-        const nextRev: DocRev = { n: doc.rev.n + 1, hash: sha256Hex(nextText) };
-        guard.expect(nextRev.hash, "self");
-        await fs.writeFile(newWorktreeFilePath, nextText);
-
-        open.delete(jailed);
-        doc.slug = newSlug;
-        doc.branch = newBranch;
-        doc.canonicalPath = newCanonical;
-        doc.relPath = newRel;
-        doc.worktreePath = newWorktreePath;
-        doc.worktreeFilePath = newWorktreeFilePath;
-        doc.text = nextText;
-        doc.rev = nextRev;
-        doc.title = frontmatterTitle(nextText) ?? doc.title;
-        open.set(newCanonical, doc);
-        // Announce the rename old→new BEFORE publishActivation's tabs/active/file.changed rebuild, so
-        // every client migrates the tab's transcript + session onto the new path first (else the tab
-        // is rebuilt fresh at the new path and the conversation is lost). Server-side session re-key
-        // is done by the caller (server.ts) via agentHost.renameSessionKey.
-        publish({ type: "post.renamed", oldPath: jailed, newPath: newCanonical, title: doc.title, branch: doc.branch });
-        publishActivation(doc);
-        return { ok: true, path: newCanonical };
+        return renameInternal(doc, { slug: derived.slug, date: derived.date }, { fromFrontmatter: true });
       });
     },
 
