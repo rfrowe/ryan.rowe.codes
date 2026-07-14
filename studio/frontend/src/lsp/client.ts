@@ -21,6 +21,9 @@ export function getLspClient(): LSPClient | null {
   }
   const transport = new LspTransport();
   const client = new LSPClient({
+    // The MDX server's first completion/hover after a cold start pays the TS-program load; the
+    // library default (3s) times those out. Give it generous headroom (it's rarely hit post-warmup).
+    timeout: 20000,
     // Completion + hover + signature help only. serverDiagnostics() and the
     // definition/references/rename keymaps are deliberately omitted (deferred to Phase 4).
     extensions: [serverCompletion(), hoverTooltips(), signatureHelp()],

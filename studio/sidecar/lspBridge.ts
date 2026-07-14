@@ -150,9 +150,12 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
 
   return {
     connect(ws: WebSocket) {
-      // Last connection wins: drop any prior session's socket before taking over.
+      // Last connection wins: drop any prior session's socket before taking over. The close code
+      // 4000 (application range) tells that socket's transport NOT to reconnect — otherwise two open
+      // SPA tabs would ping-pong the single session forever, each supersede triggering the other's
+      // reconnect. Newest tab wins; older tabs go dormant until reloaded.
       const prev = currentWs;
-      if (prev && prev !== ws && prev.readyState === prev.OPEN) prev.close(1000, "superseded by a new LSP connection");
+      if (prev && prev !== ws && prev.readyState === prev.OPEN) prev.close(4000, "superseded by a new LSP connection");
       currentWs = ws;
       inbuf = Buffer.alloc(0);
 
@@ -162,6 +165,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
         ws.close(1011, "language server unavailable");
         return;
       }
+      console.error("[sidecar] LSP session connected (/lsp).");
 
       ws.on("message", (data: Buffer | ArrayBuffer | Buffer[]) => {
         const text = Array.isArray(data) ? Buffer.concat(data).toString("utf8") : Buffer.from(data as Buffer).toString("utf8");
@@ -176,6 +180,7 @@ export function createLspBridge(deps: LspBridgeDeps): LspBridge {
       ws.on("close", () => {
         if (currentWs === ws) {
           currentWs = null;
+          console.error("[sidecar] LSP session closed (/lsp).");
           void lsp.close();
         }
       });

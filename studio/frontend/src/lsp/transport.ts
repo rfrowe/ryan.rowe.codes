@@ -10,6 +10,8 @@ import { STUDIO_TOKEN, WS_BASE } from "../config";
 
 const INITIAL_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 5000;
+/** Close code the sidecar uses when a newer tab takes over the single LSP session (don't reconnect). */
+const SUPERSEDED_CODE = 4000;
 
 /** `/lsp` WS URL carrying the same per-launch token as the app socket. */
 function lspWsUrl(): string {
@@ -49,8 +51,11 @@ export class LspTransport implements Transport {
       if (typeof ev.data !== "string") return;
       for (const h of [...this.handlers]) h(ev.data);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
       if (this.ws === ws) this.ws = null;
+      // 4000 = the sidecar superseded this socket with a newer tab's connection; going dormant (no
+      // reconnect) is what prevents two tabs from ping-ponging the single LSP session.
+      if (ev.code === SUPERSEDED_CODE) return;
       this.scheduleReconnect();
     };
     ws.onerror = () => ws.close();

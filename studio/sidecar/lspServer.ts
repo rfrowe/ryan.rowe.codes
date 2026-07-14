@@ -37,9 +37,17 @@ export function createMdxLspServer({ repoRoot }: { repoRoot: string }): MdxLspSe
   const exitHandlers = new Set<(info: { code: number | null; signal: NodeJS.Signals | null; expected: boolean }) => void>();
 
   let child: ChildProcess | null = null;
-  // Set while we're deliberately killing the child (restart/close), so its exit is reported as
-  // expected (no crash log, no reconnect thrash).
-  let killing = false;
+  // Children we killed on purpose (restart/close). Keyed per-process, not a shared flag: the `exit`
+  // event fires asynchronously, so a shared boolean reset right after kill() would already be back to
+  // false by the time exit runs — making our own SIGTERM look like a crash and triggering a
+  // socket-close → reconnect → restart loop.
+  const expectedExit = new WeakSet<ChildProcess>();
+
+  /** Kill a specific child, marking its imminent exit as expected. */
+  function killChild(proc: ChildProcess): void {
+    expectedExit.add(proc);
+    proc.kill("SIGTERM");
+  }
 
   function spawnChild(): boolean {
     if (!existsSync(bin)) {
@@ -62,7 +70,7 @@ export function createMdxLspServer({ repoRoot }: { repoRoot: string }): MdxLspSe
       console.error(`[sidecar] mdx-language-server failed to spawn: ${err.message}`);
     });
     proc.once("exit", (code, signal) => {
-      const expected = killing;
+      const expected = expectedExit.has(proc);
       if (child === proc) child = null;
       if (!expected) {
         console.error(`[sidecar] mdx-language-server exited unexpectedly (code=${code}, signal=${signal ?? "none"}).`);
@@ -75,17 +83,14 @@ export function createMdxLspServer({ repoRoot }: { repoRoot: string }): MdxLspSe
   return {
     start() {
       if (child) return true;
-      killing = false;
       return spawnChild();
     },
 
     restart() {
       if (child) {
-        killing = true;
-        child.kill("SIGTERM");
+        killChild(child);
         child = null;
       }
-      killing = false;
       return spawnChild();
     },
 
@@ -112,7 +117,7 @@ export function createMdxLspServer({ repoRoot }: { repoRoot: string }): MdxLspSe
           resolve();
           return;
         }
-        killing = true;
+        expectedExit.add(proc);
         child = null;
         const done = setTimeout(() => {
           try {
