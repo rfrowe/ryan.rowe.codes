@@ -1,8 +1,6 @@
-// Ship-as-PR panel: review the working-tree diff, fill a human-authored commit
-// message, and run the studio ship flow behind an explicit confirm gate. The
-// sidecar (never the agent) runs git/gh; the ship is human-gated (the author
-// reviews the diff and confirms) with no attribution check. This panel surfaces
-// the resulting PR URL, or the error if the ship fails.
+// Ship-as-PR panel: review the working-tree diff, fill a commit message, and run the ship flow
+// behind an explicit confirm gate. The sidecar (never the agent) runs git/gh. Surfaces the
+// resulting PR URL, or the error on failure.
 
 import { useEffect, useState } from "react";
 import type { ShipResponse } from "../../shared/protocol";
@@ -10,12 +8,11 @@ import { getDiff, ship } from "./api";
 import { DiffView } from "./DiffView";
 
 interface ShipPanelProps {
-  /** The active post's real isolation branch (`blog/<date>_<slug>`), from the `active` broadcast.
-   *  Display-only: the sidecar derives and pushes this branch regardless of anything the SPA sends.
+  /** The active post's isolation branch, display-only (the sidecar pushes its own regardless).
    *  Null before a post is active. */
   branch: string | null;
-  /** Frontmatter/filename name-sync. When `synced` is false, ship is blocked (the sidecar refuses a
-   *  desynced post too; this disables the button and explains why up front). */
+  /** Frontmatter/filename name-sync. When `synced` is false, ship is blocked (the sidecar refuses
+   *  a desynced post too; this disables the button and explains why). */
   nameSync: { synced: boolean; expectedStem?: string; currentStem?: string };
   onClose: () => void;
 }
@@ -41,9 +38,8 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
     getDiff(scope)
       .then((res) => {
         if (!live) return;
-        // The sidecar replies { error } (not { status, diff }) when the diff fails (git timeout,
-        // git missing). asJson doesn't throw on a 500, so guard the shape here; otherwise an
-        // undefined `diff` reaches the render, where `diff.trim()` throws and white-screens.
+        // The sidecar replies { error } when the diff fails, and asJson doesn't throw on a 500;
+        // guard the shape so an undefined `diff` doesn't reach `diff.trim()` and white-screen.
         if (typeof res.diff !== "string") {
           const message = (res as { error?: string }).error;
           setDiffError(message && message.trim() ? message : "failed to load diff");
@@ -60,15 +56,13 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
     };
   }, [scope]);
 
-  // Can't ship until the active post's branch has resolved (null = no active post / still activating),
-  // and never while its frontmatter/filename is desynced (the sidecar refuses it too).
+  // Can't ship until the branch resolves, and never while the frontmatter/filename is desynced.
   const canShip = !!branch && subject.trim().length > 0 && nameSync.synced;
 
   async function doShip(): Promise<void> {
     setPhase("shipping");
     try {
-      // `branch` is the real branch the sidecar will push; it ignores this field, but send the
-      // true value rather than a stale guess so the wire matches what actually happens.
+      // The sidecar ignores `branch`, but send the true value so the wire matches what happens.
       const res = await ship({ branch: branch ?? "", subject: subject.trim(), body, scope, confirm: true });
       setResult(res);
     } catch (e: unknown) {

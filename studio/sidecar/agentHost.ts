@@ -1,18 +1,9 @@
-// Embedded Agent SDK host for the studio's built-in panel. One `query()` session per open post,
-// each rooted (cwd) in that post's git worktree so sessions never contend over a shared working
-// tree. The active tab's session receives prompts and streams; the SDK stream is mapped to the
-// studio's ServerMessage protocol.
-//
-// Permissions: the human picks the permission mode via the mode chip. `auto` (a model classifier
-// approves safe calls and escalates risk), `acceptEdits` (auto-accept in-worktree edits), or
-// `default`. Anything the mode won't auto-approve routes to `canUseTool`, which emits a
-// `permission.request` to the SPA and awaits the human's allow/always/deny (the approve/deny UX).
-// A PreToolUse hook adds one deterministic guarantee the classifier can't: a file edit whose
-// target resolves outside this post's worktree (or a directory the human has since granted) is
-// forced to `ask` rather than silently auto-approved; that's what keeps edits landing in the
-// right worktree. "Always allow" on such a prompt grants the directory for the session. Reads and
-// Bash are left to the mode/classifier and canUseTool (no brittle shell parsing). MCP servers can
-// be toggled on/off per the mcp.status / mcp.setEnabled protocol.
+// Embedded Agent SDK host for the studio panel. One `query()` session per open post, each rooted
+// in that post's worktree so sessions don't contend over one working tree. The SDK stream is mapped
+// to the studio's ServerMessage protocol. The human picks the permission mode; whatever the mode
+// won't auto-approve routes to `canUseTool` (the SPA's allow/always/deny). A PreToolUse hook forces
+// any edit targeting outside the worktree (or a granted dir) to `ask`, so edits land in the right
+// worktree regardless of mode. MCP servers toggle on/off via mcp.status / mcp.setEnabled.
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -32,51 +23,48 @@ const RESULT_PREVIEW_MAX = 2000;
 
 export interface AgentHostDeps {
   tools: StudioTools;
-  /** The active post's worktree (its cwd and the file the agent edits); null if none open. */
+  /** The active post's worktree (cwd and the file the agent edits); null if none open. */
   getActiveWorktree: () => ActiveWorktree | null;
   /** Authoring rules appended to the system prompt and used as the MCP instructions. */
   skillInstructions: string;
-  /** Sink for server-to-client messages (streamed into the panel). */
+  /** Sink for server-to-client messages. */
   emit: (msg: ServerMessage) => void;
-  /** Snapshot of the current editor context (reserved for prompt enrichment). */
+  /** Reserved for prompt enrichment. */
   getEditorContext: () => EditorContext | null;
-  /** Fired when a turn starts / ends, so the doc-sync watcher soft-locks and classifies agent writes. */
+  /** So the doc-sync watcher soft-locks and classifies agent writes for the turn. */
   onTurnStart?: () => void;
   onTurnEnd?: () => void;
-  /** Initial permission mode for new sessions (mode chip default); defaults to "auto". */
+  /** Mode chip default; defaults to "auto". */
   defaultPermissionMode?: PermissionMode;
-  /** Absolute dirs allowed for edits beyond the worktree at launch (seeds the granted-dir set). */
+  /** Dirs editable beyond the worktree at launch; seeds the granted-dir set. */
   additionalDirectories?: string[];
 }
 
-/** The concrete agent host: the frozen AgentHost plus the MCP status/toggle and permission surface. */
+/** The frozen AgentHost plus the studio's MCP status/toggle and permission surface. */
 export interface StudioAgentHost extends AgentHost {
   /** Enable/disable one MCP server for the studio's sessions (takes effect next turn). */
   setMcpEnabled(server: string, enabled: boolean): void;
-  /** Current MCP inventory for the mcp.status broadcast / connection snapshot. */
   getMcpStatus(): { name: string; status: string; enabled: boolean }[];
-  /** Set the permission mode for subsequent turns; broadcasts the authoritative `mode.status`. */
+  /** Set the mode for subsequent turns and broadcast the authoritative `mode.status`. */
   setPermissionMode(mode: PermissionMode): void;
-  /** Current permission mode for the mode.status broadcast / connection snapshot. */
   getPermissionMode(): PermissionMode;
-  /** Resolve an in-flight `permission.request` (by requestId) with the human's decision. */
+  /** Resolve an in-flight `permission.request` with the human's decision. */
   resolvePermission(requestId: string, decision: PermissionDecision): void;
   /**
-   * Re-key a post's SDK session from its old canonical path to a new one when the post is renamed
-   * (slug and/or date), so the resumable session (and thus the whole conversation the human can
-   * resume) follows the post instead of being orphaned under the vanished path. Mirrors the store's
-   * open-map re-key: a no-op when the old key has no session or the new key already has one.
+   * Re-key a post's session when the post is renamed, so the resumable conversation follows the post
+   * instead of being orphaned under the vanished path. No-op if the old key has no session or the
+   * new key is taken.
    */
   renameSessionKey(oldPath: string, newPath: string): void;
 }
 
-/** One post's SDK session: its id and how the next turn resumes/forks. Keyed by the post's canonical path. */
+/** One post's SDK session: its id and how the next turn resumes/forks. */
 interface PostSession {
   sessionId: string;
   mode: SessionMode;
-  /** Source session to resume from on the first turn (resume/fork); undefined for new. */
+  /** Source to resume from on the first turn (resume/fork); undefined for new. */
   resumeFrom?: string;
-  /** Whether the next turn is this session's first (pins/resumes vs. plain resume). */
+  /** Whether the next turn is this session's first. */
   firstTurn: boolean;
 }
 
@@ -87,17 +75,17 @@ export function createAgentHost(deps: AgentHostDeps): StudioAgentHost {
 class EmbeddedAgentHost implements StudioAgentHost {
   private readonly deps: AgentHostDeps;
 
-  /** One session per open post, keyed by the post's canonical path. */
+  /** One session per open post, keyed by canonical path. */
   private readonly sessions = new Map<string, PostSession>();
   /** MCP servers observed from session init messages: name to status. */
   private readonly knownServers = new Map<string, string>();
-  /** Servers the human toggled off (global across sessions); excluded from each turn's tools. */
+  /** Servers the human toggled off; excluded from each turn's tools. */
   private readonly disabledServers = new Set<string>();
-  /** The active permission mode (mode chip); applied to every turn's `query()`. */
+  /** Applied to every turn's `query()`. */
   private currentMode: PermissionMode;
-  /** Absolute dirs beyond the worktree that edits may target without asking (grown via "always allow"). */
+  /** Dirs beyond the worktree edits may target without asking (grown via "always allow"). */
   private readonly grantedDirs: Set<string>;
-  /** In-flight permission prompts: requestId to the resolver awaited inside `canUseTool`. */
+  /** In-flight prompts: requestId to the resolver awaited inside `canUseTool`. */
   private readonly pendingPermissions = new Map<string, (decision: PermissionDecision | "abort") => void>();
   private current: { promptId: string; abort: AbortController } | null = null;
 
@@ -107,7 +95,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     this.grantedDirs = new Set(deps.additionalDirectories ?? []);
   }
 
-  // ---- session selection (applies to the active post's session) ----
+  // ---- session selection (active post's session) ----
 
   async select(
     mode: SessionMode,
@@ -169,7 +157,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
   setMcpEnabled(server: string, enabled: boolean): void {
     if (enabled) this.disabledServers.delete(server);
     else this.disabledServers.add(server);
-    // The studio server is always in the inventory even before the first turn establishes it.
+    // The studio server is always in the inventory, even before the first turn establishes it.
     if (!this.knownServers.has(server) && server !== STUDIO_MCP_SERVER_NAME) this.knownServers.set(server, "pending");
     this.broadcastMcpStatus();
   }
@@ -206,25 +194,23 @@ class EmbeddedAgentHost implements StudioAgentHost {
   renameSessionKey(oldPath: string, newPath: string): void {
     if (oldPath === newPath) return;
     const session = this.sessions.get(oldPath);
-    // Only move it when there's a session to move and the destination is free; a session already at
-    // the new key (shouldn't happen for a fresh target) is left untouched rather than clobbered.
+    // Only move when there's a session to move and the destination is free (don't clobber).
     if (session && !this.sessions.has(newPath)) {
       this.sessions.set(newPath, session);
       this.sessions.delete(oldPath);
     }
   }
 
-  /** Resolve every still-pending prompt as an abort: the turn ended, so none can be answered. */
+  /** Abort every still-pending prompt: the turn ended, so none can be answered. */
   private abortPendingPermissions(): void {
     for (const resolve of this.pendingPermissions.values()) resolve("abort");
     this.pendingPermissions.clear();
   }
 
   /**
-   * The `canUseTool` handler for the "ask" path: emit a `permission.request` for the owning turn
-   * and await the human's decision (or an abort if the turn is cancelled). "always" widens the
-   * session's permissions with the SDK's own suggestions and, for an out-of-worktree edit, grants
-   * that file's directory so the jail hook stops asking for it.
+   * The `canUseTool` handler: emit a `permission.request` and await the human's decision (or an abort
+   * if the turn is cancelled). "always" widens the session with the SDK's suggestions and, for an
+   * out-of-worktree edit, grants that file's dir so the jail hook stops asking.
    */
   private makeCanUseTool(): NonNullable<Options["canUseTool"]> {
     return async (toolName, input, opts) => {
@@ -251,7 +237,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     };
   }
 
-  /** On "always allow" for a file-mutation tool, grant that file's parent directory (session-scoped). */
+  /** On "always allow" for a file-mutation tool, grant that file's parent dir for the session. */
   private grantDirFor(toolName: string, input: Record<string, unknown>): void {
     const target = mutationTarget(toolName, input);
     if (target === null) return;
@@ -279,7 +265,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
   private composePrompt(text: string, context: PromptContext, wt: ActiveWorktree): string {
     const lines = [text.trim(), "", "<studio-context>", `Active post file: ${wt.worktreeFilePath}.`];
     if (context.anchor) {
-      // Inline (⌘K) prompt: the studio already resolved the exact region the author invoked on.
+      // Inline (⌘K) prompt: the studio already resolved the region the author invoked on.
       lines.push(
         `The prompt targets a specific region of the post — UTF-16 code units [${context.anchor.from}, ${context.anchor.to}). Its current text is between the >>>>> markers:`,
         ">>>>>",
@@ -291,7 +277,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
           "(e.g. a heading's leading `###`), and do NOT modify anything outside the region.",
       );
     } else {
-      // Chat-panel prompt: no resolved region. Fall back to the editor-context tool for "here".
+      // Chat-panel prompt: no region. Fall back to the editor-context tool for "here".
       lines.push(
         `Cursor at UTF-16 offset ${context.cursor}.`,
         'Resolve "here" / "this" against mcp__studio__get_editor_context, then edit the post file directly ' +
@@ -308,23 +294,18 @@ class EmbeddedAgentHost implements StudioAgentHost {
     const options: Options = {
       cwd,
       abortController: abort,
-      // The human picks the mode (auto/acceptEdits/default). The studio-tool wildcard is always
-      // auto-approved so the panel's own tools never prompt. Anything the mode won't auto-approve
-      // routes to `canUseTool` (the approve/deny UX). `additionalDirectories` are the dirs the
-      // human has granted beyond the worktree, so edits there stop prompting.
+      // The studio-tool wildcard is always auto-approved so the panel's own tools never prompt.
+      // `additionalDirectories` are the dirs the human granted beyond the worktree.
       permissionMode: this.currentMode,
       allowedTools: [STUDIO_TOOL_WILDCARD],
       additionalDirectories: [...this.grantedDirs],
       canUseTool: this.makeCanUseTool(),
-      // Runs regardless of mode and can't be bypassed by it: forces a file edit whose target escapes
-      // the allowed set to `ask` (routes to canUseTool) instead of letting the classifier/acceptEdits
-      // auto-approve it. Allowed set = the worktree plus any dirs the human has granted this session.
+      // Mode-proof: forces an edit escaping the allowed set (worktree plus granted dirs) to `ask`.
       hooks: {
         PreToolUse: [{ hooks: [worktreeAskHook(() => [cwd, ...this.grantedDirs])] }],
       },
       // Load the author's normal config: "user" brings global ~/.claude (their MCP servers, skills,
-      // CLAUDE.md, allow/deny rules); "project"/"local" bring the worktree's .claude. Our
-      // `mcpServers: { studio }` merges with these.
+      // CLAUDE.md, rules); "project"/"local" bring the worktree's .claude. Our studio server merges in.
       settingSources: ["user", "project", "local"],
       includePartialMessages: true,
       // Append the authoring rules so a resumed/foreign session gets them even without CLAUDE.md.
@@ -345,6 +326,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
       } else if (session.mode === "resume") {
         options.resume = session.resumeFrom;
       } else {
+        // fork: resume the source but pin a fresh id.
         options.resume = session.resumeFrom;
         options.forkSession = true;
         options.sessionId = session.sessionId;
@@ -356,8 +338,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
   }
 
   private async runTurn(promptId: string, buildPrompt: (wt: ActiveWorktree) => string): Promise<void> {
-    // Server-side backstop against concurrent turns: a resumed session is single-threaded, and the
-    // studio runs one turn at a time (the active tab's). Reject a second prompt rather than desync
+    // A resumed session is single-threaded; reject a second concurrent prompt rather than desync
     // turn state. (The SPA also guards the UI.)
     if (this.current) {
       this.deps.emit({
@@ -392,8 +373,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
         this.deps.emit({ type: "error", promptId, message: errorMessage(err) });
       }
     } finally {
-      // A finished/failed/cancelled turn can no longer answer prompts, so release any that are still
-      // parked (deny) so `canUseTool` unblocks and no resolver leaks past the turn.
+      // The turn is over and can't answer prompts, so release any still parked before it leaks.
       this.abortPendingPermissions();
       if (this.current?.promptId === promptId) this.current = null;
       this.deps.onTurnEnd?.();
@@ -557,9 +537,8 @@ type PermissionSuggestions = Parameters<CanUseToolFn>[2]["suggestions"];
 type SdkPermissionResult = NonNullable<Awaited<ReturnType<CanUseToolFn>>>;
 
 /**
- * Map a human's `permission.response` decision to the SDK's PermissionResult. "always" carries the
- * SDK's own "so you won't be asked again" suggestions (a tool allow-rule, or an addDirectories grant
- * for an out-of-worktree edit) so the widening is exactly what the SDK proposed for this call.
+ * Map a `permission.response` decision to the SDK's PermissionResult. "always" carries the SDK's own
+ * suggestions so the widening is exactly what the SDK proposed for this call.
  */
 export function decisionToPermissionResult(
   decision: PermissionDecision,
@@ -576,12 +555,9 @@ export function decisionToPermissionResult(
 const FILE_MUTATION_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 /**
- * A PreToolUse hook that forces a file edit whose target escapes the allowed directory set to `ask`
- * (routes to canUseTool) rather than letting the mode/classifier auto-approve it. It's deterministic
- * and mode-proof, the one guarantee the classifier can't give: an edit lands in the right worktree
- * (or a dir the human explicitly granted) or the human is asked. Reads and Bash are not gated here
- * (the mode and canUseTool own those; no brittle shell parsing). It inspects only a known structured
- * field, and reads `getAllowedDirs` per call so a mid-session directory grant takes effect immediately.
+ * PreToolUse hook: forces a file edit whose target escapes the allowed dir set to `ask` rather than
+ * letting the mode auto-approve it. Deterministic and mode-proof. Reads and Bash aren't gated here.
+ * Reads `getAllowedDirs` per call so a mid-session grant takes effect immediately.
  */
 export function worktreeAskHook(getAllowedDirs: () => string[]) {
   return async (input: HookInput): Promise<HookJSONOutput> => {
@@ -601,7 +577,7 @@ export function worktreeAskHook(getAllowedDirs: () => string[]) {
   };
 }
 
-/** The file a mutation tool would write, or null when `toolName` isn't a file mutation / has no path. */
+/** The file a mutation tool would write, or null when it isn't a file mutation / has no path. */
 export function mutationTarget(toolName: string, input: Record<string, unknown>): string | null {
   if (!FILE_MUTATION_TOOLS.has(toolName)) return null;
   const key = toolName === "NotebookEdit" ? "notebook_path" : "file_path";
@@ -619,14 +595,13 @@ function withinDir(target: string, dir: string): boolean {
   const resolved = path.resolve(dir, expandHome(target));
   const rel = path.relative(dir, resolved);
   if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) return false;
-  // A worktree's `node_modules` is a symlink to the repo's shared deps (main.ts linkNodeModules),
-  // so a lexically in-jail path under it physically escapes into the tree every other post shares.
-  // Treat any `node_modules` segment as outside the jail so such a write is forced to ask.
+  // A worktree's `node_modules` symlinks to the repo's shared deps, so a lexically in-jail path
+  // under it physically escapes into the tree every post shares. Treat it as outside the jail.
   if (rel.split(path.sep).includes("node_modules")) return false;
   return true;
 }
 
-/** Expand a leading `~` / `~/…` to the home directory (which is always outside the worktree). */
+/** Expand a leading `~` / `~/…` to the home directory (always outside the worktree). */
 function expandHome(p: string): string {
   if (p === "~") return homedir();
   if (p.startsWith("~/")) return path.join(homedir(), p.slice(2));

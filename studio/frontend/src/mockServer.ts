@@ -1,15 +1,9 @@
-// In-browser mock of the sidecar's web face (REST + WS). It lets the SPA run and
-// develop with no real backend: enable with a `?mock` query flag or VITE_STUDIO_MOCK.
-//
-// `installMock()` patches `globalThis.fetch` and `globalThis.WebSocket`, but only
-// intercepts sidecar traffic (REST_BASE / WS_BASE). Any other URL (Vite's own HMR
-// socket, the preview iframe) is delegated to the real implementations, so the mock
-// is safe to install in dev. It speaks the exact frozen wire protocol.
-//
-// The mock is tab-aware: it seeds a couple of open posts, a small MCP inventory, and a
-// bag of not-yet-open posts (for ⌘P), and it services the full tab lifecycle
-// (post.open/create/close/rename) and mcp.setEnabled so all of the studio chrome renders
-// and can be exercised with no real sidecar.
+// In-browser mock of the sidecar's REST + WS face, so the SPA runs with no real backend. Enable with
+// a `?mock` query flag or VITE_STUDIO_MOCK. installMock() patches fetch and WebSocket but only
+// intercepts sidecar traffic (REST_BASE/WS_BASE); everything else (Vite HMR, the preview iframe) is
+// delegated to the real implementations, so it's safe to install in dev. It speaks the frozen wire
+// protocol and is tab-aware: it seeds open posts, an MCP inventory, and not-yet-open posts (for ⌘P),
+// and services the full tab lifecycle and mcp.setEnabled.
 
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
 import type { ClientMessage, DraftSummary, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
@@ -42,8 +36,7 @@ function previewUrl(date: string, slug: string): string {
 }
 
 function frontmatter(title: string, slug: string, date: string, headline: string): string {
-  // created_at is quoted (mirrors the real studio) so Astro's YAML keeps it a string; the URL day is
-  // its leading date component (see parsePostDate).
+  // created_at is quoted (mirrors the real studio) so Astro's YAML keeps it a string.
   return `---\ntitle: ${title}\nslug: ${slug}\ncreated_at: "${date}"\nheadline: ${headline}\n---\n\n`;
 }
 
@@ -83,8 +76,7 @@ const CLOSED_POSTS: PostSummaryDTO[] = [
   },
 ];
 
-// Existing blog/* draft branches with no live worktree, for the ⌘P palette's draft entries. One
-// local, one remote-only (renders the "remote" chip; reopening it adopts a tracking worktree).
+// Draft branches with no live worktree, for the ⌘P palette. One local, one remote-only.
 const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
   {
     summary: { path: postPath("2026-04-18", "a-half-written-idea"), stem: "2026-04-18_a-half-written-idea", origin: "local" },
@@ -133,8 +125,7 @@ const SAMPLE_SESSIONS: SessionListItem[] = [
   },
 ];
 
-// A small MCP inventory spanning every status the popover renders: connected (green),
-// needs-auth (amber), disabled (grey).
+// MCP inventory spanning every status the popover renders: connected, needs-auth, disabled.
 const MOCK_MCP: { name: string; status: string; enabled: boolean }[] = [
   { name: "studio", status: "connected", enabled: true },
   { name: "chrome-devtools", status: "connected", enabled: true },
@@ -158,8 +149,8 @@ function branchFromPath(path: string): string {
   return `blog/${base.split("/").pop() ?? ""}`;
 }
 
-// One open post's live state. `agent` is per-post (each tab has its own session), so a rename can
-// carry the session with the post and `?mock` exercises the post.renamed transcript migration.
+// One open post's live state. agent is per-post (each tab has its own session), so a rename carries
+// the session with the post and ?mock exercises the post.renamed transcript migration.
 interface MockDoc {
   path: string;
   title: string;
@@ -183,9 +174,9 @@ class MockBackend {
   private activePath: string;
   private mcp = MOCK_MCP.map((s) => ({ ...s }));
   private mode: PermissionMode = "auto";
-  // Resolver for an in-flight demo permission prompt, set while a turn awaits the author's answer.
+  // Resolver for an in-flight demo permission prompt, awaiting the author's answer.
   private pendingPerm: ((decision: PermissionDecision) => void) | null = null;
-  // Demo the approve/deny card once per page session, then stop nagging on later turns.
+  // Demo the approve/deny card once per page session, then stop.
   private permDemoed = false;
   private readonly sockets = new Set<MockWebSocket>();
 
@@ -210,7 +201,7 @@ class MockBackend {
 
   register(socket: MockWebSocket): void {
     this.sockets.add(socket);
-    // Bootstrap the just-connected client with the full authoritative state.
+    // Bootstrap the just-connected client with the full state.
     socket.deliver(this.tabsMsg());
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
@@ -235,9 +226,8 @@ class MockBackend {
     return { type: "mcp.status", servers: this.mcp.map((s) => ({ ...s })) };
   }
 
-  // Push the active post's `active`, doc, preview, and name-sync to one socket (or all if omitted).
-  // Mirrors the real sidecar: switching the active post is always followed by its file, preview, and
-  // name-sync.
+  // Push the active post's active, doc, preview, and name-sync to one socket (or all). Mirrors the
+  // sidecar: switching the active post is always followed by its file, preview, and name-sync.
   private deliverActive(target?: MockWebSocket): void {
     const doc = this.docs.get(this.activePath);
     if (!doc) return;
@@ -248,9 +238,8 @@ class MockBackend {
     send(this.nameSyncMsg(doc));
   }
 
-  // Frontmatter/filename name-sync for a doc: compare the frontmatter-derived stem to the path stem,
-  // mirroring the sidecar (a bad slug / non-date created_at is "preview-invalid", reported synced so
-  // the preview-error path owns it). Lets ?mock reproduce the desync banner by editing the slug/date.
+  // Name-sync for a doc: compare the frontmatter-derived stem to the path stem. A bad slug/date is
+  // reported synced so the preview-error path owns it. Lets ?mock reproduce the desync banner.
   private nameSyncMsg(doc: MockDoc): ServerMessage {
     const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
     const date = (doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "").slice(0, 10);
@@ -280,8 +269,7 @@ class MockBackend {
     if (req.baseRev.n !== doc.rev.n) return { ok: false, error: "stale-rev", currentRev: doc.rev };
     doc.text = req.text;
     doc.rev = makeRev(doc.rev.n + 1, req.text);
-    // Re-broadcast name-sync (like the sidecar's refreshPreview) so editing the frontmatter slug/date
-    // raises/clears the desync banner live in ?mock.
+    // Re-broadcast name-sync so editing the frontmatter slug/date raises/clears the banner live.
     if (doc.path === this.activePath) this.broadcast(this.nameSyncMsg(doc));
     return { ok: true, rev: doc.rev };
   }
@@ -295,7 +283,7 @@ class MockBackend {
   }
 
   posts(): PostSummaryDTO[] {
-    // Every open post plus the not-yet-open bag, deduped, so the palette shows both.
+    // Open posts plus the not-yet-open bag, deduped.
     const openSummaries: PostSummaryDTO[] = this.open.map((p) => {
       const d = this.docs.get(p)!;
       return { path: d.path, title: d.title, url: d.preview.valid ? d.preview.url : null };
@@ -305,13 +293,12 @@ class MockBackend {
   }
 
   dirtyPosts(): string[] {
-    // The mock treats every open post as carrying unshipped work (matches its always-confirm
-    // delete/revert), so the palette's dirty badge is exercised in dev.
+    // Every open post is treated as carrying unshipped work, so the dirty badge is exercised in dev.
     return [...this.open];
   }
 
   drafts(): DraftSummary[] {
-    // Draft branches with no worktree: drop any that have since been adopted (opened) this session.
+    // Draft branches with no worktree: drop any adopted (opened) this session.
     return MOCK_DRAFTS.filter((d) => !this.open.includes(d.summary.path)).map((d) => d.summary);
   }
 
@@ -333,7 +320,7 @@ class MockBackend {
         this.broadcast({ type: "done", promptId: msg.promptId, stopReason: "cancelled" });
         break;
       case "session.select": {
-        // Per-tab: the selection applies to the active post's session.
+        // The selection applies to the active post's session.
         const agent: AgentState = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
         const doc = this.docs.get(this.activePath);
         if (doc) doc.agent = agent;
@@ -382,7 +369,7 @@ class MockBackend {
   }
 
   private openPost(requestId: string, path: string): void {
-    // Adopt a known-but-closed post (or an existing draft branch) into `docs` on first open.
+    // Adopt a known-but-closed post (or an existing draft branch) into docs on first open.
     if (!this.docs.has(path)) {
       const closed = CLOSED_POSTS.find((p) => p.path === path);
       const draft = MOCK_DRAFTS.find((d) => d.summary.path === path);
@@ -462,7 +449,7 @@ class MockBackend {
       this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
       return;
     }
-    // Derive the target from the post's own frontmatter (the source of truth); leave the text alone.
+    // Derive the target from the post's own frontmatter; leave the text alone.
     const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
     const date = (doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "").slice(0, 10);
     if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -472,8 +459,8 @@ class MockBackend {
     this.relocateDoc(requestId, path, date, slug, false);
   }
 
-  // The inverse of completeRename: rewrite the frontmatter (slug + created_at) to match the filename
-  // stem, so the deployed URL follows the filename. An ordinary edit (agent-origin file.changed).
+  // Inverse of completeRename: rewrite the frontmatter (slug + created_at) to match the filename stem.
+  // An ordinary edit (agent-origin file.changed).
   private revertUrl(requestId: string, path: string): void {
     const doc = this.docs.get(path);
     if (!doc) {
@@ -488,9 +475,8 @@ class MockBackend {
     this.broadcast({ type: "post.result", requestId, ok: true, path });
   }
 
-  // Move the doc at `oldPath` to the stem `<date>_<slug>` (rewriting the frontmatter slug only for a
-  // tab-bar rename), then broadcast post.renamed, then tabs, then active (which carries the now-synced
-  // name-sync). Shared by the tab-bar rename and Complete-rename.
+  // Move the doc at oldPath to the stem `<date>_<slug>` (rewriting the frontmatter slug only for a
+  // tab-bar rename), then broadcast post.renamed, tabs, active. Shared by tab-bar rename and Complete-rename.
   private relocateDoc(requestId: string, oldPath: string, date: string, slug: string, rewriteFrontmatter: boolean): void {
     const doc = this.docs.get(oldPath)!;
     const nextPath = postPath(date, slug);
@@ -507,8 +493,8 @@ class MockBackend {
     this.docs.set(nextPath, doc);
     this.open = this.open.map((p) => (p === oldPath ? nextPath : p));
     if (this.activePath === oldPath) this.activePath = nextPath;
-    // Announce the rename (old-to-new) before the tabs/active rebuild so the client migrates the tab's
-    // transcript + session onto the new path (doc.agent already moved with the doc object above).
+    // Announce the rename before the tabs/active rebuild so the client migrates the tab's transcript
+    // + session onto the new path (doc.agent already moved with the doc object above).
     this.broadcast({ type: "post.renamed", oldPath, newPath: nextPath, title: doc.title, branch: doc.branch });
     this.broadcast(this.tabsMsg());
     this.deliverActive();
@@ -516,7 +502,7 @@ class MockBackend {
   }
 
   // A synthetic "what would be lost" diff for the confirm dialog (real diffs come from git in the
-  // sidecar). The mock treats every open post as having a little uncommitted work to demo the gate.
+  // sidecar), so the gate is demoable.
   private lossDiff(path: string): string {
     const [, slug] = splitPath(path);
     return [
@@ -564,8 +550,7 @@ class MockBackend {
       this.broadcast({ type: "post.confirm", requestId, op: "revert", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path) });
       return;
     }
-    // Simulate restoring to a clean baseline and pushing it to the editor (origin "agent", so the
-    // buffer is replaced rather than raising a keep-mine banner).
+    // Restore to a clean baseline and push it (origin "agent", so the buffer is replaced, no banner).
     doc.rev = makeRev(doc.rev.n + 1, doc.text);
     this.broadcast({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "agent" });
     this.broadcast({ type: "post.result", requestId, ok: true, path });
@@ -578,7 +563,7 @@ class MockBackend {
     this.broadcast(this.mcpMsg());
   }
 
-  /** Emit a permission.request and resolve when the SPA answers: the mock demo of the approve/deny UX. */
+  // Emit a permission.request and resolve when the SPA answers (the approve/deny demo).
   private askPermission(
     promptId: string,
     toolName: string,
@@ -605,7 +590,7 @@ class MockBackend {
     say("applying a focused edit.");
     await delay(150);
 
-    // Demo the approve/deny card once per page session: ask for a build the mode won't auto-approve.
+    // Demo the approve/deny card once per session: ask for a build the mode won't auto-approve.
     if (!this.permDemoed) {
       this.permDemoed = true;
       const decision = await this.askPermission(
@@ -623,8 +608,7 @@ class MockBackend {
     this.broadcast({ type: "tool.start", promptId, toolUseId, name: "mcp__studio__apply_edit", input: { path: doc.path, note: text } });
     await delay(300);
 
-    // Insert a TL;DR at the top of the body (after the frontmatter), byte-faithfully. Posts have no
-    // H1 to anchor under: the BlogPost layout renders the title from frontmatter.
+    // Insert a TL;DR after the frontmatter (posts have no H1: the layout renders the title from it).
     const fm = doc.text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)?.[0];
     if (fm) {
       const insertAt = doc.text.indexOf(fm) + fm.length;
@@ -684,9 +668,8 @@ class MockWebSocket {
   constructor(url: string | URL, protocols?: string | string[]) {
     const href = typeof url === "string" ? url : url.toString();
     if (!href.startsWith(WS_BASE)) {
-      // Not sidecar traffic (e.g. Vite HMR); hand back a real socket. Forward the
-      // subprotocol too, or Vite HMR's `new WebSocket(url, "vite-hmr")` loses it and
-      // reconnection dies.
+      // Not sidecar traffic (e.g. Vite HMR); hand back a real socket. Forward the subprotocol too, or
+      // Vite HMR's `new WebSocket(url, "vite-hmr")` loses it and reconnection dies.
       return new RealWebSocket(url, protocols) as unknown as MockWebSocket;
     }
     setTimeout(() => {

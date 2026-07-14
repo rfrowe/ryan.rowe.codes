@@ -1,9 +1,6 @@
-// Transport-agnostic Studio MCP tool implementations. `createStudioTools` builds a
-// `StudioTools` (studio/shared/services.ts) over injected `{ store, ship, blogRoot,
-// conventions }`; `STUDIO_TOOL_SPECS` describes each tool (name/description/zod input
-// shape/invoker) once so the in-process (SDK) and HTTP (StreamableHTTP) mounts register
-// the identical surface without duplicating schemas. Frozen contracts are only consumed
-// here; nothing imports the concrete store/ship modules.
+// Transport-agnostic Studio MCP tool implementations. createStudioTools builds a StudioTools over
+// injected { store, ship, blogRoot, conventions }; STUDIO_TOOL_SPECS describes each tool once so the
+// in-process (SDK) and HTTP mounts register the identical surface without duplicating schemas.
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
@@ -41,14 +38,8 @@ export interface StudioToolsDeps {
   conventions: string;
 }
 
-/**
- * Construct the transport-agnostic `StudioTools`. `describe` returns the blog briefing +
- * conventions + active path; `getEditorContext`/`previewStatus` delegate to the store;
- * `openPr` delegates to ship behind the confirm gate. `listPosts` scans the content tree;
- * `scaffoldPost` creates a new post (in its own worktree) through the store and makes it active.
- * There is no edit/read-document tool: each open post is an isolated worktree the agent edits
- * directly with the native Read/Edit/Write tools, so no rev-checked mutation gate is needed.
- */
+// Construct the transport-agnostic StudioTools. There is no edit/read-document tool: each open post
+// is an isolated worktree the agent edits directly with the native tools, so no mutation gate is needed.
 export function createStudioTools(deps: StudioToolsDeps): StudioTools {
   const { store, ship, blogRoot, conventions } = deps;
 
@@ -63,12 +54,11 @@ export function createStudioTools(deps: StudioToolsDeps): StudioTools {
           `(Read/Edit/Write). Keep the four frontmatter keys (title, slug, headline, created_at) valid ` +
           `so the preview and route stay in sync, and never reformat unrelated lines.`,
         conventions,
-        // The worktree file the agent actually operates on (its cwd), not the canonical main-repo
-        // path. Mirrors getEditorContext so a "read the open post" follow-up hits the draft copy,
-        // not the untouched main tree.
+        // The worktree file the agent operates on (its cwd), not the canonical path, so a "read the
+        // open post" follow-up hits the draft copy.
         activePostPath: (store as StudioStore).getActiveWorktree()?.worktreeFilePath ?? store.getActiveDoc()?.path ?? null,
-        // Scanned live so a foreign-cwd agent can see the framework, aliases, and reusable
-        // components without a local checkout. undefined (dropped from JSON) if unreadable.
+        // Scanned live so a foreign-cwd agent sees the framework, aliases, and components without a
+        // local checkout. undefined if unreadable.
         appStructure: await scanAppStructure(blogRoot),
       };
     },
@@ -76,12 +66,9 @@ export function createStudioTools(deps: StudioToolsDeps): StudioTools {
     async getEditorContext(): Promise<GetEditorContextResult> {
       const ctx = store.getEditorContext();
       if (!ctx) return { error: "no-editor-context" };
-      // The editor tabs on the canonical (main-repo) path, but the agent's cwd is the active post's
-      // worktree and it edits the worktree copy. Return the worktree file path so an agent resolving
-      // "here" / "this" edits the file its native tools actually touch, not the untouched main tree.
-      // Resolve the worktree that owns ctx.path, not the global active one: during a tab-switch race
-      // the editor context can still be the previous post's, and keying off the active worktree would
-      // fall through and hand back the untouched main-repo canonical path.
+      // Return the worktree file path so an agent resolving "here"/"this" edits the file its native
+      // tools touch. Resolve the worktree owning ctx.path, not the global active one: during a
+      // tab-switch race the context can still be the previous post's.
       const wt = (store as StudioStore).getWorktreeFor(ctx.path);
       if (wt) return { ...ctx, path: wt.worktreeFilePath };
       return ctx;
@@ -92,10 +79,8 @@ export function createStudioTools(deps: StudioToolsDeps): StudioTools {
     },
 
     async scaffoldPost(input: ScaffoldPostInput): Promise<ScaffoldPostResult> {
-      // Create the post file (frontmatter validated and path root-jailed) and make it the active
-      // doc via the store, the single mutation path, so the same rev-guard, preview, and
-      // watcher-retarget wiring apply. createPost lives on the concrete StudioStore (the frozen
-      // Store DI seam intentionally omits it); the sidecar always injects that concrete.
+      // Create the post through the store (the single mutation path), so the rev-guard, preview, and
+      // watcher-retarget wiring apply. createPost lives on the concrete StudioStore, always injected here.
       const result = await (store as StudioStore).createPost(input);
       if (!result.ok) return { ok: false, error: result.error };
       return { ok: true, path: result.path, url: result.url };
@@ -106,7 +91,7 @@ export function createStudioTools(deps: StudioToolsDeps): StudioTools {
     },
 
     async openPr(input: OpenPrInput): Promise<OpenPrResult> {
-      // Confirm gate: never push / open a PR on a bare agent call with no human in the loop.
+      // Never push / open a PR on a bare agent call with no human in the loop.
       if (!input.confirm) {
         return {
           ok: false,
@@ -212,11 +197,8 @@ export const STUDIO_TOOL_SPECS: StudioToolSpec[] = [
   },
 ];
 
-/**
- * Wrap a JSON-serializable tool result into an MCP `CallToolResult`: the value is always
- * carried as pretty JSON text, and mirrored into `structuredContent` when it is a plain
- * object so structured-output clients can consume it directly.
- */
+// Wrap a JSON-serializable tool result into an MCP CallToolResult: pretty JSON text, mirrored into
+// structuredContent when it is a plain object for structured-output clients.
 export function toCallToolResult(value: unknown): CallToolResult {
   const result: CallToolResult = {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -262,14 +244,12 @@ async function isFile(path: string): Promise<boolean> {
 async function summarize(path: string): Promise<PostSummary> {
   let title = path;
   try {
-    // Shared frontmatter parser: block-aware, BOM-tolerant, and strips a matched quote pair, a
-    // small improvement over the old single-line title regex, and the one title source of truth.
     title = frontmatterTitle(await readFile(path, "utf8")) ?? path;
   } catch {
     // fall through to path-as-title
   }
-  // URL derivation lives in preview/deriveUrl.ts (another package) and is not injected here;
-  // leave null rather than duplicate the frontmatter-to-URL contract.
+  // URL derivation lives in preview/deriveUrl.ts and isn't injected here; leave null rather than
+  // duplicate the frontmatter-to-URL contract.
   return { path, title, url: null };
 }
 
@@ -306,12 +286,9 @@ const ENTRY_POINTS: ReadonlyArray<{ path: string; hint: string }> = [
   { path: "src/content.config.ts", hint: "blog collection frontmatter Zod schema" },
 ];
 
-/**
- * Live, best-effort app-structure digest for a foreign-cwd agent: framework and key versions,
- * tsconfig path aliases, a reusable-component inventory, and the styling/util entry points.
- * Generated by scanning the repo at call time so it cannot drift like hand-written docs.
- * Never throws; returns undefined if nothing could be read (e.g. run outside the repo).
- */
+// Live, best-effort app-structure digest for a foreign-cwd agent: framework versions, tsconfig path
+// aliases, a component inventory, and styling/util entry points. Scanned at call time so it can't
+// drift. Never throws; undefined if nothing could be read.
 async function scanAppStructure(blogRoot: string): Promise<string | undefined> {
   const sections = (
     await Promise.all([

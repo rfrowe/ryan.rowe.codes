@@ -1,8 +1,6 @@
-// The multi-doc / worktree store: opening a post ensures its git worktree and loads the file
-// from it; create/close/switch/rename maintain the open-tab set and the single active doc; the
-// editor autosave path keeps its rev-guard and disk-divergence protection. A fake Fs stands in for
-// disk and a fake GitRunner records worktree/branch commands (and mirrors their filesystem
-// effect into the fake Fs), so the store is exercised end-to-end without git or a real disk.
+// Multi-doc / worktree store tests. A fake Fs stands in for disk and a fake GitRunner records
+// worktree/branch commands (mirroring their filesystem effect into the Fs), so the store runs
+// end-to-end without git or a real disk.
 
 import { describe, expect, it } from "vitest";
 
@@ -16,8 +14,7 @@ const REPO = "/repo";
 const BLOG = `${REPO}/src/content/blog`;
 const WT = `${REPO}/.claude/worktrees/blog`;
 
-// Worktrees are keyed by the full date-qualified filename stem (<YYYY-MM-DD>_<slug>), so
-// same-slug/different-date posts never collide. See `postStem` in store.ts.
+// Worktrees are keyed by the date-qualified stem, so same-slug/different-date posts don't collide.
 const SKYLINE_CANON = `${BLOG}/2026-07-10_aligning-a-skyline.mdx`;
 const SKYLINE_WT_FILE = `${WT}/2026-07-10_aligning-a-skyline/src/content/blog/2026-07-10_aligning-a-skyline.mdx`;
 const HELLO_CANON = `${BLOG}/2022-03-11_hello.mdx`;
@@ -99,14 +96,9 @@ interface GitConfig {
   remoteBranches?: string[];
   /** `<ref>:<rel>` specs `git cat-file -e` reports as present (draft layout detection); default none. */
   catFilePaths?: string[];
-  /**
-   * Files a fresh `git worktree add` (fork off origin) "checks out": written into the fake fs as
-   * part of handling `worktree add`, simulating that the branch's tracked content lands on disk,
-   * something a real `git worktree add` does but this fake otherwise doesn't model, since it only
-   * ever registers the `.git` link. Needed when a test's fake-fs setup can't just pre-seed the file
-   * (e.g. a self-heal test that removes the whole worktree dir, including any pre-seeded file, right
-   * before the add runs).
-   */
+  /** Files a fresh `git worktree add` "checks out", written into the fake fs when handling the add.
+   *  The fake otherwise only registers the `.git` link, so this is needed when a test can't pre-seed
+   *  the file (e.g. a self-heal test that removes the whole worktree dir right before the add). */
   originFiles?: Record<string, string>;
 }
 
@@ -116,10 +108,8 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
     async git(args, opts) {
       calls.push({ bin: "git", line: args.join(" ") });
       if (args[0] === "worktree" && args[1] === "list") {
-        // Synthesize porcelain output from every worktree the fake fs currently knows about (each
-        // has a `<root>/.git` link), plus the main worktree (REPO). Real `git worktree list`
-        // always lists it first; the store filters it out by path since it isn't under
-        // `worktreesRoot`. Blocks are separated by a blank line, matching real porcelain output.
+        // Synthesize porcelain output from every worktree the fake fs knows (each has a `.git`
+        // link), plus the main worktree (REPO), which the store filters out by path.
         const roots = [...fs.store.keys()]
           .filter((k) => k.endsWith("/.git"))
           .map((k) => k.slice(0, -"/.git".length))
@@ -132,13 +122,12 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return { ...ok, stdout: blocks.join("\n") };
       }
       if (args[0] === "worktree" && args[1] === "add") {
-        // Simulate the fork/adopt: register the worktree's .git link. The worktree path's position
-        // varies by form (`add <path> …`, `add … -b <branch> <path> <start>`, `add --track -b
-        // <branch> <path> origin/<branch>`), so find it by prefix rather than a fixed index.
+        // Register the worktree's .git link. The path's position varies by add form, so find it
+        // by prefix rather than a fixed index.
         const wtPath = args.find((a) => a.startsWith(`${WT}/`)) ?? args[2];
         fs.store.set(`${wtPath}/.git`, "gitdir");
-        // Existing-post tests seed the worktree file separately (the fork/adopt "already has" it),
-        // or, when a test can't pre-seed it (husk self-heal, remote adopt), via `cfg.originFiles`.
+        // Existing-post tests seed the worktree file separately; when they can't, `cfg.originFiles`
+        // stands in for the fork's checkout.
         for (const [p, content] of Object.entries(cfg.originFiles ?? {})) fs.store.set(p, content);
         return ok;
       }
@@ -157,7 +146,7 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return ok;
       }
       if (args[0] === "worktree" && args[1] === "remove") {
-        // `remove [--force] <path>`: drop the .git link and every fake-fs entry under the worktree.
+        // Drop the .git link and every fake-fs entry under the worktree.
         const wt = args[args.length - 1];
         fs.store.delete(`${wt}/.git`);
         for (const key of [...fs.store.keys()]) if (key === wt || key.startsWith(`${wt}/`)) fs.store.delete(key);
@@ -181,7 +170,7 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
       }
       if (args[0] === "rev-list") return { ...ok, stdout: cfg.revListCount ?? "0" };
       if (args.includes("diff")) {
-        // The store prefixes some diffs with `-c core.quotePath=false`, so match on membership.
+        // Some diffs are prefixed with `-c core.quotePath=false`, so match on membership.
         if (args.includes("--no-index")) return { ...ok, stdout: cfg.noIndexDiff ?? "" };
         if (args.includes("HEAD")) {
           return { ...ok, stdout: args.includes("--name-only") ? (cfg.diffHeadNames ?? "") : (cfg.diffHead ?? "") };
@@ -189,7 +178,7 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return { ...ok, stdout: cfg.diffBase ?? "" };
       }
       if (args[0] === "checkout" && args[1] === "HEAD") {
-        // Restore the pathspec to its "committed" content at <cwd>/<pathspec>.
+        // Restore the pathspec to its "committed" content.
         if (cfg.checkoutTo !== undefined) {
           const pathspec = args[args.length - 1];
           fs.store.set(`${opts?.cwd ?? ""}/${pathspec}`, cfg.checkoutTo);
@@ -210,14 +199,12 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
 function newStore(seed: Record<string, string> = {}, cfg: GitConfig = {}) {
   const fs = makeFs(seed);
   const { git, lines } = makeGit(fs, cfg);
-  // Records which worktrees stopPreview was asked to stop, plus a snapshot of the git commands
-  // issued at that instant, so tests can assert stopPreview ran before the worktree was removed
-  // (the astro-teardown ordering contract: never remove a dir a daemon is still serving).
+  // Records which worktrees stopPreview stopped, plus a snapshot of the git commands at that
+  // instant, so tests can assert stopPreview ran before the worktree was removed (never remove a
+  // dir a daemon is still serving).
   const stopPreviewFor: string[] = [];
   let linesAtStopPreview: string[] = [];
-  // Records every path `removePath` (the husk self-heal seam) was asked to remove, and mirrors the
-  // effect into the fake fs, deleting the exact key plus everything nested under it, the same way
-  // the fake `worktree remove` handler above does.
+  // Records every path `removePath` was asked to remove, mirroring the effect into the fake fs.
   const removed: string[] = [];
   const store = createStore({
     fs,
@@ -308,19 +295,16 @@ describe("store.openPost (existing post)", () => {
 });
 
 describe("ensureWorktree self-heals a leftover (husk) directory", () => {
-  // A husk: the dir exists (e.g. `.astro/` regenerated by an orphaned, detached Astro daemon after a
-  // hard kill) but has no `.git` link, so the "reuse" check is skipped and ensureWorktree's normal
-  // add path runs, and would otherwise fail, since git refuses to `worktree add` onto a non-empty
-  // existing dir (even with --force).
+  // A husk: the dir exists but has no `.git` link, so the reuse check is skipped and the normal
+  // add path runs, which would otherwise fail since git refuses to add onto a non-empty dir.
   const WTP = `${WT}/2026-07-10_aligning-a-skyline`;
   const BRANCH = "blog/2026-07-10_aligning-a-skyline";
 
   it("adopts the branch in place when it already exists: clears only the regenerable cruft, never the whole dir", async () => {
     const { store, lines, removedPaths } = newStore(
       {
-        // `[WTP]` itself is a marker: the fake fs models files only (no bare directory keys), so an
-        // explicit entry at the worktree root stands in for "this directory already exists on disk"
-        // (what a real `fs.exists`/`access` would report for a husk directory).
+        // The fake fs models files only, so an entry at the worktree root stands in for "this
+        // directory already exists on disk".
         [WTP]: "dir",
         [SKYLINE_WT_FILE]: SKYLINE,
         [`${WTP}/.astro`]: "cache",
@@ -339,8 +323,7 @@ describe("ensureWorktree self-heals a leftover (husk) directory", () => {
   it("removes the whole dir and re-forks from origin when there is no branch to adopt", async () => {
     const { store, lines, removedPaths } = newStore(
       { [WTP]: "dir", [`${WTP}/.astro`]: "cache" },
-      // The husk's own directory has no tracked post content (there's no branch, so nothing was ever
-      // checked out there); `originFiles` stands in for the fresh fork's checkout.
+      // No branch means nothing was ever checked out here; `originFiles` stands in for the fork.
       { originFiles: { [SKYLINE_WT_FILE]: SKYLINE } },
     );
     await store.openPost(SKYLINE_CANON);
@@ -565,17 +548,16 @@ describe("store.renamePost", () => {
   });
 
   it("stops the preview daemon before the move and drops the moved .astro cache", async () => {
-    // Regression: `git worktree move` carries the worktree's `.astro` content-layer cache, which
-    // still imports the old filename (deferred content module) and makes Astro throw "Cannot find
-    // module" for the renamed post. The rename must stop the daemon (it holds the dir/port) and clear
-    // the moved `.astro` so Astro regenerates content modules from the new filename.
+    // Regression: `git worktree move` carries the `.astro` cache, which still imports the old
+    // filename and makes Astro throw "Cannot find module". The rename must stop the daemon (it
+    // holds the dir/port) and clear the moved `.astro` so Astro regenerates from the new filename.
     const { store, stopPreviewFor, removedPaths } = newStore({ [HELLO_WT_FILE]: HELLO });
     await store.openPost(HELLO_CANON);
     const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
     expect(result.ok).toBe(true);
     // The old worktree's preview was stopped before the move relocated it.
     expect(stopPreviewFor).toContain(`${WT}/2022-03-11_hello`);
-    // The NEW worktree's stale content-layer cache was dropped.
+    // The new worktree's stale content-layer cache was dropped.
     expect(removedPaths()).toContain(`${WT}/2022-03-11_goodbye/.astro`);
   });
 
@@ -761,10 +743,8 @@ describe("store.dirtyPostPaths (enumerates worktrees on disk, not just open tabs
   });
 
   it("finds a dirty worktree that was never opened this session", async () => {
-    // No `openPost` call at all: seed the worktree's `.git` link and its post file directly in the
-    // fake fs, exactly as if the worktree/branch had been created outside the studio (or survived
-    // a failed boot). This is the whole point of the method: it reads `git worktree list`, not
-    // the in-memory `open` tab map, so a worktree the studio never opened this session still shows.
+    // No `openPost`: seed the worktree directly, as if it were created outside the studio. The
+    // method reads `git worktree list`, not the open-tab map, so it still surfaces here.
     const { store, fs } = newStore({}, { statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n" });
     fs.store.set(`${WT}/2022-03-11_hello/.git`, "gitdir");
     fs.store.set(HELLO_WT_FILE, HELLO);

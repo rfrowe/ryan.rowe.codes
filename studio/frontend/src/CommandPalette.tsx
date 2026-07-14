@@ -1,8 +1,6 @@
-// ⌘P command palette: a fuzzy-filterable list of open tabs plus every existing post
-// (GET /posts), followed by a "create new post" command. Selecting a post opens it (a
-// post.open; the app treats open-of-an-already-open tab as focus); selecting the create
-// command opens the New Post dialog seeded with the current search term as the title.
-// Keyboard-driven: type to filter, ↑/↓ to move, Enter to select, Esc to close.
+// ⌘P command palette: a fuzzy-filterable list of open tabs and every existing post, plus a
+// "create new post" command. Selecting a post opens (or focuses) it; the create command opens
+// the New Post dialog seeded with the search term. Type to filter, ↑/↓ to move, Enter, Esc.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getDirtyPosts, getDrafts, getPosts } from "./api";
@@ -14,8 +12,8 @@ interface PaletteEntry {
   path: string;
   title: string;
   open: boolean;
-  /** Set when this row is an existing draft branch with no live worktree (adoptable via ⌘P). A
-   *  `remote`-only draft reopens by adopting a tracking worktree from origin (shown with a chip). */
+  /** Set when this row is a draft branch with no live worktree (adoptable). `remote`-only draft
+   *  reopens by adopting a tracking worktree from origin (shown with a chip). */
   draft?: "local" | "remote" | "both";
 }
 
@@ -47,10 +45,9 @@ function fuzzyMatch(text: string, q: string): boolean {
 export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [posts, setPosts] = useState<PaletteEntry[] | null>(null);
-  // Existing draft branches with no live worktree (adoptable), merged in below the main-tree posts.
+  // Draft branches with no live worktree (adoptable), merged in below the main-tree posts.
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
-  // Canonical paths of open posts with unshipped changes; drives the "unshipped" badge. Probed
-  // once when the palette opens (best-effort; a failed probe simply shows no badges).
+  // Open posts with unshipped changes; drives the "Draft" badge. Best-effort probe on open.
   const [dirty, setDirty] = useState<Set<string>>(() => new Set());
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -88,8 +85,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     };
   }, []);
 
-  // Pull adoptable draft branches (no worktree) so drafts started elsewhere / left behind are
-  // reopenable here; best-effort (a failed probe just shows none).
+  // Pull adoptable draft branches so drafts started elsewhere are reopenable here; best-effort.
   useEffect(() => {
     let live = true;
     getDrafts()
@@ -104,8 +100,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     };
   }, []);
 
-  // Merge: open tabs first (deduped), then every other known main-tree post, then adoptable draft
-  // branches not already listed (they have no worktree, so never overlap an open tab).
+  // Open tabs first (deduped), then other main-tree posts, then adoptable draft branches.
   const entries = useMemo<PaletteEntry[]>(() => {
     const seen = new Set(openTabs.map((t) => t.path));
     const merged: PaletteEntry[] = openTabs.map((t) => ({ path: t.path, title: t.title, open: true }));
@@ -127,8 +122,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     [entries, query],
   );
 
-  // Navigable rows: matching posts first (so Enter on a partial query opens the top match, the
-  // palette's primary action), then an always-present create command carrying the search term.
+  // Matching posts first (so Enter on a partial query opens the top match), then the create command.
   const rows = useMemo<PaletteRow[]>(() => {
     const list: PaletteRow[] = filtered.map((entry) => ({ kind: "post", entry }));
     list.push({ kind: "create", title: query.trim() });

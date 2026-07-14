@@ -1,8 +1,6 @@
-// Ship-flow tests. Drive createShipService with a fake GitRunner + a fixed active worktree to
-// assert the command sequence: it runs inside the post's worktree (already on `blog/<slug>`),
-// so there's no fetch/checkout dance: assert the branch, stage the post precisely, commit with
-// the pinned identity, push the branch, and open the PR.
-// Also covers the confirm gate, the identity assertion, the scope guard, and partial-failure recovery.
+// Ship-flow tests: a fake GitRunner and fixed worktree assert the command sequence (assert branch,
+// stage precisely, commit with the pinned identity, push, open the PR), plus the confirm gate, the
+// identity assertion, the scope guard, and partial-failure recovery.
 
 import { describe, expect, it } from "vitest";
 

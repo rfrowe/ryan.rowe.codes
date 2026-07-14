@@ -1,6 +1,5 @@
-// Wire protocol between the studio SPA (browser) and the sidecar (Node): a WebSocket
-// for the agent stream + doc-sync pushes, and REST DTOs for request/response calls.
-// Both sides import this module; frozen contract.
+// Frozen wire protocol between the studio SPA and the sidecar: a WebSocket for the agent
+// stream + doc-sync pushes, plus REST DTOs. Imported by both sides.
 
 import type { DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "./types";
 import type { SessionListItem } from "../sessions/pickerViewModel";
@@ -9,11 +8,8 @@ export interface PromptContext {
   path: string;
   cursor: number;
   selection: Range | null;
-  /**
-   * The resolved target region for an inline (⌘K) prompt: the selection, or, with no
-   * selection, the caret's current line. Carries the exact byte range and its current text so
-   * the agent edits *this* region instead of resolving a bare offset. Absent for chat prompts.
-   */
+  // Target region for an inline (⌘K) prompt: the selection, or the caret's line if none. Carries
+  // the byte range and its text so the agent edits this region, not a bare offset. Null for chat.
   anchor?: { from: number; to: number; text: string } | null;
 }
 
@@ -24,36 +20,29 @@ export type ClientMessage =
   | { type: "cancel"; promptId: string }
   | { type: "session.select"; mode: SessionMode; sessionId?: string }
   | { type: "editor.state"; path: string; cursor: number; selection: Range | null; viewport: Range | null }
-  // Open (or focus, if already open) an existing post as a tab; create a new post as a tab.
-  // Each open post is backed by a git worktree at .claude/worktrees/blog/<slug> and its own session.
+  // Open (or focus) an existing post as a tab. Each open post is backed by a git worktree and its
+  // own session.
   | { type: "post.open"; requestId: string; path: string }
   | { type: "post.create"; requestId: string; title: string; slug: string; headline: string; created_at: string }
-  // Close a tab: a tab with a draft (uncommitted/unmerged work) keeps its worktree/branch on disk
-  // for re-open; a clean tab is torn down (worktree and branch) exactly like delete-draft. Rename the
-  // active post's slug (renames the file, runs `git branch -m blog/<old> blog/<new>`, and moves the worktree).
+  // Close a tab: a draft (uncommitted/unmerged work) keeps its worktree/branch for re-open; a clean
+  // tab is torn down like delete-draft.
   | { type: "post.close"; requestId: string; path: string }
+  // Rename the active post's slug: renames the file, the branch, and the worktree.
   | { type: "post.rename"; requestId: string; path: string; newSlug: string }
-  // Resolve a frontmatter/filename desync by renaming the file/worktree/branch to match the post's
-  // own frontmatter (slug and/or date). The server derives the target from the post's frontmatter
-  // (no target on the wire) and runs the same rename path as post.rename (so the session/transcript
-  // migration and preview refresh apply identically).
+  // Resolve a frontmatter/filename desync from the frontmatter side: rename file/worktree/branch to
+  // match. The server derives the target from the post's frontmatter and runs the post.rename path.
   | { type: "post.completeRename"; requestId: string; path: string }
-  // The inverse of completeRename: resolve a desync from the filename side by rewriting the
-  // frontmatter (slug/created_at) so its derived URL matches the current filename/branch stem. An
-  // ordinary uncommitted edit, not a git operation.
+  // Inverse of completeRename: rewrite the frontmatter (slug/created_at) so the derived URL matches
+  // the filename stem. An ordinary edit, not a git op.
   | { type: "post.revertUrl"; requestId: string; path: string }
-  // Delete a draft post: remove its worktree and branch (never touches origin/main). Revert a post's
-  // uncommitted edits to the branch's last commit (HEAD). Both are gated: with `confirm: false` the
-  // sidecar replies `post.confirm` (what would be lost) instead of acting when content is at risk.
+  // Delete a draft (worktree + branch; never origin/main), or revert uncommitted edits to HEAD. Both
+  // gated: with confirm:false the sidecar replies post.confirm when content is at risk.
   | { type: "post.delete"; requestId: string; path: string; confirm: boolean }
   | { type: "post.revert"; requestId: string; path: string; confirm: boolean }
-  // Toggle one MCP server on/off for the studio's sessions.
   | { type: "mcp.setEnabled"; requestId: string; server: string; enabled: boolean }
-  // Set the permission mode for the studio's sessions (takes effect on the next turn). The sidecar
-  // echoes the authoritative value back as `mode.status`.
+  // Set the permission mode (takes effect next turn); the sidecar echoes it back as mode.status.
   | { type: "mode.set"; mode: PermissionMode }
-  // Answer an in-flight `permission.request` (by its requestId): allow once, allow and remember
-  // (widen the session's permissions / grant the directory), or deny.
+  // Answer an in-flight permission.request: allow once, allow and remember (widen permissions), or deny.
   | { type: "permission.response"; requestId: string; decision: PermissionDecision };
 
 // ---- WebSocket: server to client ----
@@ -66,43 +55,32 @@ export type ServerMessage =
   | { type: "file.changed"; path: string; text: string; rev: DocRev; origin: "agent" | "self" | "external" }
   | { type: "preview.url"; preview: PreviewState }
   | { type: "done"; promptId: string; stopReason: string }
-  // Result of a post.open / post.create / post.close / post.rename / post.delete / post.revert
-  // request (by requestId).
+  // Result of any post.* request (by requestId).
   | { type: "post.result"; requestId: string; ok: boolean; path?: string; error?: string }
-  // A destructive op (delete/revert) sent with `confirm: false` would lose work: the sidecar
-  // reports what would be lost so the SPA can raise a confirmation dialog. `changedFiles` counts
-  // uncommitted files; `ahead` counts commits on the branch not yet in origin/<default>; `diff` is
-  // the unified diff the confirm would discard (revert: `git diff HEAD`; delete: the full delta
-  // from the published base plus synthesized diffs for untracked files).
+  // A confirm:false destructive op would lose work: what would be lost, so the SPA can confirm.
+  // changedFiles counts uncommitted files; ahead counts commits not yet in origin/<default>; diff is
+  // the unified diff the op would discard.
   | { type: "post.confirm"; requestId: string; op: "delete" | "revert"; path: string; changedFiles: number; ahead: number; diff: string }
-  // A post was renamed (slug and/or date changed): its canonical path, worktree, branch, and title
-  // all changed at once. Carries old-to-new so a client can migrate that tab's chat transcript,
-  // session, and pending permissions onto the new path *before* the `tabs`/`active`/`file.changed`
-  // rebuild that immediately follows (published right after this). Without it, the tab is rebuilt
-  // fresh at the new path and the conversation + resumable SDK session are silently lost. `branch`
-  // is the post's new isolation branch. Applies to both tab-bar rename and Complete-rename.
+  // A post was renamed (slug and/or date). Carries old-to-new so the client migrates the tab's
+  // transcript, session, and pending permissions before the tabs/active/file.changed rebuild that
+  // follows; without it the tab is rebuilt fresh and the conversation + SDK session are lost.
   | { type: "post.renamed"; oldPath: string; newPath: string; title: string; branch: string }
-  // Frontmatter/filename name-sync status for the active post (no path, like `preview.url`), published
-  // at the same cadence. `synced:false` means the frontmatter-derived stem `${date}_${slug}` differs
-  // from the filename/worktree/branch stem: the editor shows a warning banner and ship is blocked. It
-  // is mutually exclusive with a preview error (it requires a valid derivation), so a bad-frontmatter
-  // post shows the preview error instead. `expectedStem`/`currentStem` describe the mismatch;
-  // `canComplete`/`reason` say whether a Complete-rename can proceed (false e.g. when the target stem
-  // is already an open tab). Always `{ synced: true }` when there is no active post or it is in sync.
+  // Frontmatter/filename name-sync for the active post (no path, like preview.url). synced:false means
+  // the frontmatter stem `${date}_${slug}` differs from the filename stem: the editor banners and ship
+  // is blocked. Mutually exclusive with a preview error (requires a valid derivation). canComplete/reason
+  // say whether Complete-rename can proceed (false e.g. when the target stem is already open). Always
+  // synced:true when there is no active post.
   | { type: "post.namesync"; synced: boolean; expectedStem?: string; currentStem?: string; canComplete?: boolean; reason?: string }
-  // The active post changed (open/create/switch/rename); `file.changed` and `preview.url` follow.
-  // `branch` is the post's real isolation branch (`blog/<date>_<slug>`), the branch the ship flow
-  // pushes; the SPA displays it read-only rather than deriving (or inviting) a branch name.
+  // The active post changed (open/create/switch/rename); file.changed and preview.url follow. branch is
+  // the post's isolation branch (`blog/<date>_<slug>`), shown read-only.
   | { type: "active"; path: string; title: string; branch: string }
-  // Authoritative set of open tabs (so agent-initiated creates update the bar too).
+  // Authoritative open-tab set (so agent-initiated creates update the bar too).
   | { type: "tabs"; open: { path: string; title: string }[] }
-  // MCP server inventory and status for the status bar / toggle popover.
   | { type: "mcp.status"; servers: { name: string; status: string; enabled: boolean }[] }
-  // The authoritative permission mode (broadcast on connect and whenever it changes) for the mode chip.
+  // Authoritative permission mode, broadcast on connect and whenever it changes.
   | { type: "mode.status"; mode: PermissionMode }
-  // The agent is asking to run a tool the current mode won't auto-approve (a classifier escalation,
-  // an out-of-worktree edit, or an MCP/Bash call needing confirmation). `promptId` routes the card
-  // to the owning tab's transcript; `title`/`description`/`reason` are the SDK's prompt text.
+  // The agent wants to run a tool the current mode won't auto-approve. promptId routes the card to the
+  // owning tab; title/description/reason are the SDK's prompt text.
   | { type: "permission.request"; promptId: string; requestId: string; toolName: string; input: unknown; title?: string; description?: string; reason?: string }
   | { type: "error"; promptId?: string; message: string };
 
@@ -134,22 +112,15 @@ export interface PostsResponse {
   posts: PostSummaryDTO[];
 }
 
-/**
- * Canonical paths of posts with pending unshipped changes: uncommitted edits or commits not yet
- * in origin/<default> (the same signal that gates delete-draft). Powers the ⌘P palette's
- * "unshipped" badge. Reflects every git worktree actually on disk (open, stray from a failed
- * boot, or created outside the studio, e.g. on the CLI), not just this session's open tabs.
- */
+// Canonical paths with unshipped changes: uncommitted edits or commits not yet in origin/<default>.
+// Powers the ⌘P palette's badge. Reflects every worktree on disk, not just this session's open tabs.
 export interface DirtyPostsResponse {
   dirty: string[];
 }
 
-/**
- * A `blog/<stem>` draft branch that has NO live worktree (started elsewhere, or left behind), so it
- * is invisible to the open-tabs / main-tree post listings. `path` is the canonical (main-repo) path
- * to reopen it at; `stem` is its date-qualified identity (branch = `blog/<stem>`); `origin` says
- * where the branch lives; reopening a `remote`-only draft adopts a tracking worktree from origin.
- */
+// A `blog/<stem>` draft branch with no live worktree (invisible to the open-tabs/main-tree listings).
+// path is the canonical path to reopen it at; stem is its date-qualified identity; origin says where
+// the branch lives (reopening a remote-only draft adopts a tracking worktree from origin).
 export interface DraftSummary {
   path: string;
   stem: string;

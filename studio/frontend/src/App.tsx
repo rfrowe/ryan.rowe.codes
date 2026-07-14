@@ -1,9 +1,7 @@
-// Top-level studio shell. Owns the WebSocket and reduces the frozen agent stream and
-// doc-sync pushes into per-tab UI state: each open post (a git worktree and its own
-// session) has its own editor buffer, preview URL, and chat thread. The tab bar and the
-// active post are driven by the authoritative `tabs` / `active` broadcasts; the editor /
-// preview / chat panes render the active tab. All wire messages are the frozen protocol
-// types (studio/shared/protocol.ts); no shapes invented here.
+// Top-level studio shell. Owns the WebSocket and reduces the agent stream and doc-sync pushes into
+// per-tab state: each open post (a git worktree and its own session) has its own editor buffer,
+// preview URL, and chat thread. The tab bar and active post follow the authoritative tabs/active
+// broadcasts; the editor/preview/chat panes render the active tab.
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Editor, type EditorHandle } from "./Editor";
@@ -39,13 +37,11 @@ interface NameSync {
 }
 const SYNCED: NameSync = { synced: true };
 
-/** Everything scoped to a single open post/tab. Buffers survive tab switches (kept here,
- *  keyed by path) so switching back restores what was typed. */
+// Everything scoped to one open post/tab. Buffers survive tab switches (kept here, keyed by path).
 interface TabState {
   path: string;
   title: string;
-  /** The post's real isolation branch (`blog/<date>_<slug>`), from the `active` broadcast; null
-   *  until that post has been activated (the ship flow reads it read-only from the active tab). */
+  /** The post's isolation branch (`blog/<date>_<slug>`), from `active`; null until first activated. */
   branch: string | null;
   doc: DocState | null;
   /** Buffer patch for the editor; version increments on each agent/reconciled write. */
@@ -53,11 +49,10 @@ interface TabState {
   preview: PreviewState;
   session: AgentState;
   chat: ChatItem[];
-  /** In-flight permission prompts for this tab's turn, awaiting the author's allow/always/deny. */
+  /** In-flight permission prompts for this tab's turn. */
   permissions: PendingPermission[];
   /** Pending disk change from an external writer, awaiting the reload banner. */
   externalChange: { text: string; rev: DocRev } | null;
-  /** Frontmatter/filename name-sync (active post; drives the desync banner + ship gate). */
   nameSync: NameSync;
 }
 
@@ -67,11 +62,9 @@ interface StudioState {
   mcp: McpServerStatus[];
   /** Authoritative permission mode (from `mode.status`), shown + edited via the mode chip. */
   mode: PermissionMode;
-  /** The single in-flight agent turn (the backend serializes one turn at a time) and the
-   *  tab that owns it, so the right pane shows "working" and Cancel targets the right turn. */
+  /** The single in-flight turn (the backend serializes one at a time) and the tab that owns it. */
   turn: { promptId: string; path: string } | null;
-  /** promptId to owning tab path. Persists past `turn` so a stale done/error still routes to
-   *  the tab whose transcript it belongs to. */
+  /** promptId to owning tab path. Outlives `turn` so a stale done/error still routes correctly. */
   promptOwners: Record<string, string>;
 }
 
@@ -220,8 +213,8 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       }));
 
     case "file.changed": {
-      // Route by path to the owning tab. `tabs` is authoritative: a change for a path with
-      // no open tab is ignored rather than resurrecting a closed one.
+      // Route by path. tabs is authoritative: a change for a path with no open tab is ignored
+      // rather than resurrecting a closed one.
       const tab = state.tabs.find((t) => t.path === msg.path);
       if (!tab) return state;
       const nextDoc: DocState = { path: msg.path, text: msg.text, rev: msg.rev };
@@ -238,13 +231,11 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
           remoteUpdate: { text: msg.text, version: (t.remoteUpdate?.version ?? 0) + 1 },
         }));
       }
-      // external: a rev that isn't strictly newer than what we already track is a
-      // duplicate/hydrate snapshot (e.g. the server replaying the doc after a WS reconnect).
-      // Nothing changed on disk, so no-op: don't banner, don't clobber.
+      // external: a rev not strictly newer is a duplicate/hydrate snapshot (e.g. a replay after a
+      // WS reconnect). Nothing changed on disk, so no-op.
       if (msg.rev.n <= tab.doc.rev.n) return state;
-      // A strictly-newer disk rev is a real external write. Don't clobber the buffer, but
-      // advance the base rev so the editor keeps autosaving against the current rev, and
-      // surface the reload banner.
+      // A strictly-newer disk rev is a real external write. Don't clobber the buffer, but advance the
+      // base rev so autosave keeps working, and surface the reload banner.
       return patchTab(state, msg.path, (t) => ({
         ...t,
         doc: { ...t.doc!, rev: msg.rev },
@@ -275,15 +266,13 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       let next = owner
         ? patchTab(state, owner, (t) => ({ ...t, chat: stopStreaming(t.chat, msg.promptId), permissions: [] }))
         : state;
-      // Only release the latch for our in-flight turn. A `done` for some other prompt id
-      // (a stale/rebroadcast turn) must not clear the live one.
+      // Only release the latch for our in-flight turn; a done for a stale/rebroadcast prompt must not.
       if (next.turn && msg.promptId === next.turn.promptId) next = { ...next, turn: null };
       return next;
     }
 
     case "error": {
-      // A promptId-tagged error routes to that prompt's tab; an untagged one is a general
-      // failure shown on the active tab.
+      // A promptId-tagged error routes to that prompt's tab; an untagged one is shown on the active tab.
       const owner = msg.promptId !== undefined ? ownerOf(state, msg.promptId) : state.activePath;
       let next = patchTab(state, owner, (t) => ({
         ...t,
@@ -298,15 +287,13 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
     }
 
     case "post.renamed": {
-      // A rename changed the post's canonical path. Migrate the tab's conversation state onto the
-      // new path before the `tabs`/`active`/`file.changed` that follow, so the transcript, session,
-      // and pending permissions survive (the `tabs` handler then keeps this migrated tab via its
-      // byPath preserve, rather than makeTab-ing a fresh one and dropping the chat).
+      // Migrate the tab's conversation state onto the new path before the tabs/active/file.changed
+      // that follow, so the transcript, session, and permissions survive (the tabs handler then
+      // preserves this migrated tab by path rather than making a fresh one).
       //
-      // We deliberately do not carry the pre-rename `doc`/`remoteUpdate`: the rename rewrote the
-      // frontmatter slug, so that buffer is stale, and the authoritative `file.changed` published
-      // right after this re-seeds the buffer with the new text via the tab's `!doc` bootstrap (no
-      // spurious external-change banner, which carrying the old lower-rev doc would trip).
+      // Drop the pre-rename doc/remoteUpdate: the rename rewrote the frontmatter slug, so that buffer
+      // is stale, and the file.changed right after re-seeds it via the tab's `!doc` bootstrap (carrying
+      // the old lower-rev doc would trip a spurious external-change banner).
       if (msg.oldPath === msg.newPath) return state;
       const tabs = state.tabs.map((t) =>
         t.path === msg.oldPath
@@ -331,8 +318,8 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
     }
 
     case "tabs": {
-      // Authoritative open set. Preserve existing per-tab buffers (keyed by path); add fresh
-      // tabs for newly-opened paths; drop tabs no longer open.
+      // Authoritative open set. Preserve existing buffers (keyed by path), add fresh tabs for new
+      // paths, drop tabs no longer open.
       const byPath = new Map(state.tabs.map((t) => [t.path, t]));
       const tabs = msg.open.map(({ path, title }) => {
         const existing = byPath.get(path);
@@ -352,8 +339,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       return { ...state, mode: msg.mode };
 
     case "permission.request":
-      // Route to the owning tab's transcript (like tool.start). De-dupe on requestId in case a
-      // snapshot/replay repeats it.
+      // Route to the owning tab (like tool.start). De-dupe on requestId in case a replay repeats it.
       return patchTab(state, ownerOf(state, msg.promptId), (t) =>
         t.permissions.some((p) => p.requestId === msg.requestId)
           ? t
@@ -374,8 +360,8 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       );
 
     default:
-      // post.result is handled imperatively in App (dialog/error resolution). Any other
-      // unknown/newer message type (protocol drift) is ignored rather than blanking the app.
+      // post.result is handled imperatively in App; any other unknown/newer type (protocol drift)
+      // is ignored rather than blanking the app.
       return state;
   }
 }
@@ -396,10 +382,8 @@ function reducer(state: StudioState, action: Action): StudioState {
       };
     }
     case "resetTurn": {
-      // The socket dropped mid-turn: the sidecar's done/error for this prompt can no longer
-      // reach us (the reconnected socket is a fresh stream), so nothing else will release the
-      // latch. Clear it here, stopping the interrupted turn's streaming block and noting the
-      // interruption so the transcript doesn't dangle a half-streamed message with no reason.
+      // The socket dropped mid-turn: the sidecar's done/error can no longer reach us, so nothing else
+      // releases the latch. Clear it, stop the streaming block, and note the interruption.
       if (!state.turn) return state;
       const { promptId, path } = state.turn;
       const next = patchTab(state, path, (t) => ({
@@ -416,10 +400,10 @@ function reducer(state: StudioState, action: Action): StudioState {
     case "revUpdated":
       return patchTab(state, action.path, (t) => (t.doc ? { ...t, doc: { ...t.doc, rev: action.rev } } : t));
     case "captureBuffer":
-      // Sync a tab's cached buffer to what's in the editor before it unmounts on switch.
+      // Sync a tab's cached buffer to the editor before it unmounts on switch.
       return patchTab(state, action.path, (t) => (t.doc ? { ...t, doc: { ...t.doc, text: action.text } } : t));
     case "switchTab":
-      // Optimistic focus so the cached buffer swaps in instantly; `active` confirms it.
+      // Optimistic focus so the cached buffer swaps in instantly; active confirms it.
       return state.tabs.some((t) => t.path === action.path) ? { ...state, activePath: action.path } : state;
     case "applyExternal": {
       const t = state.tabs.find((x) => x.path === action.path);
@@ -450,34 +434,29 @@ export default function App() {
   const [showShip, setShowShip] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showNewPost, setShowNewPost] = useState(false);
-  // Seeds the New Post dialog's title: empty from the "New post" button, the ⌘P search term
-  // when created from the palette. Read once at the dialog's mount (it remounts on each open).
+  // Seeds the New Post dialog's title: empty from the button, the ⌘P search term from the palette.
   const [newPostTitle, setNewPostTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  // Transient, self-dismissing toast for actions that can't proceed right now (e.g. a prompt
-  // attempted while the socket is reconnecting). Feedback the chat transcript can't carry
-  // because no turn was ever started.
+  // Transient toast for actions that can't proceed right now (e.g. a prompt while reconnecting),
+  // which the chat transcript can't carry because no turn was started.
   const [notice, setNotice] = useState<string | null>(null);
-  // A pending destructive op (delete/revert) awaiting the author's confirmation: the sidecar
-  // reported what would be lost. Null when no confirmation dialog is up.
+  // A pending destructive op awaiting confirmation; the sidecar reported what would be lost.
   const [pendingConfirm, setPendingConfirm] = useState<DestructiveConfirmData | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
-  // Canonical paths of open posts that are drafts (unshipped work), for the tab bar's dot.
-  // Refreshed (debounced) whenever something could have changed it; see `refreshDirty` below.
+  // Open posts that are drafts (unshipped work), for the tab bar's dot; refreshed via refreshDirty.
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
 
   const socketRef = useRef<StudioSocket | null>(null);
   const editorRef = useRef<EditorHandle | null>(null);
-  // Synchronous single-turn latch. `turn` in state drives the UI, but a ref is needed to
-  // reject a second dispatch during the pre-flush await, before the state-driven re-render
-  // lands. Reconciled from state so the server's done/error always releases it.
+  // Synchronous single-turn latch, needed to reject a second dispatch during the pre-flush await
+  // before the state-driven re-render lands. Reconciled from `turn` so done/error always releases it.
   const turnInFlightRef = useRef(false);
-  // Socket-open status, read synchronously by the (stable) prompt callback so it can refuse a
-  // turn it couldn't deliver. `connected` state drives the UI; this mirrors it for the ref path.
+  // Socket-open status, read synchronously by the stable prompt callback so it can refuse a turn it
+  // couldn't deliver. Mirrors the `connected` state.
   const connectedRef = useRef(false);
-  // Current active path, read synchronously by the (stable) switch/open callbacks.
+  // Active path, read synchronously by the stable switch/open callbacks.
   const activePathRef = useRef<string | null>(null);
   // Pending post.* requests keyed by requestId, resolved by the matching post.result.
   const pendingRef = useRef<Map<string, (ok: boolean, error?: string) => void>>(new Map());
@@ -495,9 +474,8 @@ export default function App() {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
   }, []);
 
-  // Re-probe GET /posts/dirty for the tab bar's draft dot. Several independent triggers below
-  // (tabs changing, an agent edit landing, a turn finishing, an autosave) can each fire this in
-  // quick succession, so debounce into one request rather than a burst.
+  // Re-probe GET /posts/dirty for the tab bar's draft dot. Several triggers can fire in quick
+  // succession (tabs change, agent edit, turn finishing, autosave), so debounce into one request.
   const refreshDirty = useCallback(() => {
     if (dirtyTimerRef.current) clearTimeout(dirtyTimerRef.current);
     dirtyTimerRef.current = setTimeout(() => {
@@ -524,8 +502,7 @@ export default function App() {
   useEffect(() => {
     const socket = new StudioSocket({
       onMessage: (msg) => {
-        // post.result carries a requestId, not tab state, so resolve it here (close the new-post
-        // dialog / surface an error) rather than threading it through the reducer.
+        // post.result carries a requestId, not tab state, so resolve it here rather than through the reducer.
         if (msg.type === "post.result") {
           const resolve = pendingRef.current.get(msg.requestId);
           if (resolve) {
@@ -534,8 +511,8 @@ export default function App() {
           }
           return;
         }
-        // A destructive op (delete/revert) sent with confirm:false that would lose work. Drop the
-        // throwaway probe resolver and raise the confirmation dialog with what's at risk.
+        // A confirm:false destructive op that would lose work: drop the probe resolver and raise the
+        // confirmation dialog with what's at risk.
         if (msg.type === "post.confirm") {
           pendingRef.current.delete(msg.requestId);
           setPendingConfirm({
@@ -548,8 +525,7 @@ export default function App() {
           return;
         }
         dispatch({ type: "server", msg });
-        // Draft-ness (uncommitted/unmerged work) can change any time the open set changes, an
-        // edit lands on disk, or a turn finishes; re-probe /posts/dirty for the tab dot.
+        // Draft-ness can change when the open set changes, an edit lands, or a turn finishes.
         if (msg.type === "tabs" || msg.type === "file.changed" || msg.type === "done") refreshDirty();
       },
       onStatus: setStatus,
@@ -568,55 +544,49 @@ export default function App() {
     connectedRef.current = connected;
   }, [connected]);
 
-  // Initial load (and every reconnect): the socket coming up is the first chance to know which
+  // The socket coming up (initial load and every reconnect) is the first chance to learn which
   // open posts are drafts.
   useEffect(() => {
     if (connected) refreshDirty();
   }, [connected, refreshDirty]);
 
-  // A dropped socket (sidecar restart / network blip) means the in-flight turn's terminal
-  // done/error can never arrive; the reconnected socket is a fresh stream the sidecar has no
-  // memory of. Without this the owning tab stays wedged (editor readOnly, composer disabled,
-  // Cancel a no-op) until a page reload. Release the latch when the connection drops so the
-  // tab recovers on reconnect; a late done/error for the since-cleared turn is already a no-op.
+  // A dropped socket means the in-flight turn's terminal done/error can never arrive, so without
+  // this the owning tab stays wedged until a page reload. Release the latch when the connection
+  // drops; a late done/error for the cleared turn is already a no-op.
   useEffect(() => {
     if (status === "closed") dispatch({ type: "resetTurn" });
   }, [status]);
 
   const sendPrompt = useCallback(
     async (text: string, context: PromptContext) => {
-      // One agent turn at a time (the backend serializes across tabs): ignore a dispatch while
-      // another is in flight.
+      // One turn at a time (the backend serializes across tabs): ignore a dispatch while one's in flight.
       if (turnInFlightRef.current) return;
-      // Don't start a turn we can't deliver: while the socket is down the send would be dropped,
-      // latching the tab "working" with no server done/error to ever release it. Surface the
-      // reconnecting state and bail without setting the turn.
+      // Don't start a turn we can't deliver: a send while the socket is down would be dropped, latching
+      // the tab "working" with no done/error to release it. Surface the reconnecting state and bail.
       if (!connectedRef.current) {
         showNotice("Reconnecting to the sidecar — try again in a moment.");
         return;
       }
       turnInFlightRef.current = true;
       try {
-        // Save-before-prompt: flush the buffer so the agent reads committed bytes. flush()
-        // rejects on stale-rev / conflict / transient failure rather than resolving without
-        // persisting, so a failed flush blocks the dispatch (the agent never reads stale
-        // on-disk bytes). The conflict surfaces in the reload banner for the human to resolve.
+        // Save-before-prompt: flush so the agent reads committed bytes. flush() rejects on
+        // stale-rev/conflict/transient failure, so a failed flush blocks the dispatch (the agent
+        // never reads stale bytes); the conflict surfaces in the reload banner.
         await editorRef.current?.flush();
       } catch {
         turnInFlightRef.current = false;
         return;
       }
       const promptId = nid();
-      // Send first, then commit the turn (user message and latch) only if the socket accepted it.
-      // The flush above yields, so the socket may have dropped meanwhile; a rejected send must
-      // not latch the tab. send() returns false when the socket isn't open.
+      // Send first, commit the turn only if accepted. The flush above yields, so the socket may have
+      // dropped meanwhile; a rejected send (returns false) must not latch the tab.
       const sent = socketRef.current?.send({ type: "prompt", promptId, text, context }) ?? false;
       if (!sent) {
         turnInFlightRef.current = false;
         showNotice("Lost the connection before sending — reconnecting. Try again in a moment.");
         return;
       }
-      // The prompt's owner is the active post (context.path is the active doc / editor path).
+      // The prompt's owner is the active post (context.path is the active doc/editor path).
       dispatch({ type: "sendPrompt", promptId, text, path: context.path });
     },
     [showNotice],
@@ -631,7 +601,7 @@ export default function App() {
     if (ed && cur) {
       const text = ed.getText();
       if (text !== null) dispatch({ type: "captureBuffer", path: cur, text });
-      // Best-effort persist; the snapshot above already preserves the edits either way.
+      // Best-effort persist; the snapshot already preserves the edits either way.
       void ed.flush().catch(() => {});
     }
     dispatch({ type: "switchTab", path });
@@ -639,11 +609,9 @@ export default function App() {
   }, []);
 
   const onCloseTab = useCallback(async (path: string) => {
-    // Only the active tab has a live editor; closing it re-keys the editor and unmounts the
-    // old view, whose cleanup cancels any pending debounced autosave without flushing. Flush
-    // first (like the switch/prompt paths) so typed-then-immediately-closed edits land on disk
-    // before the doc is closed. Swallow a flush failure: the author asked to close, and the
-    // edits still live in the worktree file / any conflict still surfaces via the banner.
+    // Closing the active tab unmounts its editor, whose cleanup cancels any debounced autosave
+    // without flushing. Flush first so typed-then-immediately-closed edits land on disk. Swallow a
+    // failure: the edits still live in the worktree file and any conflict surfaces via the banner.
     if (path === activePathRef.current) {
       try {
         await editorRef.current?.flush();
@@ -655,9 +623,8 @@ export default function App() {
   }, []);
 
   const onRename = useCallback(async (path: string, newSlug: string) => {
-    // Flush before renaming the active post: the sidecar's renamePost snapshots the last-saved text
-    // into the new file, so un-autosaved keystrokes would be dropped (like the switch/close paths,
-    // which flush first). Only the active tab has a live editor buffer to flush.
+    // Flush before renaming: the sidecar snapshots the last-saved text into the new file, so
+    // un-autosaved keystrokes would be dropped. Only the active tab has a buffer to flush.
     if (path === activePathRef.current) {
       try {
         await editorRef.current?.flush();
@@ -668,10 +635,9 @@ export default function App() {
     socketRef.current?.send({ type: "post.rename", requestId: nid(), path, newSlug });
   }, []);
 
-  // Revert / delete a post from the tab menu. Sent with confirm:false first: the sidecar either
-  // acts immediately (revert no-op, or a clean delete with nothing to lose) or replies post.confirm
-  // with what's at risk, which raises the dialog. A surfaced error becomes a transient notice; the
-  // tab set itself updates via the authoritative `tabs` broadcast.
+  // Revert/delete from the tab menu. Sent with confirm:false first: the sidecar either acts
+  // immediately (nothing to lose) or replies post.confirm with what's at risk, raising the dialog.
+  // An error becomes a transient notice; the tab set updates via the authoritative tabs broadcast.
   const requestDestructive = useCallback(
     (op: "delete" | "revert", path: string) => {
       const requestId = nid();
@@ -686,9 +652,8 @@ export default function App() {
   const onDeletePost = useCallback((path: string) => requestDestructive("delete", path), [requestDestructive]);
   const onRevertPost = useCallback((path: string) => requestDestructive("revert", path), [requestDestructive]);
 
-  // Resolve a frontmatter/filename desync by renaming the file/worktree/branch to match the
-  // frontmatter. The sidecar derives the target from the post's own text; a refusal (e.g. the target
-  // stem is taken by an on-disk file or a draft branch) surfaces as a transient notice.
+  // Resolve a desync by renaming file/worktree/branch to match the frontmatter. The sidecar derives
+  // the target from the post's own text; a refusal (e.g. the target stem is taken) surfaces as a notice.
   const onCompleteRename = useCallback(
     (path: string) => {
       const requestId = nid();
@@ -700,8 +665,8 @@ export default function App() {
     [showNotice],
   );
 
-  // Resolve the desync from the filename side: rewrite the frontmatter (slug/created_at) so the
-  // deployed URL matches the filename; an ordinary edit, no rename. The editor adopts the rewrite.
+  // Resolve the desync from the filename side: rewrite the frontmatter so the URL matches the
+  // filename. An ordinary edit, no rename; the editor adopts the rewrite.
   const onRevertUrl = useCallback(
     (path: string) => {
       const requestId = nid();
@@ -713,9 +678,8 @@ export default function App() {
     [showNotice],
   );
 
-  // Author confirmed the pending destructive op: resend with confirm:true and resolve the dialog on
-  // the result: close on success, show the error inline on failure. A send that the socket rejects
-  // (dropped connection) clears the busy latch so the dialog doesn't hang.
+  // Author confirmed the destructive op: resend with confirm:true, then close on success or show the
+  // error inline. A rejected send (dropped connection) clears the busy latch so the dialog doesn't hang.
   const onConfirmDestructive = useCallback(() => {
     if (!pendingConfirm) return;
     const { op, path } = pendingConfirm;
@@ -745,8 +709,7 @@ export default function App() {
     setConfirmError(null);
   }, [confirmBusy]);
 
-  // Open the New Post dialog seeded with `title` (empty for a blank post). Clears any stale
-  // error from a prior attempt so the freshly-mounted dialog opens clean.
+  // Open the New Post dialog seeded with `title` (empty for a blank post), clearing any stale error.
   const openNewPost = useCallback((title: string) => {
     setNewPostTitle(title);
     setCreateError(null);
@@ -769,14 +732,13 @@ export default function App() {
     socketRef.current?.send({ type: "mcp.setEnabled", requestId: nid(), server, enabled });
   }, []);
 
-  // Switch the permission mode; the sidecar echoes the authoritative `mode.status` back to the chip.
+  // Switch the permission mode; the sidecar echoes mode.status back to the chip.
   const onSetMode = useCallback((mode: PermissionMode) => {
     socketRef.current?.send({ type: "mode.set", mode });
   }, []);
 
-  // Answer a permission prompt. The card lives on the active tab (only its Chat is mounted), so the
-  // active path is the owner. Drop the card locally only once the response is actually sent; a
-  // dropped socket leaves it up, and the reconnect's resetTurn clears it.
+  // Answer a permission prompt. The card lives on the active tab, so the active path is the owner.
+  // Drop it locally only once the response is sent; a dropped socket leaves it up for resetTurn to clear.
   const onPermission = useCallback((requestId: string, decision: PermissionDecision) => {
     const path = activePathRef.current;
     const sent = socketRef.current?.send({ type: "permission.response", requestId, decision }) ?? false;
@@ -843,14 +805,13 @@ export default function App() {
   const onRev = useCallback(
     (path: string, rev: DocRev) => {
       dispatch({ type: "revUpdated", path, rev });
-      // A successful autosave can flip a clean tab to a draft (or vice versa, on revert).
+      // A successful autosave can flip a clean tab to a draft (or back, on revert).
       refreshDirty();
     },
     [refreshDirty],
   );
 
-  // ⌘P / Ctrl-P toggles the command palette. Capture phase so it beats CodeMirror and the
-  // browser's print shortcut.
+  // ⌘P / Ctrl-P toggles the command palette. Capture phase so it beats CodeMirror and browser print.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === "p" || e.key === "P")) {
@@ -971,7 +932,7 @@ export default function App() {
         <button
           className="btn btn--ghost"
           onClick={async () => {
-            // Flush first so the ship diff reflects the newest keystrokes, not just the last autosave.
+            // Flush so the ship diff reflects the newest keystrokes, not just the last autosave.
             try {
               await editorRef.current?.flush();
             } catch {

@@ -1,16 +1,10 @@
-// The in-memory mirror of every open post. Each open post is backed by its own git worktree
-// (`.claude/worktrees/blog/<YYYY-MM-DD_slug>` on branch `blog/<YYYY-MM-DD_slug>`, keyed by the
-// post's date-qualified filename stem so two posts that share a slug on different dates never
-// collide, forked from origin/<default>), so sessions never contend over one working tree. The
-// store maps open docs by their canonical repo path (`<repoRoot>/src/content/blog/…`, the identity
-// the SPA tabs on), tracks one active doc, derives the preview URL, and fans server-to-client
-// messages out to subscribers (the WebSocket and the agent-host stream).
+// In-memory mirror of every open post. Each post gets its own git worktree (branch blog/<stem>,
+// keyed by the date-qualified filename stem so a shared slug on different dates can't collide), so
+// sessions never contend over one working tree. Docs are keyed by canonical repo path.
 //
-// Disk (the worktree's on-disk file) is the single source of truth. The editor autosave funnels
-// through a mutex so the rev-check and write are one atomic critical section, re-reading disk
-// inside it to refuse clobbering an out-of-band edit; disk always wins. The agent edits its
-// worktree with native tools (no store mutation gate); the file watcher adopts those writes and
-// surfaces them as file.changed{agent}.
+// Disk is the source of truth. Autosave funnels through a mutex so the rev-check and write are one
+// critical section that re-reads disk to refuse clobbering an out-of-band edit. The agent writes
+// its worktree with native tools; the watcher adopts those as file.changed{agent}.
 
 import path from "node:path";
 
@@ -42,10 +36,8 @@ class Mutex {
 }
 
 /**
- * Records the content hashes the store has just written to disk, so the file watcher can tell its
- * own writes ("self" autosave) apart from genuinely external edits (an external editor) and from
- * the agent's native-tool writes. A small multiset keyed by hash; rapid successive writes each
- * register their own entry and are consumed once when the watcher observes them.
+ * Records hashes the store just wrote so the watcher can tell its own writes ("self" autosave, or
+ * the agent's native-tool writes) apart from external edits. A multiset consumed once on observe.
  */
 export class SelfWriteGuard {
   private pending: Array<{ hash: string; origin: "self" | "agent" }> = [];
@@ -69,7 +61,7 @@ export class SelfWriteGuard {
     return entry.origin;
   }
 
-  /** Peek whether `hash` is a pending store write, without consuming it (the watcher still needs it). */
+  /** Whether `hash` is a pending store write, without consuming it. */
   has(hash: string): boolean {
     return this.pending.some((p) => p.hash === hash);
   }
@@ -77,8 +69,7 @@ export class SelfWriteGuard {
 
 /** Relative dir (from repo root) that holds authored posts; the jail for every open post. */
 const BLOG_CONTENT_DIR = "src/content/blog";
-/** Worktree parent, relative to the repo root (gitignored). One worktree per open post,
- *  keyed by the post's date-qualified filename stem (see `postStem`). */
+/** Worktree parent dir, relative to the repo root. One worktree per post, keyed by its stem. */
 const WORKTREES_DIR = ".claude/worktrees/blog";
 
 const NO_ACTIVE_PREVIEW: PreviewState = { valid: false, url: null, errors: ["no active document"] };
@@ -91,12 +82,8 @@ export type CreatePostResult =
 /** Result of renamePost / completeRename. */
 export type RenamePostResult = { ok: true; path: string } | { ok: false; error: string };
 
-/**
- * A rename target: a new slug, and optionally a new date. The tab-bar rename supplies only a slug
- * (the current date prefix is kept) and rewrites the frontmatter slug to match the new filename; a
- * Complete-rename derives both slug and date from the post's own frontmatter and leaves the text
- * alone (the frontmatter is already the source of truth the filename is being made to match).
- */
+/** A rename target: a new slug, optionally a new date. Tab-bar rename supplies only a slug; a
+ *  Complete-rename derives both from the post's frontmatter. */
 export type RenameTarget = { slug: string; date?: string };
 
 /** PUT /doc outcome (mirrors the frozen PutDocResponse). */
@@ -108,7 +95,7 @@ export type WriteResult =
 export interface PostLossPreview {
   /** Uncommitted changes (incl. untracked) present in the post's worktree. */
   dirty: boolean;
-  /** Count of uncommitted files (for the confirm summary). */
+  /** Count of uncommitted files. */
   changedFiles: number;
   /** Commits on the post's branch not yet in origin/<default>. */
   ahead: number;
@@ -118,10 +105,8 @@ export interface PostLossPreview {
 }
 
 /**
- * Whether a post has unshipped work: the single definition of "draft / would lose work on delete".
- * The one source of truth for both the ⌘P dirty badge and the delete-draft confirm gate, so the two
- * can't drift (they must agree: the badge promises exactly what the gate will confirm). Keyed off a
- * "delete"-scoped {@link PostLossPreview}: uncommitted changes or commits not yet on origin.
+ * Whether a post has unshipped work. Shared by the ⌘P dirty badge and the delete-draft confirm gate
+ * so the two can't drift. Keyed off a "delete"-scoped {@link PostLossPreview}.
  */
 export function postWouldLoseWork(preview: PostLossPreview): boolean {
   return preview.dirty || preview.ahead > 0;
@@ -169,9 +154,8 @@ interface OpenDoc {
 }
 
 /**
- * The git pathspec (relative to the worktree root) that scopes a post's status/diff/checkout: the
- * file itself for a simple post, or its containing folder for a `.../<stem>/post.mdx` folder post
- * (so co-located assets, sibling `.tsx` and images, are counted and reverted with the post).
+ * The git pathspec scoping a post's status/diff/checkout: the file for a simple post, or its folder
+ * for a `<stem>/post.mdx` folder post (so co-located assets are counted and reverted with it).
  */
 function postUnitPathspec(relPath: string): string {
   const isFolder = relPath.endsWith("/post.mdx") || relPath.endsWith(`${path.sep}post.mdx`);
@@ -193,19 +177,17 @@ function frontmatterScalar(v: string): string {
 }
 
 /**
- * Render a value as an always-double-quoted YAML string (with escapes). Used for `created_at`, which
- * must stay quoted so Astro's YAML parser keeps it a string and preserves its timezone offset — an
- * unquoted ISO value is coerced to an offset-less `Date` before the content schema runs (see
- * `src/content.config.ts`), which the schema now rejects.
+ * Render an always-double-quoted YAML string. Used for `created_at`, which must stay quoted so
+ * Astro keeps it a string and preserves its timezone offset; an unquoted ISO value is coerced to an
+ * offset-less `Date` the content schema rejects (see `src/content.config.ts`).
  */
 function quotedScalar(v: string): string {
   return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 /**
- * The starter `.mdx` for a new post: valid frontmatter (Zod-satisfying) and a minimal body. No
- * `# H1`, since the BlogPost layout renders the title from frontmatter and a heading here would
- * duplicate it.
+ * The starter `.mdx` for a new post: valid frontmatter and a minimal body. No `# H1`, since the
+ * BlogPost layout renders the title from frontmatter.
  */
 function renderNewPost(input: PostFrontmatter): string {
   return [
@@ -223,9 +205,8 @@ function renderNewPost(input: PostFrontmatter): string {
 }
 
 /**
- * Rewrite one frontmatter `key:` value in place, preserving everything else (offsets, body) verbatim.
- * Pass `quote` to force a double-quoted value (used for `created_at`, which must stay quoted so YAML
- * preserves its timezone offset); otherwise the value is rendered bare when safe.
+ * Rewrite one frontmatter `key:` value in place, preserving everything else verbatim. `quote` forces
+ * a double-quoted value (for `created_at`, so YAML preserves its timezone offset).
  */
 function rewriteFrontmatterValue(text: string, key: string, value: string, quote = false): string {
   const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
@@ -251,7 +232,6 @@ export interface StoreDeps {
   fs: Fs;
   /** git/gh runner rooted at the repo (worktree add / branch -m / worktree move). */
   git: GitRunner;
-  /** Absolute path to the repo root. */
   repoRoot: string;
   /** Default branch worktrees fork from; resolved via `gh` lazily when omitted (tests pass it). */
   defaultBranch?: string;
@@ -267,15 +247,11 @@ export interface StoreDeps {
   prepareWorktree?: (worktreePath: string) => Promise<void>;
   /** Move a file or directory on disk (rename). Omitted in tests that don't exercise rename. */
   movePath?: (from: string, to: string) => Promise<void>;
-  /**
-   * Stop the preview daemon serving `worktreePath` and await it, called before a delete removes
-   * that worktree, so no daemon is left holding the fixed port. Omitted in tests (no astro).
-   */
+  /** Stop the preview daemon serving `worktreePath` before a delete removes it, so no daemon is
+   *  left holding the fixed port. Omitted in tests. */
   stopPreview?: (worktreePath: string) => Promise<void>;
-  /**
-   * Recursively remove a path (rm -rf); used to clear a leftover/husk worktree dir before
-   * re-creating it. Omitted in tests that don't exercise the husk self-heal path.
-   */
+  /** Recursively remove a path (rm -rf); clears a leftover husk worktree dir before re-creating it.
+   *  Omitted in tests. */
   removePath?: (p: string) => Promise<void>;
 }
 
@@ -283,68 +259,59 @@ export interface StoreDeps {
 export interface StudioStore extends Store {
   /** Hashes of the store's own recent writes; the watcher consults this to classify events. */
   readonly guard: SelfWriteGuard;
-  /** Fan a message out to every subscriber (used internally and by the agent-host stream). */
+  /** Fan a message out to every subscriber. */
   publish(message: ServerMessage): void;
   /**
-   * Open a post by its canonical repo path (ensuring/reusing its worktree) or, if already
-   * open, focus it. Announces the switch (file.changed, active, tabs, preview.url) and
-   * notifies onActiveChange so the watcher retargets and astro restarts in the worktree.
+   * Open a post by its canonical repo path (ensuring/reusing its worktree), or focus it if already
+   * open. Announces the switch and notifies onActiveChange so the watcher/astro retarget.
    */
   openPost(canonicalPath: string): Promise<ActiveDoc>;
   /**
-   * Create a new post (`<YYYY-MM-DD>_<slug>.mdx`) in its own worktree from valid frontmatter,
-   * make it active, and announce it. Refuses (never overwrites) when a post already exists.
+   * Create a new post in its own worktree, make it active, and announce it. Refuses (never
+   * overwrites) when a post already exists.
    */
   createPost(input: PostFrontmatter): Promise<CreatePostResult>;
   /**
-   * Close a tab, re-focusing another open post if any. A tab with a draft (uncommitted edits or
-   * unmerged commits) keeps its worktree/branch on disk for re-open; a clean tab is torn down via
-   * the same path as {@link deletePost}, so browsing-then-closing leaves no orphaned worktree.
+   * Close a tab, re-focusing another open post if any. A draft keeps its worktree/branch for
+   * re-open; a clean tab is torn down like {@link deletePost}, leaving no orphaned worktree.
    */
   closePost(canonicalPath: string): Promise<void>;
   /**
-   * Rename a post to a new slug (and optionally date): move the file, `git branch -m`, `git worktree
-   * move`, and for a slug-driven (tab-bar) rename, rewrite the frontmatter slug to match. Emits
-   * `post.renamed` (session/transcript migration) then re-activates. Refuses when the target stem
-   * collides with an open tab, an on-disk file, or an existing draft branch.
+   * Rename a post to a new slug (and optionally date): move the file, branch, and worktree, and for
+   * a tab-bar rename rewrite the frontmatter slug to match. Emits `post.renamed` then re-activates.
+   * Refuses when the target stem collides with an open tab, an on-disk file, or a draft branch.
    */
   renamePost(canonicalPath: string, target: RenameTarget): Promise<RenamePostResult>;
   /**
    * Resolve a frontmatter/filename desync by renaming the file/worktree/branch to match the post's
-   * own frontmatter (deriving date and slug from its text). Runs the same path as {@link renamePost} but
-   * leaves the frontmatter untouched (it is already the source of truth). Refuses when the derivation
-   * is invalid or the target stem is taken.
+   * frontmatter. Like {@link renamePost} but leaves the frontmatter untouched (already the truth).
+   * Refuses when the derivation is invalid or the target stem is taken.
    */
   completeRename(canonicalPath: string): Promise<RenamePostResult>;
   /**
-   * Resolve a desync from the filename side (the inverse of {@link completeRename}): rewrite the
-   * frontmatter (slug, and `created_at` as a timezone-unambiguous date-only value) so its derived
-   * URL matches the current filename/branch stem. An ordinary uncommitted edit (no git rename),
-   * broadcast to the editor so the buffer adopts it. A no-op when the post is already in sync.
+   * Resolve a desync from the filename side (inverse of {@link completeRename}): rewrite the
+   * frontmatter so its derived URL matches the filename/branch stem. An ordinary uncommitted edit,
+   * broadcast to the editor. A no-op when already in sync.
    */
   revertUrl(canonicalPath: string): Promise<RenamePostResult>;
   /** What deleting / reverting a post would discard (uncommitted files, unmerged commits, diff). */
   postLossPreview(canonicalPath: string, op: "delete" | "revert"): Promise<PostLossPreview>;
   /**
-   * Canonical paths of every post with unshipped work (uncommitted changes or commits not yet on
-   * origin/<default>; mirrors {@link postWouldLoseWork}), discovered by enumerating the actual git
-   * worktrees on disk under `.claude/worktrees/blog`, not the in-memory `open` tab map. This
-   * covers open tabs, stray worktrees left over from a failed boot, and worktrees/branches created
-   * outside the studio (e.g. on the CLI), so the ⌘P palette's dirty badge can't miss any of them.
+   * Canonical paths of every post with unshipped work (mirrors {@link postWouldLoseWork}), found by
+   * enumerating the worktrees on disk, not the in-memory `open` map, so stray worktrees from a
+   * failed boot or created on the CLI are covered too.
    */
   dirtyPostPaths(): Promise<string[]>;
   /**
-   * Enumerate `blog/*` draft branches (local and/or remote-tracking) that have NO live worktree and
-   * are not open: drafts started elsewhere or left behind, invisible to the open-tabs and main-tree
-   * post listings. Offline-safe (reads refs already on disk, never fetches). Each result carries the
-   * canonical reopen path, the stem, and where the branch lives; selecting one runs the adopt-then-open
-   * path. Powers the ⌘P palette's draft entries.
+   * Enumerate `blog/*` draft branches with no live worktree and not open: drafts started elsewhere
+   * or left behind. Offline-safe (reads refs on disk, never fetches). Powers the ⌘P palette's draft
+   * entries; selecting one runs the adopt-then-open path.
    */
   listDrafts(): Promise<DraftSummary[]>;
   /**
-   * Delete a draft post: remove its worktree and force-delete its branch (never touches
-   * origin/main), re-focusing another open post like close. The active post's preview daemon is
-   * stopped (awaited) before the worktree is removed so a lingering daemon can't hold the port.
+   * Delete a draft post: remove its worktree and force-delete its branch (never touches origin),
+   * re-focusing another open post like close. The preview daemon is stopped first so it can't hold
+   * the port.
    */
   deletePost(canonicalPath: string): Promise<DeletePostResult>;
   /** Discard a post's uncommitted edits back to its branch's HEAD; reloads the buffer if it changed. */
@@ -354,17 +321,16 @@ export interface StudioStore extends Store {
   /** The active post as { path, title, branch } (path = canonical) for the tab bar / snapshot; null if none. */
   getActive(): { path: string; title: string; branch: string } | null;
   /**
-   * The active post's frontmatter/filename name-sync status (synchronous): `synced:false` with the
-   * expected/current stems when the frontmatter-derived stem differs from the filename/branch stem.
-   * The ship flow reads this to refuse a desynced post, and the connection snapshot replays it.
+   * The active post's frontmatter/filename name-sync status: `synced:false` with the expected/current
+   * stems when they differ. The ship flow reads it to refuse a desynced post.
    */
   getActiveNameSync(): { synced: boolean; expectedStem?: string; currentStem?: string };
   /** Authoritative open tab set for the `tabs` broadcast. */
   getOpenTabs(): { path: string; title: string }[];
   /** The active post's worktree (for ship + the astro manager); null if none. */
   getActiveWorktree(): ActiveWorktree | null;
-  /** The worktree of the open post at `canonicalPath` (not necessarily the active one); null if it
-   *  isn't open. Lets a path-scoped consumer resolve the owning worktree even during a switch race. */
+  /** The worktree of the open post at `canonicalPath` (not necessarily active); null if not open.
+   *  Resolves the owning worktree even during a switch race. */
   getWorktreeFor(canonicalPath: string): ActiveWorktree | null;
   /**
    * Worktree file backing the open post at `canonicalPath` (not necessarily the active one); null if
@@ -376,18 +342,16 @@ export interface StudioStore extends Store {
   /** Absolute on-disk file the active post's watcher should follow; null if none. */
   getActiveWatchPath(): string | null;
   /**
-   * The open post backing `worktreeFilePath` (its canonical path and current rev), or null. Lets the
-   * watcher reconcile against the file's owner even when a tab switch out-lives an agent turn (the
-   * watched file may no longer be the active one).
+   * The open post backing `worktreeFilePath` (its canonical path and rev), or null. Lets the watcher
+   * reconcile against the file's owner when a tab switch out-lives an agent turn.
    */
   getDocByWatchPath(worktreeFilePath: string): { path: string; rev: DocRev } | null;
   /** Adopt externally/agent-changed text as the active doc, emitting file.changed{origin}. */
   reloadActive(text: string, origin: "external" | "agent"): Promise<ActiveDoc>;
   /**
-   * Adopt externally/agent-changed disk text for the open post backing `worktreeFilePath` (not
-   * necessarily the active one), emitting file.changed{origin} for its canonical path; null if no
-   * open post backs that file. Used by the watcher so an agent turn's writes still land on the
-   * turn's post even after the user switched tabs mid-turn.
+   * Adopt disk text for the open post backing `worktreeFilePath` (not necessarily active), emitting
+   * file.changed{origin}; null if no open post backs it. Lets an agent turn's writes land on the
+   * turn's post even after a mid-turn tab switch.
    */
   reloadByWatchPath(worktreeFilePath: string, text: string, origin: "external" | "agent"): Promise<ActiveDoc | null>;
   /** Register a callback fired whenever the active post switches; returns an unsubscribe fn. */
@@ -455,10 +419,9 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Whether a post's isolation branch `blog/<stem>` exists locally (`refs/heads`) and/or as a
-   * remote-tracking ref (`refs/remotes/origin`). Offline-safe: it reads refs already on disk and
-   * never fetches, so `remote` reflects the last-known `origin/*` (possibly stale) rather than a
-   * live probe. Used to adopt an existing draft into a worktree and to refuse forking over one.
+   * Whether `blog/<stem>` exists locally and/or as a remote-tracking ref. Offline-safe: reads refs
+   * on disk, never fetches, so `remote` may be stale. Used to adopt an existing draft and to refuse
+   * forking over one.
    */
   async function branchRefs(stem: string): Promise<{ local: boolean; remote: boolean }> {
     const branch = `blog/${stem}`;
@@ -469,10 +432,8 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Refusal message when `blog/<stem>` already exists as a branch (local and/or on origin), so
-   * creating or renaming a *new* post into that stem would fork a divergent branch that only
-   * collides at push time. Null when the stem is free. The author is pointed at ⌘P, where the
-   * existing draft is now adoptable.
+   * Refusal message when `blog/<stem>` already exists, so creating/renaming a new post into that
+   * stem would fork a divergent branch that only collides at push time. Null when the stem is free.
    */
   async function draftBranchTaken(stem: string): Promise<string | null> {
     const { local, remote } = await branchRefs(stem);
@@ -482,13 +443,9 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Ensure (or reuse) the worktree for post `stem` (its date-qualified filename stem: the unique
-   * post identity, not the bare slug, so two posts sharing a slug on different dates never share a
-   * worktree/branch). Reuses when the worktree dir already holds a `.git` link (kept across close);
-   * otherwise adopts an existing `blog/<stem>` draft branch: the local branch directly, or a
-   * remote-only one via `--track` off `origin/blog/<stem>`, so a draft started elsewhere (or left
-   * behind) opens instead of being silently forked over into a divergent branch; when there is no
-   * branch at all it forks a fresh one off origin/<default>. Returns its paths.
+   * Ensure (or reuse) the worktree for post `stem`. Reuses when the dir already holds a `.git` link;
+   * else adopts an existing `blog/<stem>` draft (local directly, remote-only via `--track`) so a
+   * draft started elsewhere opens instead of being forked over; else forks fresh off origin/<default>.
    */
   async function ensureWorktree(stem: string): Promise<{ worktreePath: string; branch: string }> {
     const branch = `blog/${stem}`;
@@ -499,16 +456,10 @@ export function createStore(deps: StoreDeps): StudioStore {
       await git.git(["worktree", "prune"], { cwd: repoRoot });
       const { local: localExists, remote: remoteExists } = await branchRefs(stem);
 
-      // Self-heal a leftover (husk) directory at `worktreePath`. `astro dev --background` forks a
-      // detached daemon (reparented to init); on a hard kill/crash it's orphaned, keeps its cwd on
-      // this worktree, and recreates the worktree's `.astro/` cache dir. That leftover (just
-      // `.astro/` and a `node_modules` symlink, no valid `.git`) can survive worktree removal and
-      // then block `git worktree add` below, since git only accepts an empty existing dir (never a
-      // non-empty one, even with --force). Only preserve the dir when a local branch's worktree
-      // registration is what we want back (`git worktree add <path> <branch>`); a remote-only or
-      // brand-new branch is checked out fresh, so the dir must be empty; remove it wholesale. If
-      // something unexpected (non-cruft) remains in the preserved case, the add fails below and the
-      // error surfaces; we never blindly delete real content.
+      // Self-heal a husk dir: an orphaned `astro dev` daemon can recreate `.astro/` (plus a
+      // node_modules symlink, no valid `.git`) after worktree removal, and git's `worktree add`
+      // rejects a non-empty existing dir. Preserve the dir only to re-register a local branch; a
+      // remote-only or fresh branch is checked out clean, so remove it wholesale.
       if (await fs.exists(worktreePath)) {
         if (localExists) {
           await deps.removePath?.(path.join(worktreePath, ".astro"));
@@ -536,9 +487,8 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Absolute paths of every git worktree registered under `worktreesRoot` (the main checkout is
-   * excluded (it isn't under that root). Parses `git worktree list --porcelain` blocks (each has a
-   * `worktree <path>` line, blank-line separated). Shared by the dirty-scan and draft enumeration.
+   * Absolute paths of every git worktree registered under `worktreesRoot` (excludes the main
+   * checkout). Parses `git worktree list --porcelain`. Shared by the dirty-scan and draft enumeration.
    */
   async function worktreePathsOnDisk(): Promise<string[]> {
     const listRes = await git.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
@@ -553,11 +503,9 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * The post file path (relative to the repo root) for `stem` on git `ref`, checking the simple
-   * (`<stem>.mdx`) then folder (`<stem>/post.mdx`) layout via `git cat-file -e` (reads the ref's
-   * tree object; offline-safe, no working tree needed), or null when the branch carries no post
-   * file under the blog dir. Lets draft enumeration build the right canonical path before any
-   * worktree exists to inspect.
+   * The post file path (repo-relative) for `stem` on git `ref`, checking the simple then folder
+   * layout via `git cat-file -e`, or null when the branch carries no post file. Lets draft
+   * enumeration build the canonical path before any worktree exists.
    */
   async function draftUnitRel(ref: string, stem: string): Promise<string | null> {
     const candidates = [`${BLOG_CONTENT_DIR}/${stem}.mdx`, `${BLOG_CONTENT_DIR}/${stem}/post.mdx`];
@@ -593,12 +541,10 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * The active-post name-sync status: whether the frontmatter-derived stem `${date}_${slug}` matches
-   * the post's filename/worktree/branch stem. Synchronous (deriveUrl + a stem compare). Reported as
-   * synced when there's no active post, or when the frontmatter is invalid (the preview-error path
-   * owns that case (a bad slug/date is not a "desync"). When desynced, `canComplete` is false only
-   * for the sync-knowable collision (the target stem is already an open tab); an on-disk-file or
-   * draft-branch collision is enforced by the rename itself and surfaces as an error on the attempt.
+   * The active-post name-sync status: whether the frontmatter-derived stem matches the
+   * filename/branch stem. Synced when there's no active post or the frontmatter is invalid (the
+   * preview-error path owns that). `canComplete` is false only for the sync-knowable collision (an
+   * open tab at the target stem); a file or draft-branch collision surfaces on the rename attempt.
    */
   function computeNameSync(doc: OpenDoc | null): Extract<ServerMessage, { type: "post.namesync" }> {
     if (!doc) return { type: "post.namesync", synced: true };
@@ -622,8 +568,7 @@ export function createStore(deps: StoreDeps): StudioStore {
     const doc = activeDoc();
     preview = computePreview(doc);
     publish({ type: "preview.url", preview });
-    // Name-sync rides the same cadence/code path as the preview URL (activation, autosave-when-active,
-    // agent edit), and is active-post-scoped (no path) exactly like preview.url.
+    // Name-sync rides the same cadence as preview.url and is active-post-scoped.
     publish(computeNameSync(doc));
   }
 
@@ -632,12 +577,10 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Announce a just-focused active doc, in an order the SPA can bootstrap from: the tab bar first
-   * (tabs, active) so the target tab exists, then its buffer (file.changed{external}); the client
-   * drops a file.changed for a path it has no tab for, so text arriving before the tab would leave a
-   * permanently blank editor. This mirrors the sidecar's onConnection snapshot and the mock. Finally
-   * refresh the preview and notify active-change subscribers so the watcher retargets and astro
-   * restarts in the new worktree.
+   * Announce a just-focused active doc in an order the SPA can bootstrap from: tab bar first (tabs,
+   * active) so the target tab exists, then its buffer (file.changed), since the client drops a
+   * file.changed for a path it has no tab for. Then refresh the preview and notify active-change
+   * subscribers so the watcher/astro retarget.
    */
   function publishActivation(doc: OpenDoc): void {
     activePath = doc.canonicalPath;
@@ -654,8 +597,8 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Re-read a post's on-disk file, bumping its in-memory rev only when the bytes actually
-   * changed (so re-focusing a tab whose file is unchanged doesn't spuriously banner).
+   * Re-read a post's on-disk file, bumping its rev only when the bytes changed (so re-focusing an
+   * unchanged tab doesn't spuriously banner).
    */
   async function reloadFromDisk(doc: OpenDoc): Promise<OpenDoc> {
     const text = await fs.readFile(doc.worktreeFilePath);
@@ -668,10 +611,9 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Guard against clobbering an out-of-band edit the watcher hasn't reconciled yet: re-read
-   * the file inside the mutex and compare its hash to what the store last wrote/adopted.
-   * Returns an on-disk rev when the bytes diverged (caller rejects as stale-rev), or null when
-   * it is safe to write: disk matches our view, or the divergent bytes are our own in-flight write.
+   * Guard against clobbering an out-of-band edit: re-read the file and compare its hash to what the
+   * store last wrote. Returns an on-disk rev when the bytes diverged (caller rejects as stale-rev),
+   * or null when safe (disk matches, or the divergence is our own in-flight write).
    */
   async function diskDivergedRev(doc: OpenDoc): Promise<DocRev | null> {
     const onDisk = await fs.readFile(doc.worktreeFilePath);
@@ -686,13 +628,10 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * The shared rename body (no mutex; callers hold it), driving both the tab-bar rename and the
-   * Complete-rename off one path. Moves the file/folder (`git mv` when tracked, else a plain move),
-   * renames the branch (`git branch -m`) and worktree (`git worktree move`) to the new date-qualified
-   * stem, then (for a slug-driven rename only) rewrites the frontmatter slug so it stays in sync with
-   * the filename. Refuses when the target stem collides with an open tab, an on-disk file, or a draft
-   * branch. Emits `post.renamed` (so clients migrate the tab's transcript/session) before
-   * re-activating. A no-op (ok) when the target resolves to the current stem.
+   * The shared rename body (no mutex; callers hold it), driving both renames. Moves the file/folder
+   * (`git mv` when tracked, else plain move), renames the branch and worktree to the new stem, then
+   * for a slug-driven rename rewrites the frontmatter slug to match. Refuses on a target-stem
+   * collision (open tab, on-disk file, or draft branch). Emits `post.renamed` before re-activating.
    */
   async function renameInternal(
     doc: OpenDoc,
@@ -702,8 +641,7 @@ export function createStore(deps: StoreDeps): StudioStore {
     if (!isValidSlug(target.slug)) return { ok: false, error: `invalid slug: ${target.slug}` };
     if (!deps.movePath) return { ok: false, error: "rename is unavailable (no movePath)" };
 
-    // A simple post `…/<date>_<old>.mdx` renames to `…/<newdate>_<new>.mdx`; a folder post
-    // `…/<date>_<old>/post.mdx` renames to `…/<newdate>_<new>/post.mdx` (its parent dir moves).
+    // A simple post renames the `.mdx`; a folder post moves its parent dir (`<stem>/post.mdx`).
     const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
     const oldName = isFolder ? path.basename(path.dirname(doc.canonicalPath)) : path.basename(doc.canonicalPath, ".mdx");
     // A Complete-rename supplies the frontmatter date; a tab-bar rename keeps the current date prefix.
@@ -715,8 +653,8 @@ export function createStore(deps: StoreDeps): StudioStore {
     const newCanonical = targetCanonicalFor(doc, newName);
     if (open.has(newCanonical)) return { ok: false, error: `a post is already open at that slug` };
     const newRel = path.relative(repoRoot, newCanonical);
-    // Branch + worktree key on the full date-qualified stem (`newName`), not the bare slug, so the
-    // renamed post keeps its collision-free identity (see `postStem`).
+    // Branch + worktree key on the full stem (`newName`), not the bare slug, keeping the post's
+    // collision-free identity.
     const newBranch = `blog/${newName}`;
     const newWorktreePath = path.join(worktreesRoot, newName);
 
@@ -724,16 +662,14 @@ export function createStore(deps: StoreDeps): StudioStore {
     const oldUnitInWt = isFolder ? path.dirname(doc.worktreeFilePath) : doc.worktreeFilePath;
     const newUnitInWt = isFolder ? path.join(doc.worktreePath, path.dirname(newRel)) : path.join(doc.worktreePath, newRel);
     if (await fs.exists(newUnitInWt)) return { ok: false, error: `a post already exists at ${newRel}` };
-    // Refuse if the target stem already has a draft branch (local or remote-only): `git branch -m`
-    // would fail on a local collision anyway, and would silently fork over a remote-only one. The
-    // author should adopt that draft from ⌘P rather than diverge from it.
+    // Refuse if the target stem already has a draft branch: `git branch -m` fails on a local
+    // collision and would silently fork over a remote-only one.
     const taken = await draftBranchTaken(newName);
     if (taken) return { ok: false, error: taken };
 
-    // Rename the branch, move the post file/folder, then move the worktree dir to match the new
-    // stem. Order matters: move the file while the worktree is still at its old path. A tracked
-    // (already-committed) post is renamed via `git mv` so git's index records a rename instead of a
-    // delete+add; a brand-new untracked post falls back to a plain filesystem move.
+    // Rename the branch, move the file/folder, then move the worktree dir. Order matters: move the
+    // file while the worktree is still at its old path. A tracked post uses `git mv` so the index
+    // records a rename; an untracked post falls back to a plain move.
     const brRes = await git.git(["-C", doc.worktreePath, "branch", "-m", newBranch], { cwd: repoRoot });
     if (brRes.code !== 0) return { ok: false, error: `git branch -m failed: ${brRes.stderr.trim() || `exit ${brRes.code}`}` };
     const tracked =
@@ -744,9 +680,8 @@ export function createStore(deps: StoreDeps): StudioStore {
     } else {
       await deps.movePath!(oldUnitInWt, newUnitInWt);
     }
-    // Stop the preview daemon before relocating the worktree: `astro dev` holds the dir open (and
-    // port 4321), and moving it out from under the daemon leaves it serving a moved path. The astro
-    // manager restarts in the new worktree after publishActivation (onActiveChange, then switchTo).
+    // Stop the preview daemon before relocating the worktree: `astro dev` holds the dir (and its
+    // port) open, and moving it out from under the daemon leaves it serving a moved path.
     try {
       await deps.stopPreview?.(doc.worktreePath);
     } catch {
@@ -756,16 +691,14 @@ export function createStore(deps: StoreDeps): StudioStore {
     if (wtMvRes.code !== 0) {
       return { ok: false, error: `git worktree move failed: ${wtMvRes.stderr.trim() || `exit ${wtMvRes.code}`}` };
     }
-    // Drop the moved `.astro` content-layer cache: it still holds a deferred content module keyed on
-    // the old filename, so Astro throws "Cannot find module …/<old>.mdx" for the renamed post. Removing
-    // it forces Astro to regenerate content modules from the new filename on its next (restarted) start.
+    // Drop the moved `.astro` cache: it holds a content module keyed on the old filename, so Astro
+    // throws "Cannot find module" for the renamed post until it regenerates on restart.
     await deps.removePath?.(path.join(newWorktreePath, ".astro"));
     if (deps.prepareWorktree) await deps.prepareWorktree(newWorktreePath);
 
     const newWorktreeFilePath = path.join(newWorktreePath, newRel);
-    // Slug-driven rename: rewrite the frontmatter slug to match the new filename. Frontmatter-driven
-    // (Complete-rename): the frontmatter is already the truth the filename is being made to match, so
-    // leave the text as-is.
+    // Slug-driven rename: rewrite the frontmatter slug to match the new filename. Complete-rename:
+    // leave the text as-is (the frontmatter is already the truth).
     const nextText = opts.fromFrontmatter ? doc.text : rewriteFrontmatterValue(doc.text, "slug", target.slug);
     const nextRev: DocRev = { n: doc.rev.n + 1, hash: sha256Hex(nextText) };
     guard.expect(nextRev.hash, "self");
@@ -782,9 +715,9 @@ export function createStore(deps: StoreDeps): StudioStore {
     doc.rev = nextRev;
     doc.title = frontmatterTitle(nextText) ?? doc.title;
     open.set(newCanonical, doc);
-    // Announce the rename old-to-new before publishActivation's tabs/active/file.changed rebuild, so every
-    // client migrates the tab's transcript + session onto the new path first (else the tab is rebuilt
-    // fresh and the conversation is lost). Server-side session re-key is done by the caller (server.ts).
+    // Announce the rename before publishActivation rebuilds tabs, so clients migrate the tab's
+    // transcript/session onto the new path first (else the conversation is lost). Server-side
+    // session re-key is the caller's job.
     publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title, branch: doc.branch });
     publishActivation(doc);
     return { ok: true, path: newCanonical };
@@ -900,9 +833,8 @@ export function createStore(deps: StoreDeps): StudioStore {
 
       const slug = slugFromPath(jailed);
       const relPath = path.relative(repoRoot, jailed);
-      // ensureWorktree adopts an existing blog/<stem> draft (local or remote-only) or forks a fresh
-      // one off origin/<default>, so an already-authored post materializes in the worktree here even
-      // when it isn't in the main checkout: a draft started elsewhere opens rather than failing.
+      // ensureWorktree adopts an existing draft or forks fresh, so an already-authored post
+      // materializes here even when it isn't in the main checkout.
       const { worktreePath, branch } = await ensureWorktree(postStem(jailed));
       const worktreeFilePath = path.join(worktreePath, relPath);
       let text: string;
@@ -933,8 +865,8 @@ export function createStore(deps: StoreDeps): StudioStore {
     createPost(input) {
       return mutex.runExclusive(async (): Promise<CreatePostResult> => {
         const text = renderNewPost(input);
-        // Validate and derive the date/URL with the same parser the live preview and built route
-        // use, so the filename date and the served URL cannot drift from each other.
+        // Derive the date/URL with the same parser the preview and built route use, so the filename
+        // and served URL can't drift.
         const derived = deriveUrl(text, { base: previewBase });
         if (!derived.valid) {
           return { ok: false, error: `invalid frontmatter: ${derived.errors.join("; ")}` };
@@ -947,10 +879,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         if (open.has(canonicalPath)) {
           return { ok: false, error: `a post is already open at ${path.relative(blogContentRoot, canonicalPath)}` };
         }
-        // Refuse if that slug/date already has a draft branch (local or remote-only) with no live
-        // worktree: creating here would fork a divergent branch that collides only at push time. The
-        // author should adopt the existing draft from ⌘P instead. (`ensureWorktree` would otherwise
-        // adopt a local branch (surfacing "a post already exists") or fork over a remote-only one.)
+        // Refuse if that slug/date already has a draft branch: creating here would fork a divergent
+        // branch that only collides at push time.
         const taken = await draftBranchTaken(postStem(canonicalPath));
         if (taken) return { ok: false, error: taken };
 
@@ -964,8 +894,8 @@ export function createStore(deps: StoreDeps): StudioStore {
           return { ok: false, error: err instanceof Error ? err.message : "worktree setup failed" };
         }
         const worktreeFilePath = path.join(worktreePath, relPath);
-        // The worktree forked from origin/<default>, so this path won't exist there yet; a
-        // collision means an existing post, so never overwrite it.
+        // The worktree forked from origin/<default>, so a collision here means an existing post;
+        // never overwrite.
         if (await fs.exists(worktreeFilePath)) {
           return { ok: false, error: `a post already exists at ${relPath}` };
         }
@@ -993,19 +923,17 @@ export function createStore(deps: StoreDeps): StudioStore {
       const jailed = resolveJailed(canonicalPath) ?? canonicalPath;
       if (!open.has(jailed)) return;
 
-      // A clean tab has nothing worth keeping, so closing it runs the exact same teardown as an
-      // explicit "Delete draft" (remove the worktree, force-delete the branch); otherwise merely
-      // browsing a post and closing it would leave an orphaned worktree behind. A tab carrying a
-      // draft (uncommitted edits or unmerged commits) keeps its worktree/branch on disk for re-open.
-      // Teardown runs only when there's no work to lose, so (unlike post.delete) no confirm gate.
+      // A clean tab has nothing to keep, so closing it tears down like "Delete draft" (else browsing
+      // then closing would orphan a worktree). A draft keeps its worktree/branch for re-open. No
+      // confirm gate, since there's no work to lose.
       if (!postWouldLoseWork(await store.postLossPreview(jailed, "delete"))) {
         await store.deletePost(jailed);
         return;
       }
 
       open.delete(jailed);
-      // Draft present: keep the worktree/branch on disk (reused on re-open). If the closed tab was
-      // active, focus another open post (newest by insertion), else clear the active doc.
+      // Draft present: keep the worktree/branch on disk. If the closed tab was active, focus another
+      // open post (newest), else clear the active doc.
       if (activePath === jailed) {
         const next = [...open.values()].at(-1) ?? null;
         if (next) {
@@ -1025,8 +953,7 @@ export function createStore(deps: StoreDeps): StudioStore {
       return mutex.runExclusive(async (): Promise<RenamePostResult> => {
         const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
         if (!doc) return { ok: false, error: "post is not open" };
-        // Slug-driven (tab-bar) rename: rewrite the frontmatter slug to match the new filename so the
-        // two stay in sync (never introduce a desync).
+        // Slug-driven rename: rewrite the frontmatter slug to match the new filename (never desync).
         return renameInternal(doc, target, { fromFrontmatter: false });
       });
     },
@@ -1035,8 +962,8 @@ export function createStore(deps: StoreDeps): StudioStore {
       return mutex.runExclusive(async (): Promise<RenamePostResult> => {
         const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
         if (!doc) return { ok: false, error: "post is not open" };
-        // Derive the target from the post's own frontmatter (the source of truth), so the filename /
-        // worktree / branch are made to match it. Leave the text alone (fromFrontmatter).
+        // Derive the target from the post's frontmatter (the truth); make the filename match it.
+        // Leave the text alone.
         const derived = deriveUrl(doc.text, { base: previewBase });
         if (!derived.valid) {
           return { ok: false, error: `cannot complete rename: the frontmatter is invalid (${derived.errors.join("; ")})` };
@@ -1049,9 +976,8 @@ export function createStore(deps: StoreDeps): StudioStore {
       return mutex.runExclusive(async (): Promise<RenamePostResult> => {
         const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
         if (!doc) return { ok: false, error: "post is not open" };
-        // The filename/branch is the source of truth here: rewrite the frontmatter so its derived URL
-        // matches the filename stem (inverse of completeRename). slug becomes the stem's slug; created_at becomes
-        // the stem's date as a date-only (timezone-unambiguous) value. Only rewrite fields that differ.
+        // The filename/branch is the truth here: rewrite the frontmatter so its derived URL matches
+        // the filename stem (inverse of completeRename). Only rewrite fields that differ.
         const { datePrefix, slug: fnSlug } = stemParts(postStem(doc.canonicalPath));
         const fnDate = datePrefix ? datePrefix.replace(/[_-]$/, "") : "";
         const derived = deriveUrl(doc.text, { base: previewBase });
@@ -1085,14 +1011,10 @@ export function createStore(deps: StoreDeps): StudioStore {
       const pathspec = postUnitPathspec(doc.relPath);
 
       if (op === "revert") {
-        // Revert restores tracked files to HEAD; the preview is exactly `git diff HEAD` (what the
-        // restore discards). Scoped to the whole blog content dir (not just this post's pathspec),
-        // with rename detection (-M): a per-post pathspec hides the old path's half of a staged
-        // rename (`git mv`), so git can't pair it with the new path's addition and shows "new file"
-        // instead of a rename. A dedicated per-post worktree only ever changes this one post, so
-        // widening the scope to the blog dir is equivalent while letting -M pair renames. Untracked
-        // files have no HEAD state and are left alone, so they don't count here (they're the
-        // province of delete).
+        // Revert restores tracked files to HEAD, so the preview is `git diff HEAD`. Scoped to the
+        // whole blog dir with -M: a per-post pathspec hides the old half of a staged rename, showing
+        // "new file" instead. The per-post worktree only touches this post, so widening is safe.
+        // Untracked files have no HEAD state and are left to delete.
         const names = await git.git(["diff", "-M", "HEAD", "--name-only", "--", BLOG_CONTENT_DIR], { cwd });
         const changedFiles = names.stdout.split("\n").filter((l) => l.trim().length > 0).length;
         const diffRes = await git.git(["diff", "-M", "HEAD", "--", BLOG_CONTENT_DIR], { cwd });
@@ -1100,10 +1022,8 @@ export function createStore(deps: StoreDeps): StudioStore {
       }
 
       // delete: everything lost = uncommitted files (incl. untracked) plus commits ahead of the base.
-      // `--untracked-files=all` (not the porcelain default) so an untracked subdirectory is listed as
-      // its individual files rather than collapsing to a single entry; otherwise its files are
-      // undercounted and the per-file add-diff below (git diff --no-index chokes on a directory) is
-      // skipped, so the confirm dialog under-reports what the delete will destroy.
+      // `--untracked-files=all` lists an untracked subdir's individual files rather than collapsing
+      // to one entry, else they're undercounted and the per-file add-diff below is skipped.
       const statusRes = await git.git(
         ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "--", pathspec],
         { cwd },
@@ -1122,11 +1042,9 @@ export function createStore(deps: StoreDeps): StudioStore {
         // blocking the delete on a network call. The tracked-delta diff below is skipped too.
       }
 
-      // Build the "what delete discards" diff: the tracked delta from the published base (captures
-      // both committed-but-unmerged and uncommitted edits), plus a synthesized add-diff for each
-      // untracked file; a brand-new post is entirely untracked and invisible to plain `git diff`.
-      // Like the revert diff above, this is scoped to the whole blog content dir with -M so a
-      // staged rename pairs instead of showing "new file".
+      // Build the "what delete discards" diff: the tracked delta from the base (committed-but-unmerged
+      // plus uncommitted), plus a synthesized add-diff per untracked file (a brand-new post is all
+      // untracked, invisible to plain `git diff`). Scoped to the blog dir with -M, like revert above.
       const parts: string[] = [];
       if (base) {
         const tracked = await git.git(
@@ -1161,9 +1079,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         );
         const uncommittedNonEmpty = statusRes.stdout.trim().length > 0;
 
-        // Ahead of the published base, mirroring postLossPreview's offline-safe fallback: any
-        // thrown error (no gh / offline) or nonzero exit just means "can't tell", so report 0
-        // rather than blocking the dirty scan on a network call.
+        // Ahead of the base, with postLossPreview's offline-safe fallback: any error or nonzero exit
+        // means "can't tell", so report 0 rather than block on the network.
         let ahead = 0;
         try {
           const base = await defaultBranch();
@@ -1175,8 +1092,7 @@ export function createStore(deps: StoreDeps): StudioStore {
 
         if (!uncommittedNonEmpty && ahead === 0) continue;
 
-        // Map the dirty worktree to its post's canonical (repoRoot-based) path, the identity tabs
-        // and the palette key on, via the worktree's dir name (its stem).
+        // Map the dirty worktree to its post's canonical path via the worktree's dir name (its stem).
         const stem = path.basename(wtPath);
         let canonical: string | null = null;
         if (await fs.exists(path.join(wtPath, BLOG_CONTENT_DIR, `${stem}.mdx`))) {
@@ -1191,9 +1107,8 @@ export function createStore(deps: StoreDeps): StudioStore {
     },
 
     async listDrafts() {
-      // Enumerate blog/* branches both locally and on origin (remote-tracking). Offline-safe: reads
-      // refs already on disk; a stale origin/* is possible (no fetch), the accepted tradeoff for not
-      // blocking on the network. A branch with no post file under the blog dir is skipped, not guessed.
+      // Enumerate blog/* branches locally and on origin. Offline-safe: reads refs on disk (a stale
+      // origin/* is the accepted tradeoff). A branch with no post file is skipped, not guessed.
       const localStems = await refStems(["for-each-ref", "--format=%(refname)", "refs/heads/blog"], "refs/heads/blog/");
       const remoteStems = await refStems(
         ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/blog"],
@@ -1228,18 +1143,16 @@ export function createStore(deps: StoreDeps): StudioStore {
       if (!doc) return { ok: false, error: "post is not open" };
       const { worktreePath, branch } = doc;
 
-      // Stop the preview daemon serving this worktree first, and await it: a `git worktree remove`
-      // that races a still-running daemon would leave it orphaned in a deleted dir, holding the
-      // fixed port so the next post's preview can't bind. Best-effort: removal proceeds regardless.
+      // Stop the preview daemon first and await it: a `git worktree remove` racing a running daemon
+      // leaves it orphaned in a deleted dir, holding the port. Best-effort: removal proceeds anyway.
       try {
         await deps.stopPreview?.(worktreePath);
       } catch {
         /* stop failed; still attempt removal */
       }
 
-      // Drop the tab and re-focus another post like close, before removal, so onActiveChange
-      // retargets the watcher and restarts astro in a surviving worktree rather than the one we're
-      // deleting.
+      // Drop the tab and re-focus another post before removal, so onActiveChange retargets astro to
+      // a surviving worktree rather than the one being deleted.
       open.delete(jailed);
       if (activePath === jailed) {
         const next = [...open.values()].at(-1) ?? null;
@@ -1284,9 +1197,8 @@ export function createStore(deps: StoreDeps): StudioStore {
       const text = await fs.readFile(doc.worktreeFilePath);
       const hash = sha256Hex(text);
       if (hash === doc.rev.hash) return { ok: true, reverted: false };
-      // The checkout wrote the file behind the store's back; announce the hash so the file watcher
-      // treats its own event as our write (no "external" reload banner). Broadcast as "agent" so the
-      // editor replaces its buffer with the clean text rather than raising a keep-mine banner.
+      // The checkout wrote the file behind the store's back; announce the hash so the watcher treats
+      // it as our write, and broadcast "agent" so the editor adopts the clean text.
       guard.expect(hash, "agent");
       await reloadByWatchPathImpl(doc.worktreeFilePath, text, "agent");
       return { ok: true, reverted: true };
