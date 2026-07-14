@@ -65,26 +65,23 @@ describe("deriveUrl — invalid frontmatter", () => {
     if (!result.valid) expect(result.errors).toContain("missing or empty frontmatter key: slug");
   });
 
-  it("reports a malformed created_at date", () => {
+  it("rejects a malformed created_at value", () => {
     const result = deriveUrl(post({ ...complete, created_at: "not-a-date" }));
     expect(result.valid).toBe(false);
-    if (!result.valid) expect(result.errors).toContain("invalid created_at date: not-a-date");
+    if (!result.valid) expect(result.errors.some((e) => /not a valid date/.test(e))).toBe(true);
+  });
+
+  it("rejects a slug that isn't a valid stem (so it's preview-invalid, never a false desync)", () => {
+    const result = deriveUrl(post({ ...complete, slug: '"Not A Slug"' }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.errors.some((e) => /invalid slug/.test(e))).toBe(true);
   });
 });
 
-describe("deriveUrl — created_at matches the Astro route", () => {
-  // The built route derives its date from the same frontmatter via a two-stage parse:
-  // Astro's content loader runs js-yaml, then `z.coerce.date()` (i.e. `new Date`) coerces
-  // the result, and formatPostDate slices `toISOString()` in UTC. The two parsers only
-  // disagree for a timezone-less datetime, and there quoting decides which one wins:
-  //   - Unquoted: js-yaml produces a Date read as UTC.
-  //   - Quoted:   js-yaml produces a string, so z.coerce.date does `new Date(str)`, read as local.
-  // deriveUrl must reproduce both, so each case below pins the expected date to what the
-  // js-yaml to z.coerce.date to formatPostDate pipeline yields.
-  //
-  // We pin a non-UTC zone so the near-midnight cases would fail if deriveUrl ever parsed
-  // the wrong way, and so the quoted/unquoted pair lands on different days, even on a
-  // UTC CI runner.
+describe("deriveUrl — created_at timezone rule", () => {
+  // The URL date is the leading `YYYY-MM-DD` read straight off `created_at`, not a UTC-normalized
+  // day. We pin a non-UTC zone so any regression to a UTC derivation (which would shift a
+  // near-midnight value to the wrong day) fails here, even on a UTC CI runner.
   const originalTz = process.env.TZ;
   beforeAll(() => {
     process.env.TZ = "America/Chicago"; // CDT (UTC-5) in July
@@ -93,44 +90,36 @@ describe("deriveUrl — created_at matches the Astro route", () => {
     process.env.TZ = originalTz;
   });
 
-  it("parses a date-only value as UTC midnight (quoting is irrelevant)", () => {
-    // `2026-07-10` is UTC midnight under both js-yaml and `new Date`, quoted or not, so 2026-07-10.
+  it("accepts a bare date-only value", () => {
     const result = deriveUrl(post({ ...complete, created_at: "2026-07-10" }));
     expect(result).toMatchObject({ valid: true, date: "2026-07-10" });
   });
 
-  it("parses an UNQUOTED timezone-less datetime as UTC (js-yaml), not local time", () => {
-    // Unquoted `2026-07-10T22:00:00`: js-yaml reads it as 22:00 UTC, so the route slices to 2026-07-10.
-    // A naive local parse in CDT would roll it forward to 2026-07-11, the drift this prevents.
+  it("rejects an UNQUOTED timezone-less datetime as ambiguous", () => {
+    // An unquoted timezone-less datetime resolves to a different day in dev vs. the UTC build, so
+    // the studio refuses it.
     const result = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00" }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.errors.some((e) => /time but no timezone/.test(e))).toBe(true);
+  });
+
+  it("rejects a QUOTED timezone-less datetime too (quoting doesn't rescue it)", () => {
+    // The rule keys off the value's shape, not its quoting: a bare time is ambiguous either way.
+    const result = deriveUrl(post({ ...complete, created_at: '"2026-07-10T22:00:00"' }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.errors.some((e) => /time but no timezone/.test(e))).toBe(true);
+  });
+
+  it("uses the author-local day written in the offset, not the UTC day", () => {
+    // Evening of 2026-07-10 in the author's zone (instant 2026-07-11T03:00Z). The URL follows the
+    // author's day, 2026-07-10, not the UTC day (2026-07-11).
+    const result = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00-05:00" }));
     expect(result).toMatchObject({ valid: true, date: "2026-07-10" });
     expect(result.valid && result.url.includes("/blog/2026-07-10/")).toBe(true);
   });
 
-  it("parses a QUOTED timezone-less datetime as LOCAL, differing from the unquoted form", () => {
-    // Quoted `"2026-07-10T22:00:00"` reaches z.coerce.date as a plain string, so `new Date`
-    // reads it in CDT = 2026-07-11 03:00 UTC, so the route slices to 2026-07-11. This is the edge
-    // a blanket force-to-UTC would get wrong (it would produce 2026-07-10, a day early vs the route).
-    const quoted = deriveUrl(post({ ...complete, created_at: '"2026-07-10T22:00:00"' }));
-    expect(quoted).toMatchObject({ valid: true, date: "2026-07-11" });
-    expect(quoted.valid && quoted.url.includes("/blog/2026-07-11/")).toBe(true);
-
-    // Same instant, opposite quoting, different day. Pins the quoted/unquoted divergence.
-    const unquoted = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00" }));
-    expect(unquoted.valid && unquoted.date).toBe("2026-07-10");
-    expect(quoted.valid && quoted.date).not.toBe(unquoted.valid && unquoted.date);
-  });
-
-  it("honors an explicit timezone offset (same instant as the route either way)", () => {
-    // 22:00 at -05:00 is 2026-07-11 03:00 UTC; the route slices that to 2026-07-11, and so
-    // must deriveUrl. Both js-yaml and `new Date` respect an explicit offset identically.
-    const result = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00-05:00" }));
-    expect(result).toMatchObject({ valid: true, date: "2026-07-11" });
-    expect(result.valid && result.url.includes("/blog/2026-07-11/")).toBe(true);
-  });
-
-  it("honors a trailing Z as UTC (same instant as the route either way)", () => {
-    // `2026-07-10T22:00:00Z` is 22:00 UTC regardless of quoting or host zone, so 2026-07-10.
+  it("reads the day off a Z (UTC) value too", () => {
+    // The author-local day at offset Z is the leading date, 2026-07-10.
     const result = deriveUrl(post({ ...complete, created_at: "2026-07-10T22:00:00Z" }));
     expect(result).toMatchObject({ valid: true, date: "2026-07-10" });
     expect(result.valid && result.url.includes("/blog/2026-07-10/")).toBe(true);

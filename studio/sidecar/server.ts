@@ -26,6 +26,7 @@ import type {
   ClientMessage,
   DiffResponse,
   DirtyPostsResponse,
+  DraftsResponse,
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
@@ -161,6 +162,15 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return sendJson(res, 200, { dirty } satisfies DirtyPostsResponse);
       }
 
+      case "GET /posts/drafts": {
+        // Existing blog/* draft branches (local or remote-tracking) that have no live worktree and
+        // aren't open, invisible to /posts (which scans the main tree) and to the open-tab set.
+        // The palette lists these as reopenable entries; selecting one runs the adopt-then-open path.
+        // Offline-safe (reads local refs only); probed on demand (palette open).
+        const drafts = await store.listDrafts();
+        return sendJson(res, 200, { drafts } satisfies DraftsResponse);
+      }
+
       case "POST /ship": {
         const body = await readJson<ShipRequest>(req);
         const result = await services.ship.openPr({
@@ -214,6 +224,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       ws.send(JSON.stringify(snapshot));
     }
     ws.send(JSON.stringify({ type: "preview.url", preview: store.getPreview() } satisfies ServerMessage));
+    // Replay the active post's name-sync so a reconnecting client re-raises the desync banner + ship
+    // gate without waiting for the next edit. (Snapshot omits `canComplete`; the next refresh refines it.)
+    ws.send(JSON.stringify({ type: "post.namesync", ...store.getActiveNameSync() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mcp.status", servers: agentHost.getMcpStatus() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mode.status", mode: agentHost.getPermissionMode() } satisfies ServerMessage));
 
@@ -324,15 +337,48 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`.
+      // On success, re-key the post's SDK session old-to-new so the resumable conversation follows the
+      // rename (the store already broadcast `post.renamed` for the clients' tab migration).
       case "post.rename": {
-        const { requestId } = message;
-        store.renamePost(message.path, message.newSlug).then(
-          (result) =>
+        const { requestId, path } = message;
+        store.renamePost(path, { slug: message.newSlug }).then(
+          (result) => {
+            if (result.ok) agentHost.renameSessionKey(path, result.path);
             sendPostResult(
               ws,
               requestId,
               result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
-            ),
+            );
+          },
+          (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
+        );
+        return;
+      }
+
+      // Resolve a frontmatter/filename desync: rename to match the post's own frontmatter. Same seam
+      // as post.rename (session re-key + post.renamed migration); the store derives the target itself.
+      case "post.completeRename": {
+        const { requestId, path } = message;
+        store.completeRename(path).then(
+          (result) => {
+            if (result.ok) agentHost.renameSessionKey(path, result.path);
+            sendPostResult(
+              ws,
+              requestId,
+              result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
+            );
+          },
+          (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
+        );
+        return;
+      }
+
+      // The inverse: rewrite the frontmatter so its derived URL matches the filename (an uncommitted
+      // edit). No file rename, so no session re-key/path change; the store broadcasts file.changed.
+      case "post.revertUrl": {
+        const { requestId, path } = message;
+        store.revertUrl(path).then(
+          (result) => sendPostResult(ws, requestId, result.ok ? { ok: true, path } : { ok: false, error: result.error }),
           (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
         );
         return;

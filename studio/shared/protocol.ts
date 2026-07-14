@@ -33,6 +33,15 @@ export type ClientMessage =
   // active post's slug (renames the file, runs `git branch -m blog/<old> blog/<new>`, and moves the worktree).
   | { type: "post.close"; requestId: string; path: string }
   | { type: "post.rename"; requestId: string; path: string; newSlug: string }
+  // Resolve a frontmatter/filename desync by renaming the file/worktree/branch to match the post's
+  // own frontmatter (slug and/or date). The server derives the target from the post's frontmatter
+  // (no target on the wire) and runs the same rename path as post.rename (so the session/transcript
+  // migration and preview refresh apply identically).
+  | { type: "post.completeRename"; requestId: string; path: string }
+  // The inverse of completeRename: resolve a desync from the filename side by rewriting the
+  // frontmatter (slug/created_at) so its derived URL matches the current filename/branch stem. An
+  // ordinary uncommitted edit, not a git operation.
+  | { type: "post.revertUrl"; requestId: string; path: string }
   // Delete a draft post: remove its worktree and branch (never touches origin/main). Revert a post's
   // uncommitted edits to the branch's last commit (HEAD). Both are gated: with `confirm: false` the
   // sidecar replies `post.confirm` (what would be lost) instead of acting when content is at risk.
@@ -66,6 +75,21 @@ export type ServerMessage =
   // the unified diff the confirm would discard (revert: `git diff HEAD`; delete: the full delta
   // from the published base plus synthesized diffs for untracked files).
   | { type: "post.confirm"; requestId: string; op: "delete" | "revert"; path: string; changedFiles: number; ahead: number; diff: string }
+  // A post was renamed (slug and/or date changed): its canonical path, worktree, branch, and title
+  // all changed at once. Carries old-to-new so a client can migrate that tab's chat transcript,
+  // session, and pending permissions onto the new path *before* the `tabs`/`active`/`file.changed`
+  // rebuild that immediately follows (published right after this). Without it, the tab is rebuilt
+  // fresh at the new path and the conversation + resumable SDK session are silently lost. `branch`
+  // is the post's new isolation branch. Applies to both tab-bar rename and Complete-rename.
+  | { type: "post.renamed"; oldPath: string; newPath: string; title: string; branch: string }
+  // Frontmatter/filename name-sync status for the active post (no path, like `preview.url`), published
+  // at the same cadence. `synced:false` means the frontmatter-derived stem `${date}_${slug}` differs
+  // from the filename/worktree/branch stem: the editor shows a warning banner and ship is blocked. It
+  // is mutually exclusive with a preview error (it requires a valid derivation), so a bad-frontmatter
+  // post shows the preview error instead. `expectedStem`/`currentStem` describe the mismatch;
+  // `canComplete`/`reason` say whether a Complete-rename can proceed (false e.g. when the target stem
+  // is already an open tab). Always `{ synced: true }` when there is no active post or it is in sync.
+  | { type: "post.namesync"; synced: boolean; expectedStem?: string; currentStem?: string; canComplete?: boolean; reason?: string }
   // The active post changed (open/create/switch/rename); `file.changed` and `preview.url` follow.
   // `branch` is the post's real isolation branch (`blog/<date>_<slug>`), the branch the ship flow
   // pushes; the SPA displays it read-only rather than deriving (or inviting) a branch name.
@@ -118,6 +142,21 @@ export interface PostsResponse {
  */
 export interface DirtyPostsResponse {
   dirty: string[];
+}
+
+/**
+ * A `blog/<stem>` draft branch that has NO live worktree (started elsewhere, or left behind), so it
+ * is invisible to the open-tabs / main-tree post listings. `path` is the canonical (main-repo) path
+ * to reopen it at; `stem` is its date-qualified identity (branch = `blog/<stem>`); `origin` says
+ * where the branch lives; reopening a `remote`-only draft adopts a tracking worktree from origin.
+ */
+export interface DraftSummary {
+  path: string;
+  stem: string;
+  origin: "local" | "remote" | "both";
+}
+export interface DraftsResponse {
+  drafts: DraftSummary[];
 }
 
 export interface ShipRequest {

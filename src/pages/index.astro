@@ -3,13 +3,12 @@ import { getCollection } from "astro:content";
 import Base from "@layouts/Base.astro";
 import HeadlineCycler, { type HeadlinePost } from "@components/HeadlineCycler";
 import SkylineAnchors from "@components/SkylineAnchors";
-import { formatPostDate } from "@lib/blog";
 import * as styles from "@styles/home.css.ts";
 
 const posts = await getCollection("blog");
 const headlinePosts: HeadlinePost[] = posts.map(post => ({
   headline: post.data.headline,
-  href: `/blog/${formatPostDate(post.data.created_at)}/${post.data.slug}`,
+  href: `/blog/${post.data.created_at.day}/${post.data.slug}`,
 }));
 ---
 

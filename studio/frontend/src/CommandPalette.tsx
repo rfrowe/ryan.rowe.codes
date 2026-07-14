@@ -5,14 +5,18 @@
 // Keyboard-driven: type to filter, ↑/↓ to move, Enter to select, Esc to close.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getDirtyPosts, getPosts } from "./api";
+import { getDirtyPosts, getDrafts, getPosts } from "./api";
 import { slugFromPath } from "./slug";
 import type { TabDescriptor } from "./TabBar";
+import type { DraftSummary } from "../../shared/protocol";
 
 interface PaletteEntry {
   path: string;
   title: string;
   open: boolean;
+  /** Set when this row is an existing draft branch with no live worktree (adoptable via ⌘P). A
+   *  `remote`-only draft reopens by adopting a tracking worktree from origin (shown with a chip). */
+  draft?: "local" | "remote" | "both";
 }
 
 /** A navigable palette row: an existing post to open, or the create-new-post command. */
@@ -43,6 +47,8 @@ function fuzzyMatch(text: string, q: string): boolean {
 export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [posts, setPosts] = useState<PaletteEntry[] | null>(null);
+  // Existing draft branches with no live worktree (adoptable), merged in below the main-tree posts.
+  const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   // Canonical paths of open posts with unshipped changes; drives the "unshipped" badge. Probed
   // once when the palette opens (best-effort; a failed probe simply shows no badges).
   const [dirty, setDirty] = useState<Set<string>>(() => new Set());
@@ -82,13 +88,39 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     };
   }, []);
 
-  // Merge: open tabs first (deduped), then every other known post.
+  // Pull adoptable draft branches (no worktree) so drafts started elsewhere / left behind are
+  // reopenable here; best-effort (a failed probe just shows none).
+  useEffect(() => {
+    let live = true;
+    getDrafts()
+      .then((res) => {
+        if (live) setDrafts(res.drafts);
+      })
+      .catch(() => {
+        /* best-effort: no draft rows */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Merge: open tabs first (deduped), then every other known main-tree post, then adoptable draft
+  // branches not already listed (they have no worktree, so never overlap an open tab).
   const entries = useMemo<PaletteEntry[]>(() => {
-    const openPaths = new Set(openTabs.map((t) => t.path));
+    const seen = new Set(openTabs.map((t) => t.path));
     const merged: PaletteEntry[] = openTabs.map((t) => ({ path: t.path, title: t.title, open: true }));
-    for (const p of posts ?? []) if (!openPaths.has(p.path)) merged.push(p);
+    for (const p of posts ?? []) {
+      if (seen.has(p.path)) continue;
+      merged.push(p);
+      seen.add(p.path);
+    }
+    for (const d of drafts) {
+      if (seen.has(d.path)) continue;
+      merged.push({ path: d.path, title: "", open: false, draft: d.origin });
+      seen.add(d.path);
+    }
     return merged;
-  }, [openTabs, posts]);
+  }, [openTabs, posts, drafts]);
 
   const filtered = useMemo(
     () => entries.filter((e) => fuzzyMatch(`${e.title} ${slugFromPath(e.path)}`, query.trim())),
@@ -176,8 +208,14 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
                   Draft
                 </span>
               )}
+              {entry.draft === "remote" && (
+                <span className="palette__chip" title="On origin only — reopening adopts a tracking worktree from origin">
+                  remote
+                </span>
+              )}
               <span className="palette__meta">
-                {entry.open ? (entry.path === activePath ? "active" : "open") : "post"} · {slugFromPath(entry.path)}
+                {entry.open ? (entry.path === activePath ? "active" : "open") : entry.draft ? "draft" : "post"} ·{" "}
+                {slugFromPath(entry.path)}
               </span>
             </li>
           );

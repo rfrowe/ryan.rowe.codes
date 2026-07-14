@@ -4,6 +4,7 @@
 import type {
   DiffResponse,
   DirtyPostsResponse,
+  DraftsResponse,
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
@@ -57,6 +58,12 @@ export async function getPosts(): Promise<PostsResponse> {
 export async function getDirtyPosts(): Promise<DirtyPostsResponse> {
   const res = await fetch(endpoint("/posts/dirty"), { headers: { ...authHeaders() } });
   return asJson<DirtyPostsResponse>(res);
+}
+
+/** Existing blog/* draft branches with no live worktree (adoptable), for the ⌘P palette. */
+export async function getDrafts(): Promise<DraftsResponse> {
+  const res = await fetch(endpoint("/posts/drafts"), { headers: { ...authHeaders() } });
+  return asJson<DraftsResponse>(res);
 }
 
 /** Studio-run ship flow (diff, branch, commit, push, PR). Requires `confirm`. */

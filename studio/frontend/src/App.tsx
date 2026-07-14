@@ -28,6 +28,16 @@ interface DocState {
   rev: DocRev;
 }
 
+/** Frontmatter/filename name-sync status for a tab (from `post.namesync`); default synced. */
+interface NameSync {
+  synced: boolean;
+  expectedStem?: string;
+  currentStem?: string;
+  canComplete?: boolean;
+  reason?: string;
+}
+const SYNCED: NameSync = { synced: true };
+
 /** Everything scoped to a single open post/tab. Buffers survive tab switches (kept here,
  *  keyed by path) so switching back restores what was typed. */
 interface TabState {
@@ -46,6 +56,8 @@ interface TabState {
   permissions: PendingPermission[];
   /** Pending disk change from an external writer, awaiting the reload banner. */
   externalChange: { text: string; rev: DocRev } | null;
+  /** Frontmatter/filename name-sync (active post; drives the desync banner + ship gate). */
+  nameSync: NameSync;
 }
 
 interface StudioState {
@@ -95,6 +107,7 @@ function makeTab(path: string, title: string, branch: string | null = null): Tab
     chat: [],
     permissions: [],
     externalChange: null,
+    nameSync: SYNCED,
   };
 }
 
@@ -227,6 +240,19 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       // No path in the message; the sidecar previews the active post.
       return patchTab(state, state.activePath, (t) => ({ ...t, preview: msg.preview }));
 
+    case "post.namesync":
+      // Active-post-scoped (no path), like preview.url: the frontmatter/filename sync status.
+      return patchTab(state, state.activePath, (t) => ({
+        ...t,
+        nameSync: {
+          synced: msg.synced,
+          expectedStem: msg.expectedStem,
+          currentStem: msg.currentStem,
+          canComplete: msg.canComplete,
+          reason: msg.reason,
+        },
+      }));
+
     case "done": {
       const owner = state.promptOwners[msg.promptId] ?? null;
       // A finished turn has no live prompts; drop any pending cards so none dangle unanswerable.
@@ -253,6 +279,30 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
         next = { ...next, turn: null };
       }
       return next;
+    }
+
+    case "post.renamed": {
+      // A rename changed the post's canonical path. Migrate the tab's conversation state onto the
+      // new path before the `tabs`/`active`/`file.changed` that follow, so the transcript, session,
+      // and pending permissions survive (the `tabs` handler then keeps this migrated tab via its
+      // byPath preserve, rather than makeTab-ing a fresh one and dropping the chat).
+      //
+      // We deliberately do not carry the pre-rename `doc`/`remoteUpdate`: the rename rewrote the
+      // frontmatter slug, so that buffer is stale, and the authoritative `file.changed` published
+      // right after this re-seeds the buffer with the new text via the tab's `!doc` bootstrap (no
+      // spurious external-change banner, which carrying the old lower-rev doc would trip).
+      if (msg.oldPath === msg.newPath) return state;
+      const tabs = state.tabs.map((t) =>
+        t.path === msg.oldPath
+          ? { ...t, path: msg.newPath, title: msg.title, branch: msg.branch, doc: null, remoteUpdate: null, externalChange: null, nameSync: SYNCED }
+          : t,
+      );
+      const activePath = state.activePath === msg.oldPath ? msg.newPath : state.activePath;
+      const promptOwners = Object.fromEntries(
+        Object.entries(state.promptOwners).map(([id, p]) => [id, p === msg.oldPath ? msg.newPath : p]),
+      );
+      const turn = state.turn && state.turn.path === msg.oldPath ? { ...state.turn, path: msg.newPath } : state.turn;
+      return { ...state, tabs, activePath, promptOwners, turn };
     }
 
     case "active": {
@@ -620,6 +670,33 @@ export default function App() {
   const onDeletePost = useCallback((path: string) => requestDestructive("delete", path), [requestDestructive]);
   const onRevertPost = useCallback((path: string) => requestDestructive("revert", path), [requestDestructive]);
 
+  // Resolve a frontmatter/filename desync by renaming the file/worktree/branch to match the
+  // frontmatter. The sidecar derives the target from the post's own text; a refusal (e.g. the target
+  // stem is taken by an on-disk file or a draft branch) surfaces as a transient notice.
+  const onCompleteRename = useCallback(
+    (path: string) => {
+      const requestId = nid();
+      pendingRef.current.set(requestId, (ok, error) => {
+        if (!ok && error) showNotice(error);
+      });
+      socketRef.current?.send({ type: "post.completeRename", requestId, path });
+    },
+    [showNotice],
+  );
+
+  // Resolve the desync from the filename side: rewrite the frontmatter (slug/created_at) so the
+  // deployed URL matches the filename; an ordinary edit, no rename. The editor adopts the rewrite.
+  const onRevertUrl = useCallback(
+    (path: string) => {
+      const requestId = nid();
+      pendingRef.current.set(requestId, (ok, error) => {
+        if (!ok && error) showNotice(error);
+      });
+      socketRef.current?.send({ type: "post.revertUrl", requestId, path });
+    },
+    [showNotice],
+  );
+
   // Author confirmed the pending destructive op: resend with confirm:true and resolve the dialog on
   // the result: close on success, show the error inline on failure. A send that the socket rejects
   // (dropped connection) clears the busy latch so the dialog doesn't hang.
@@ -783,6 +860,29 @@ export default function App() {
         </div>
       )}
 
+      {activeTab && !activeTab.nameSync.synced && (
+        <div className="banner banner--warn">
+          <svg className="banner__icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+          </svg>
+          <span>
+            This post's deployed URL has changed to <code>{activeTab.nameSync.expectedStem}</code>.
+          </span>
+          <button
+            className="btn btn--primary"
+            style={{ marginLeft: "auto" }}
+            disabled={activeTab.nameSync.canComplete === false}
+            title={activeTab.nameSync.canComplete === false ? activeTab.nameSync.reason : undefined}
+            onClick={() => onCompleteRename(activeTab.path)}
+          >
+            Rename worktree
+          </button>
+          <button className="btn btn--ghost" onClick={() => onRevertUrl(activeTab.path)}>
+            Revert URL
+          </button>
+        </div>
+      )}
+
       <div className="studio__main">
         <section className="pane pane--editor">
           {activeDoc && activeTab ? (
@@ -892,7 +992,11 @@ export default function App() {
       {showShip && (
         <div className="modal" onClick={() => setShowShip(false)}>
           <div className="modal__body modal__body--wide" onClick={(e) => e.stopPropagation()}>
-            <ShipPanel branch={activeTab?.branch ?? null} onClose={() => setShowShip(false)} />
+            <ShipPanel
+              branch={activeTab?.branch ?? null}
+              nameSync={activeTab?.nameSync ?? SYNCED}
+              onClose={() => setShowShip(false)}
+            />
           </div>
         </div>
       )}

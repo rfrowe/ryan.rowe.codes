@@ -218,6 +218,17 @@ body {
   border-bottom: 1px solid var(--border);
   color: var(--fg);
 }
+/* Warning variant (amber): the frontmatter/filename (deployed-URL) desync notice. Distinct from the
+   red-tinted external-change banner, with a left stripe + warning icon so it reads as "heads up". */
+.banner--warn {
+  background: rgba(226, 179, 65, 0.14);
+  border-bottom-color: rgba(226, 179, 65, 0.5);
+  border-left: 3px solid var(--warn);
+}
+.banner__icon {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
 
 /* Transient, floating toast (reconnecting / dropped-send feedback). Fixed so it never
    shifts the layout; centered just below the tab bar. */
@@ -1773,7 +1784,7 @@ body {
 }
 .palette__row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -1809,6 +1820,21 @@ body {
   color: var(--on-accent);
   background: var(--accent);
   border: 0;
+}
+/* Outline chip (distinct from the filled Draft badge): marks a remote-only draft branch whose
+   reopen adopts a tracking worktree from origin. */
+.palette__chip {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  border-radius: 3px;
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid var(--border-strong);
 }
 .palette__foot {
   padding: 8px 12px;

@@ -1,12 +1,21 @@
 import { defineCollection, z } from "astro:content";
 import { glob } from "astro/loaders";
-import { REQUIRED_FRONTMATTER_KEYS } from "@lib/frontmatter";
+import { REQUIRED_FRONTMATTER_KEYS, createdAtError } from "@lib/frontmatter";
+import { parsePostDate } from "@lib/blog";
 
 const blogSchema = z.object({
   title: z.string(),
   slug: z.string(),
   headline: z.string(),
-  created_at: z.coerce.date(),
+  // Keep created_at a quoted string, or js-yaml coerces an unquoted value to an offset-less `Date`
+  // before Zod runs and the timezone is lost. `createdAtError` enforces the shape; `parsePostDate`
+  // reads the author-local day off the string.
+  created_at: z
+    .string({ error: "created_at must be a quoted string so its timezone offset survives YAML parsing" })
+    .refine((v) => createdAtError(v) === null, {
+      message: "created_at must be a date (YYYY-MM-DD) or a datetime carrying a timezone (Z or ±HH:MM)",
+    })
+    .transform((v) => parsePostDate(v)),
 });
 
 // Drift guard: the schema's keys must match the shared frontmatter contract in

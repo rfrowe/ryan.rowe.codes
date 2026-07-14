@@ -37,15 +37,22 @@ Every post is a `.mdx` file validated by a Zod schema
 ---
 title: "Aligning a Skyline"
 slug: aligning-a-skyline
-created_at: 2026-07-10T12:00:00.000Z
+created_at: "2026-07-10T12:00:00.000-07:00"
 headline: A skyline that follows the sun
 ---
 ```
 
 - `title` — page/post title.
-- `slug` + `created_at` — together derive the URL `/blog/<YYYY-MM-DD>/<slug>`
-  (date formatted via `formatPostDate` in `src/lib/blog.ts`, UTC, so it's
-  stable regardless of the host machine's timezone). `created_at` is ISO 8601.
+- `slug` + `created_at` — together derive the URL `/blog/<YYYY-MM-DD>/<slug>`.
+  The date is the **author-local day** written in `created_at` (its leading
+  `YYYY-MM-DD`, honoring the offset — the day you were experiencing, not a
+  UTC-normalized day), parsed once by `parsePostDate` in `src/lib/blog.ts`.
+  `created_at` must be **quoted** and ISO 8601: quoting keeps Astro's YAML
+  parser from coercing it to an offset-less `Date` and dropping the timezone.
+  It must be **timezone-unambiguous**: a date-only `YYYY-MM-DD` or a datetime
+  that carries `Z`/an explicit offset (e.g. `"2026-07-10T12:00:00-07:00"`).
+  Never a bare timezone-less time like `2026-07-10T12:00:00` — the studio
+  rejects it, and unquoted or offset-less values break the build.
 - `headline` — feeds the animated typist on the home page; keep it short.
 
 Never drop or rename these keys, and never touch frontmatter you weren't
@@ -85,12 +92,12 @@ data or theme):
 **Interactive figure** (needs client-side state, canvas, or hydration):
 co-located `.tsx` + `.css.ts` island, same folder-post pattern as
 `cubeCard.tsx` / `cubeCard.css.ts` / `cubeRenderer.tsx` in
-`src/content/blog/2022-03-11_algorithmic-art/`.
+`src/content/blog/2017-01-01_algorithmic-art/`.
 
 - Import with a relative path and no extension: `import CubeCard from './cubeCard'`.
 - Pass data via **props**, not children — e.g.
   `<CodeBlock language='markdown' source={props.source} client:load />`
-  (`src/content/blog/2022-03-11_hello-world.mdx`).
+  (`src/content/blog/2022-03-12_hello-world.mdx`).
 - Hydration directive:
   - `client:load` when the component can render on the server and just
     needs to hydrate (e.g. `CodeBlock`).

@@ -89,8 +89,16 @@ interface GitConfig {
   checkoutTo?: string;
   /** `git ls-files --error-unmatch` reports the post as untracked (a brand-new, never-committed post). */
   untracked?: boolean;
-  /** `git rev-parse --verify --quiet refs/heads/<branch>` exits 0 (branch exists) instead of the default 1. */
+  /** `git rev-parse --verify --quiet refs/heads/<branch>` exits 0 (local branch exists) instead of the default 1. */
   branchExists?: boolean;
+  /** `git rev-parse --verify --quiet refs/remotes/origin/<branch>` exits 0 (remote-tracking branch exists). */
+  remoteBranchExists?: boolean;
+  /** Stems returned by `for-each-ref refs/heads/blog` (local blog branches), for listDrafts. */
+  localBranches?: string[];
+  /** Stems returned by `for-each-ref refs/remotes/origin/blog` (remote blog branches), for listDrafts. */
+  remoteBranches?: string[];
+  /** `<ref>:<rel>` specs `git cat-file -e` reports as present (draft layout detection); default none. */
+  catFilePaths?: string[];
   /**
    * Files a fresh `git worktree add` (fork off origin) "checks out": written into the fake fs as
    * part of handling `worktree add`, simulating that the branch's tracked content lands on disk,
@@ -124,12 +132,25 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return { ...ok, stdout: blocks.join("\n") };
       }
       if (args[0] === "worktree" && args[1] === "add") {
-        // Simulate the fork: register the worktree's .git link. Existing-post tests seed the
-        // worktree file separately (the fork "already has" it), or, when a test can't pre-seed it
-        // (e.g. the whole dir was just wiped by a husk self-heal), via `cfg.originFiles`.
-        fs.store.set(`${args[2]}/.git`, "gitdir");
+        // Simulate the fork/adopt: register the worktree's .git link. The worktree path's position
+        // varies by form (`add <path> …`, `add … -b <branch> <path> <start>`, `add --track -b
+        // <branch> <path> origin/<branch>`), so find it by prefix rather than a fixed index.
+        const wtPath = args.find((a) => a.startsWith(`${WT}/`)) ?? args[2];
+        fs.store.set(`${wtPath}/.git`, "gitdir");
+        // Existing-post tests seed the worktree file separately (the fork/adopt "already has" it),
+        // or, when a test can't pre-seed it (husk self-heal, remote adopt), via `cfg.originFiles`.
         for (const [p, content] of Object.entries(cfg.originFiles ?? {})) fs.store.set(p, content);
         return ok;
+      }
+      if (args[0] === "for-each-ref") {
+        const pattern = args[args.length - 1];
+        const isRemote = pattern.startsWith("refs/remotes/origin/");
+        const stems = isRemote ? (cfg.remoteBranches ?? []) : (cfg.localBranches ?? []);
+        const prefix = isRemote ? "refs/remotes/origin/blog/" : "refs/heads/blog/";
+        return { ...ok, stdout: stems.map((s) => `${prefix}${s}`).join("\n") + (stems.length ? "\n" : "") };
+      }
+      if (args[0] === "cat-file" && args[1] === "-e") {
+        return { ...ok, code: (cfg.catFilePaths ?? []).includes(args[2]) ? 0 : 1 };
       }
       if (args[0] === "worktree" && args[1] === "move") {
         movePrefix(fs, args[2], args[3]);
@@ -143,7 +164,11 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return ok;
       }
       if (args[0] === "branch" && args[1] === "-D") return ok;
-      if (args[0] === "rev-parse" && args.includes("--verify")) return { ...ok, code: cfg.branchExists ? 0 : 1 };
+      if (args[0] === "rev-parse" && args.includes("--verify")) {
+        const ref = args[args.length - 1];
+        if (ref.startsWith("refs/remotes/origin/")) return { ...ok, code: cfg.remoteBranchExists ? 0 : 1 };
+        return { ...ok, code: cfg.branchExists ? 0 : 1 };
+      }
       if (args.includes("ls-files")) return { ...ok, code: cfg.untracked ? 1 : 0 };
       if (args.includes("mv")) {
         const from = args[args.length - 2];
@@ -496,15 +521,31 @@ describe("store.reloadActive (watcher-adopted disk changes)", () => {
 
 describe("store.renamePost", () => {
   it("moves the file, renames the branch + worktree, and rewrites the frontmatter slug", async () => {
-    const { store, fs, lines } = newStore({ [HELLO_WT_FILE]: HELLO });
+    const { store, fs, lines, messages } = newStore({ [HELLO_WT_FILE]: HELLO });
     await store.openPost(HELLO_CANON);
-    const result = await store.renamePost(HELLO_CANON, "goodbye");
+    const before = messages.length;
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const newCanon = `${BLOG}/2022-03-11_goodbye.mdx`;
     const newWtFile = `${WT}/2022-03-11_goodbye/src/content/blog/2022-03-11_goodbye.mdx`;
     expect(result.path).toBe(newCanon);
+
+    // A post.renamed broadcast carries old-to-new (path, title, branch) so clients migrate the tab's
+    // transcript/session, and it is published before the active/tabs rebuild that follows.
+    const rename = messages.slice(before);
+    const renamedAt = rename.findIndex((m) => m.type === "post.renamed");
+    expect(renamedAt).toBeGreaterThanOrEqual(0);
+    expect(rename[renamedAt]).toMatchObject({
+      type: "post.renamed",
+      oldPath: HELLO_CANON,
+      newPath: newCanon,
+      title: "Hello",
+      branch: "blog/2022-03-11_goodbye",
+    });
+    const activeAt = rename.findIndex((m) => m.type === "active" && m.path === newCanon);
+    expect(renamedAt).toBeLessThan(activeAt);
     expect(lines()).toContain("git -C /repo/.claude/worktrees/blog/2022-03-11_hello branch -m blog/2022-03-11_goodbye");
     // A tracked post is renamed via `git mv`, so git's index records a rename (not a delete+add).
     expect(lines()).toContain(
@@ -523,17 +564,32 @@ describe("store.renamePost", () => {
     expect(store.getActiveWorktree()?.branch).toBe("blog/2022-03-11_goodbye");
   });
 
+  it("stops the preview daemon before the move and drops the moved .astro cache", async () => {
+    // Regression: `git worktree move` carries the worktree's `.astro` content-layer cache, which
+    // still imports the old filename (deferred content module) and makes Astro throw "Cannot find
+    // module" for the renamed post. The rename must stop the daemon (it holds the dir/port) and clear
+    // the moved `.astro` so Astro regenerates content modules from the new filename.
+    const { store, stopPreviewFor, removedPaths } = newStore({ [HELLO_WT_FILE]: HELLO });
+    await store.openPost(HELLO_CANON);
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
+    expect(result.ok).toBe(true);
+    // The old worktree's preview was stopped before the move relocated it.
+    expect(stopPreviewFor).toContain(`${WT}/2022-03-11_hello`);
+    // The NEW worktree's stale content-layer cache was dropped.
+    expect(removedPaths()).toContain(`${WT}/2022-03-11_goodbye/.astro`);
+  });
+
   it("rejects an invalid slug", async () => {
     const { store } = newStore({ [HELLO_WT_FILE]: HELLO });
     await store.openPost(HELLO_CANON);
-    const result = await store.renamePost(HELLO_CANON, "Not A Slug");
+    const result = await store.renamePost(HELLO_CANON, { slug: "Not A Slug" });
     expect(result.ok).toBe(false);
   });
 
   it("falls back to a filesystem move for an untracked (never-committed) post", async () => {
     const { store, fs, lines } = newStore({ [HELLO_WT_FILE]: HELLO }, { untracked: true });
     await store.openPost(HELLO_CANON);
-    const result = await store.renamePost(HELLO_CANON, "goodbye");
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -790,5 +846,229 @@ describe("store.revertPost", () => {
     const before = messages.length;
     expect(await store.revertPost(SKYLINE_CANON)).toEqual({ ok: true, reverted: false });
     expect(messages.slice(before).some((m) => m.type === "file.changed")).toBe(false);
+  });
+});
+
+describe("ensureWorktree adopts an existing draft branch (open path)", () => {
+  const WTP = `${WT}/2026-07-10_aligning-a-skyline`;
+  const BRANCH = "blog/2026-07-10_aligning-a-skyline";
+
+  it("adopts a remote-only branch via --track rather than forking a divergent one", async () => {
+    // No local branch, but origin/blog/<stem> exists: the fork "checks out" the post via originFiles.
+    const { store, lines } = newStore({}, { remoteBranchExists: true, originFiles: { [SKYLINE_WT_FILE]: SKYLINE } });
+    const active = await store.openPost(SKYLINE_CANON);
+
+    expect(active.text).toBe(SKYLINE);
+    expect(lines()).toContain(`git worktree add --track -b ${BRANCH} ${WTP} origin/${BRANCH}`);
+    // Neither a fresh fork off the default nor a plain local adopt.
+    expect(lines().some((l) => l.includes(`-b ${BRANCH} origin/main`))).toBe(false);
+    expect(lines()).not.toContain(`git worktree add ${WTP} ${BRANCH}`);
+  });
+
+  it("prefers the local branch when both local and remote exist", async () => {
+    const { store, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { branchExists: true, remoteBranchExists: true });
+    await store.openPost(SKYLINE_CANON);
+    expect(lines()).toContain(`git worktree add ${WTP} ${BRANCH}`);
+    expect(lines().some((l) => l.includes("--track"))).toBe(false);
+  });
+});
+
+describe("store.listDrafts (branches without a live worktree)", () => {
+  it("enumerates local + remote blog branches, flagging origin and the post layout", async () => {
+    const { store } = newStore(
+      {},
+      {
+        localBranches: ["2026-05-01_local-only", "2026-05-02_both"],
+        remoteBranches: ["2026-05-02_both", "2026-05-03_remote-only"],
+        catFilePaths: [
+          "blog/2026-05-01_local-only:src/content/blog/2026-05-01_local-only.mdx",
+          "blog/2026-05-02_both:src/content/blog/2026-05-02_both.mdx",
+          // A folder-post draft on origin only.
+          "origin/blog/2026-05-03_remote-only:src/content/blog/2026-05-03_remote-only/post.mdx",
+        ],
+      },
+    );
+    expect(await store.listDrafts()).toEqual([
+      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", origin: "local" },
+      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", origin: "both" },
+      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", origin: "remote" },
+    ]);
+  });
+
+  it("excludes a stem that already has a live worktree on disk", async () => {
+    const { store, fs } = newStore({}, { localBranches: ["2026-05-01_kept"] });
+    fs.store.set(`${WT}/2026-05-01_kept/.git`, "gitdir"); // a kept worktree → not a draft-w/o-worktree
+    expect(await store.listDrafts()).toEqual([]);
+  });
+
+  it("skips a branch that carries no post file under the blog dir", async () => {
+    // A blog/* branch with nothing under src/content/blog matching the stem: can't resolve a path.
+    const { store } = newStore({}, { localBranches: ["2026-05-04_empty"], catFilePaths: [] });
+    expect(await store.listDrafts()).toEqual([]);
+  });
+});
+
+describe("store.createPost / renamePost refuse a taken draft branch", () => {
+  const INPUT = { title: "Aligning a Skyline", slug: "aligning-a-skyline", headline: "on straight lines", created_at: "2026-07-10" };
+
+  it("createPost refuses when a local draft branch already exists (no fork, no write)", async () => {
+    const { store, fs, lines } = newStore({}, { branchExists: true });
+    const result = await store.createPost(INPUT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/draft already exists/);
+    expect(lines().some((l) => l.startsWith("git worktree add"))).toBe(false);
+    expect(fs.store.size).toBe(0);
+  });
+
+  it("createPost refuses a remote-only draft branch (would otherwise fork a divergent branch)", async () => {
+    const { store, lines } = newStore({}, { remoteBranchExists: true });
+    const result = await store.createPost(INPUT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/on origin/);
+    expect(lines().some((l) => l.startsWith("git worktree add"))).toBe(false);
+  });
+
+  it("renamePost refuses when the target slug's draft branch exists remote-only", async () => {
+    // Seed the hello worktree's .git so opening reuses it (no branch probing during open).
+    const { store, lines } = newStore(
+      { [`${WT}/2022-03-11_hello/.git`]: "gitdir", [HELLO_WT_FILE]: HELLO },
+      { remoteBranchExists: true },
+    );
+    await store.openPost(HELLO_CANON);
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/draft already exists/);
+    expect(lines().some((l) => l.includes("branch -m"))).toBe(false); // refused before any mutation
+  });
+});
+
+describe("store name-sync (frontmatter⇄filename)", () => {
+  it("reports synced when the frontmatter stem matches the filename", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_CANON);
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+  });
+
+  it("reports desynced (with expected/current stems) when the frontmatter slug diverges, and broadcasts it", async () => {
+    const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: new-slug");
+    const before = messages.length;
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+
+    expect(store.getActiveNameSync()).toEqual({
+      synced: false,
+      expectedStem: "2026-07-10_new-slug",
+      currentStem: "2026-07-10_aligning-a-skyline",
+    });
+    // The autosave re-broadcasts name-sync on the same cadence as preview.url.
+    const ns = messages.slice(before).filter((m) => m.type === "post.namesync").at(-1);
+    expect(ns).toMatchObject({ synced: false, expectedStem: "2026-07-10_new-slug", currentStem: "2026-07-10_aligning-a-skyline" });
+  });
+
+  it("reports synced (banner suppressed) when the frontmatter is invalid — the preview error owns it", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    // A timezone-less datetime is invalid frontmatter (WS1), so it's preview-invalid, not a desync.
+    const edited = SKYLINE.replace("created_at: 2026-07-10", "created_at: 2026-07-10T22:00:00");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+  });
+});
+
+describe("store.completeRename (resolve a desync from the frontmatter)", () => {
+  it("renames the file/branch/worktree to match the frontmatter (slug + date), without rewriting it", async () => {
+    const { store, fs, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    // Desync the frontmatter: a new slug and a new (still date-only, valid) date.
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: skyline").replace("created_at: 2026-07-10", "created_at: 2026-08-01");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    expect(store.getActiveNameSync()).toMatchObject({ synced: false, expectedStem: "2026-08-01_skyline" });
+
+    const result = await store.completeRename(SKYLINE_CANON);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const newCanon = `${BLOG}/2026-08-01_skyline.mdx`;
+    expect(result.path).toBe(newCanon);
+    // The date change flows through the same branch/worktree machinery (keyed on the new stem).
+    expect(lines()).toContain("git -C /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline branch -m blog/2026-08-01_skyline");
+    expect(lines()).toContain(
+      "git worktree move /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline /repo/.claude/worktrees/blog/2026-08-01_skyline",
+    );
+    // Frontmatter is the source of truth: it's left verbatim, and the post is now synced.
+    const newWtFile = `${WT}/2026-08-01_skyline/src/content/blog/2026-08-01_skyline.mdx`;
+    expect(fs.store.get(newWtFile)).toContain("slug: skyline");
+    expect(fs.store.get(newWtFile)).toContain("created_at: 2026-08-01");
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+  });
+
+  it("emits post.renamed so the transcript/session migrate (same seam as tab-bar rename)", async () => {
+    const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: skyline");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    const before = messages.length;
+    const result = await store.completeRename(SKYLINE_CANON);
+    expect(result.ok).toBe(true);
+    const renamed = messages.slice(before).find((m) => m.type === "post.renamed");
+    expect(renamed).toMatchObject({
+      type: "post.renamed",
+      oldPath: SKYLINE_CANON,
+      newPath: `${BLOG}/2026-07-10_skyline.mdx`,
+    });
+  });
+
+  it("refuses when the frontmatter is invalid (nothing to derive a target from)", async () => {
+    const { store, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: Not A Slug");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    const result = await store.completeRename(SKYLINE_CANON);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/invalid/);
+    expect(lines().some((l) => l.includes("branch -m"))).toBe(false);
+  });
+});
+
+describe("store.revertUrl (resolve a desync from the filename side)", () => {
+  it("rewrites the frontmatter slug back to the filename stem, with no git rename", async () => {
+    const { store, fs, lines, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: new-slug");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    expect(store.getActiveNameSync().synced).toBe(false);
+
+    const before = messages.length;
+    const res = await store.revertUrl(SKYLINE_CANON);
+    expect(res.ok).toBe(true);
+    // Frontmatter slug rewritten to the filename's; the post is synced; the path is unchanged (no rename).
+    expect(fs.store.get(SKYLINE_WT_FILE)).toContain("slug: aligning-a-skyline");
+    expect(store.getActive()?.path).toBe(SKYLINE_CANON);
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+    expect(lines().some((l) => l.includes("branch -m") || l.includes("worktree move"))).toBe(false);
+    // Announced as an agent-origin write so the editor adopts the rewritten frontmatter.
+    expect(messages.slice(before).find((m) => m.type === "file.changed")).toMatchObject({
+      origin: "agent",
+      path: SKYLINE_CANON,
+    });
+  });
+
+  it("rewrites created_at to the filename's date (date-only) when the date is what diverged", async () => {
+    // Filename says 2022-03-11 but created_at derives 2022-03-12 (a committed-style mismatch).
+    const seeded = doc("Hello", "hello", "2022-03-12T02:00:00.000Z");
+    const { store, fs } = newStore({ [HELLO_WT_FILE]: seeded });
+    await store.openPost(HELLO_CANON);
+    expect(store.getActiveNameSync()).toMatchObject({
+      synced: false,
+      expectedStem: "2022-03-12_hello",
+      currentStem: "2022-03-11_hello",
+    });
+
+    const res = await store.revertUrl(HELLO_CANON);
+    expect(res.ok).toBe(true);
+    // created_at rewritten to the filename's date (date-only, timezone-unambiguous, and quoted so
+    // Astro's YAML keeps it a string); slug already matched.
+    expect(fs.store.get(HELLO_WT_FILE)).toContain('created_at: "2022-03-11"');
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
   });
 });

@@ -12,7 +12,7 @@
 // and can be exercised with no real sidecar.
 
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
-import type { ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
+import type { ClientMessage, DraftSummary, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import type { ShipRequest, ShipResponse } from "../../shared/protocol";
 import { REST_BASE, WS_BASE } from "./config";
@@ -42,14 +42,14 @@ function previewUrl(date: string, slug: string): string {
 }
 
 function frontmatter(title: string, slug: string, date: string, headline: string): string {
-  return `---\ntitle: ${title}\nslug: ${slug}\ncreated_at: ${date}\nheadline: ${headline}\n---\n\n`;
+  // created_at is quoted (mirrors the real studio) so Astro's YAML keeps it a string; the URL day is
+  // its leading date component (see parsePostDate).
+  return `---\ntitle: ${title}\nslug: ${slug}\ncreated_at: "${date}"\nheadline: ${headline}\n---\n\n`;
 }
 
 const SKYLINE_MDX =
   frontmatter("Aligning a Skyline", "aligning-a-skyline", "2026-07-10", "teaching a horizon to stand up straight") +
-  `# Aligning a Skyline
-
-The photo was almost right. The buildings leaned a few degrees off true, the way
+  `The photo was almost right. The buildings leaned a few degrees off true, the way
 a hand-held frame always does, and the eye kept snagging on it.
 
 ![A city skyline, subtly rotated](./skyline.webp)
@@ -61,9 +61,7 @@ image until they stood up straight.
 
 const CACHE_MDX =
   frontmatter("The Shape of a Cache", "the-shape-of-a-cache", "2026-06-22", "what a good hit rate quietly hides") +
-  `# The Shape of a Cache
-
-A cache is mostly a bet about the future: that what you asked for once, you will
+  `A cache is mostly a bet about the future: that what you asked for once, you will
 ask for again soon. The hit rate is how often the bet pays off — but the number
 alone hides the *shape* of the misses.
 
@@ -82,6 +80,19 @@ const CLOSED_POSTS: PostSummaryDTO[] = [
     path: postPath("2022-03-11", "algorithmic-art"),
     title: "Algorithmic Art",
     url: previewUrl("2022-03-11", "algorithmic-art"),
+  },
+];
+
+// Existing blog/* draft branches with no live worktree, for the ⌘P palette's draft entries. One
+// local, one remote-only (renders the "remote" chip; reopening it adopts a tracking worktree).
+const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
+  {
+    summary: { path: postPath("2026-04-18", "a-half-written-idea"), stem: "2026-04-18_a-half-written-idea", origin: "local" },
+    title: "A Half-Written Idea",
+  },
+  {
+    summary: { path: postPath("2026-02-02", "notes-from-a-plane"), stem: "2026-02-02_notes-from-a-plane", origin: "remote" },
+    title: "Notes From a Plane",
   },
 ];
 
@@ -147,7 +158,8 @@ function branchFromPath(path: string): string {
   return `blog/${base.split("/").pop() ?? ""}`;
 }
 
-// One open post's live state.
+// One open post's live state. `agent` is per-post (each tab has its own session), so a rename can
+// carry the session with the post and `?mock` exercises the post.renamed transcript migration.
 interface MockDoc {
   path: string;
   title: string;
@@ -155,10 +167,11 @@ interface MockDoc {
   text: string;
   rev: DocRev;
   preview: PreviewState;
+  agent: AgentState;
 }
 
 function makeDoc(path: string, title: string, text: string, preview: PreviewState): MockDoc {
-  return { path, title, branch: branchFromPath(path), text, rev: makeRev(1, text), preview };
+  return { path, title, branch: branchFromPath(path), text, rev: makeRev(1, text), preview, agent: { sessionId: null, mode: "new" } };
 }
 
 // ---- shared mock state ----
@@ -169,7 +182,6 @@ class MockBackend {
   private open: string[] = [];
   private activePath: string;
   private mcp = MOCK_MCP.map((s) => ({ ...s }));
-  private agent: AgentState = { sessionId: null, mode: "new" };
   private mode: PermissionMode = "auto";
   // Resolver for an in-flight demo permission prompt, set while a turn awaits the author's answer.
   private pendingPerm: ((decision: PermissionDecision) => void) | null = null;
@@ -203,7 +215,8 @@ class MockBackend {
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
     this.deliverActive(socket);
-    if (this.agent.sessionId) socket.deliver({ type: "session", sessionId: this.agent.sessionId, mode: this.agent.mode });
+    const active = this.docs.get(this.activePath);
+    if (active?.agent.sessionId) socket.deliver({ type: "session", sessionId: active.agent.sessionId, mode: active.agent.mode });
   }
 
   unregister(socket: MockWebSocket): void {
@@ -222,8 +235,9 @@ class MockBackend {
     return { type: "mcp.status", servers: this.mcp.map((s) => ({ ...s })) };
   }
 
-  // Push the active post's `active`, doc, and preview to one socket (or all if omitted). Mirrors
-  // the real sidecar: switching the active post is always followed by its file and preview.
+  // Push the active post's `active`, doc, preview, and name-sync to one socket (or all if omitted).
+  // Mirrors the real sidecar: switching the active post is always followed by its file, preview, and
+  // name-sync.
   private deliverActive(target?: MockWebSocket): void {
     const doc = this.docs.get(this.activePath);
     if (!doc) return;
@@ -231,6 +245,32 @@ class MockBackend {
     send({ type: "active", path: doc.path, title: doc.title, branch: doc.branch });
     send({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "external" });
     send({ type: "preview.url", preview: doc.preview });
+    send(this.nameSyncMsg(doc));
+  }
+
+  // Frontmatter/filename name-sync for a doc: compare the frontmatter-derived stem to the path stem,
+  // mirroring the sidecar (a bad slug / non-date created_at is "preview-invalid", reported synced so
+  // the preview-error path owns it). Lets ?mock reproduce the desync banner by editing the slug/date.
+  private nameSyncMsg(doc: MockDoc): ServerMessage {
+    const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
+    const date = (doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "").slice(0, 10);
+    const [pathDate, pathSlug] = splitPath(doc.path);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return { type: "post.namesync", synced: true };
+    }
+    const expectedStem = `${date}_${slug}`;
+    const currentStem = `${pathDate}_${pathSlug}`;
+    if (expectedStem === currentStem) return { type: "post.namesync", synced: true };
+    const targetPath = postPath(date, slug);
+    const openCollision = targetPath !== doc.path && this.open.includes(targetPath);
+    return {
+      type: "post.namesync",
+      synced: false,
+      expectedStem,
+      currentStem,
+      canComplete: !openCollision,
+      reason: openCollision ? `a post is already open at ${expectedStem}` : undefined,
+    };
   }
 
   // ---- REST ----
@@ -240,6 +280,9 @@ class MockBackend {
     if (req.baseRev.n !== doc.rev.n) return { ok: false, error: "stale-rev", currentRev: doc.rev };
     doc.text = req.text;
     doc.rev = makeRev(doc.rev.n + 1, req.text);
+    // Re-broadcast name-sync (like the sidecar's refreshPreview) so editing the frontmatter slug/date
+    // raises/clears the desync banner live in ?mock.
+    if (doc.path === this.activePath) this.broadcast(this.nameSyncMsg(doc));
     return { ok: true, rev: doc.rev };
   }
 
@@ -267,6 +310,11 @@ class MockBackend {
     return [...this.open];
   }
 
+  drafts(): DraftSummary[] {
+    // Draft branches with no worktree: drop any that have since been adopted (opened) this session.
+    return MOCK_DRAFTS.filter((d) => !this.open.includes(d.summary.path)).map((d) => d.summary);
+  }
+
   ship(req: ShipRequest): ShipResponse {
     if (!req.confirm) return { ok: false, error: "confirmation required" };
     return { ok: true, prUrl: "https://github.com/rfrowe/ryan.rowe.codes/pull/42" };
@@ -285,8 +333,11 @@ class MockBackend {
         this.broadcast({ type: "done", promptId: msg.promptId, stopReason: "cancelled" });
         break;
       case "session.select": {
-        this.agent = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
-        this.broadcast({ type: "session", sessionId: this.agent.sessionId!, mode: this.agent.mode });
+        // Per-tab: the selection applies to the active post's session.
+        const agent: AgentState = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
+        const doc = this.docs.get(this.activePath);
+        if (doc) doc.agent = agent;
+        this.broadcast({ type: "session", sessionId: agent.sessionId!, mode: agent.mode });
         break;
       }
       case "editor.state":
@@ -303,6 +354,12 @@ class MockBackend {
         break;
       case "post.rename":
         this.renamePost(msg.requestId, msg.path, msg.newSlug);
+        break;
+      case "post.completeRename":
+        this.completeRename(msg.requestId, msg.path);
+        break;
+      case "post.revertUrl":
+        this.revertUrl(msg.requestId, msg.path);
         break;
       case "post.delete":
         this.deletePost(msg.requestId, msg.path, msg.confirm);
@@ -325,17 +382,20 @@ class MockBackend {
   }
 
   private openPost(requestId: string, path: string): void {
-    // Adopt a known-but-closed post into `docs` on first open.
+    // Adopt a known-but-closed post (or an existing draft branch) into `docs` on first open.
     if (!this.docs.has(path)) {
       const closed = CLOSED_POSTS.find((p) => p.path === path);
-      if (!closed) {
+      const draft = MOCK_DRAFTS.find((d) => d.summary.path === path);
+      const known = closed ?? (draft ? { path, title: draft.title } : null);
+      if (!known) {
         this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
         return;
       }
-      const [date, slug] = splitPath(closed.path);
+      const [date, slug] = splitPath(known.path);
+      // No `# H1`: the BlogPost layout renders the title from frontmatter (matches renderNewPost).
       this.docs.set(
         path,
-        makeDoc(path, closed.title, frontmatter(closed.title, slug, date, "") + `# ${closed.title}\n`, {
+        makeDoc(path, known.title, frontmatter(known.title, slug, date, "") + "Start writing…\n", {
           valid: true,
           url: previewUrl(date, slug),
         }),
@@ -391,17 +451,65 @@ class MockBackend {
       this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
       return;
     }
+    // Tab-bar rename: keep the current date, rewrite the frontmatter slug to match the new filename.
     const [date] = splitPath(path);
-    const nextPath = postPath(date, newSlug);
+    this.relocateDoc(requestId, path, date, newSlug, true);
+  }
+
+  private completeRename(requestId: string, path: string): void {
+    const doc = this.docs.get(path);
+    if (!doc) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
+      return;
+    }
+    // Derive the target from the post's own frontmatter (the source of truth); leave the text alone.
+    const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
+    const date = (doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "").slice(0, 10);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: "cannot complete rename: invalid frontmatter" });
+      return;
+    }
+    this.relocateDoc(requestId, path, date, slug, false);
+  }
+
+  // The inverse of completeRename: rewrite the frontmatter (slug + created_at) to match the filename
+  // stem, so the deployed URL follows the filename. An ordinary edit (agent-origin file.changed).
+  private revertUrl(requestId: string, path: string): void {
+    const doc = this.docs.get(path);
+    if (!doc) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
+      return;
+    }
+    const [fnDate, fnSlug] = splitPath(doc.path);
+    doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${fnSlug}`).replace(/^created_at:.*$/m, `created_at: "${fnDate}"`);
+    doc.rev = makeRev(doc.rev.n + 1, doc.text);
+    this.broadcast({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "agent" });
+    this.broadcast(this.nameSyncMsg(doc));
+    this.broadcast({ type: "post.result", requestId, ok: true, path });
+  }
+
+  // Move the doc at `oldPath` to the stem `<date>_<slug>` (rewriting the frontmatter slug only for a
+  // tab-bar rename), then broadcast post.renamed, then tabs, then active (which carries the now-synced
+  // name-sync). Shared by the tab-bar rename and Complete-rename.
+  private relocateDoc(requestId: string, oldPath: string, date: string, slug: string, rewriteFrontmatter: boolean): void {
+    const doc = this.docs.get(oldPath)!;
+    const nextPath = postPath(date, slug);
+    if (nextPath !== oldPath && this.docs.has(nextPath)) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `a post already exists at ${slug}` });
+      return;
+    }
     doc.path = nextPath;
     doc.branch = branchFromPath(nextPath);
-    doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${newSlug}`);
+    if (rewriteFrontmatter) doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${slug}`);
     doc.rev = makeRev(doc.rev.n + 1, doc.text);
-    doc.preview = { valid: true, url: previewUrl(date, newSlug) };
-    this.docs.delete(path);
+    doc.preview = { valid: true, url: previewUrl(date, slug) };
+    this.docs.delete(oldPath);
     this.docs.set(nextPath, doc);
-    this.open = this.open.map((p) => (p === path ? nextPath : p));
-    if (this.activePath === path) this.activePath = nextPath;
+    this.open = this.open.map((p) => (p === oldPath ? nextPath : p));
+    if (this.activePath === oldPath) this.activePath = nextPath;
+    // Announce the rename (old-to-new) before the tabs/active rebuild so the client migrates the tab's
+    // transcript + session onto the new path (doc.agent already moved with the doc object above).
+    this.broadcast({ type: "post.renamed", oldPath, newPath: nextPath, title: doc.title, branch: doc.branch });
     this.broadcast(this.tabsMsg());
     this.deliverActive();
     this.broadcast({ type: "post.result", requestId, ok: true, path: nextPath });
@@ -515,11 +623,11 @@ class MockBackend {
     this.broadcast({ type: "tool.start", promptId, toolUseId, name: "mcp__studio__apply_edit", input: { path: doc.path, note: text } });
     await delay(300);
 
-    // Insert a TL;DR under the first heading, byte-faithfully.
-    const marker = doc.text.match(/^# .+\n/m)?.[0];
-    if (marker) {
-      const at = doc.text.indexOf(marker);
-      const insertAt = at + marker.length;
+    // Insert a TL;DR at the top of the body (after the frontmatter), byte-faithfully. Posts have no
+    // H1 to anchor under: the BlogPost layout renders the title from frontmatter.
+    const fm = doc.text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)?.[0];
+    if (fm) {
+      const insertAt = doc.text.indexOf(fm) + fm.length;
       const insertion = "\n**TL;DR** — detect the dominant verticals, then rotate until they are truly plumb.\n";
       doc.text = doc.text.slice(0, insertAt) + insertion + doc.text.slice(insertAt);
       doc.rev = makeRev(doc.rev.n + 1, doc.text);
@@ -528,7 +636,7 @@ class MockBackend {
     this.broadcast({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "agent" });
     await delay(120);
     this.broadcast({ type: "preview.url", preview: doc.preview });
-    this.broadcast({ type: "assistant.message", promptId, text: "Added a one-sentence TL;DR under the first heading and left the rest untouched." });
+    this.broadcast({ type: "assistant.message", promptId, text: "Added a one-sentence TL;DR at the top of the post and left the rest untouched." });
     await delay(80);
     this.broadcast({ type: "done", promptId, stopReason: "end_turn" });
   }
@@ -658,6 +766,7 @@ export function installMock(): void {
     if (method === "GET" && path === "/sessions") return ok({ sessions: backend.sessions() });
     if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
     if (method === "GET" && path === "/posts/dirty") return ok({ dirty: backend.dirtyPosts() });
+    if (method === "GET" && path === "/posts/drafts") return ok({ drafts: backend.drafts() });
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
 
     return ok({ error: `mock: no route for ${method} ${path}` }, 404);
