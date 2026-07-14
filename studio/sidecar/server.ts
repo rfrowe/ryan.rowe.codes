@@ -164,8 +164,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
 
       case "GET /posts/drafts": {
         // Existing blog/* draft branches (local or remote-tracking) that have no live worktree and
-        // aren't open — invisible to /posts (which scans the main tree) and to the open-tab set.
-        // The palette lists these as reopenable entries; selecting one runs the adopt→open path.
+        // aren't open, invisible to /posts (which scans the main tree) and to the open-tab set.
+        // The palette lists these as reopenable entries; selecting one runs the adopt-then-open path.
         // Offline-safe (reads local refs only); probed on demand (palette open).
         const drafts = await store.listDrafts();
         return sendJson(res, 200, { drafts } satisfies DraftsResponse);
@@ -337,7 +337,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`.
-      // On success, re-key the post's SDK session old→new so the resumable conversation follows the
+      // On success, re-key the post's SDK session old-to-new so the resumable conversation follows the
       // rename (the store already broadcast `post.renamed` for the clients' tab migration).
       case "post.rename": {
         const { requestId, path } = message;
@@ -355,7 +355,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Resolve a frontmatter⇄filename desync: rename to match the post's own frontmatter. Same seam
+      // Resolve a frontmatter/filename desync: rename to match the post's own frontmatter. Same seam
       // as post.rename (session re-key + post.renamed migration); the store derives the target itself.
       case "post.completeRename": {
         const { requestId, path } = message;
@@ -368,6 +368,17 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
               result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
             );
           },
+          (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
+        );
+        return;
+      }
+
+      // The inverse: rewrite the frontmatter so its derived URL matches the filename (an uncommitted
+      // edit). No file rename, so no session re-key/path change; the store broadcasts file.changed.
+      case "post.revertUrl": {
+        const { requestId, path } = message;
+        store.revertUrl(path).then(
+          (result) => sendPostResult(ws, requestId, result.ok ? { ok: true, path } : { ok: false, error: result.error }),
           (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
         );
         return;

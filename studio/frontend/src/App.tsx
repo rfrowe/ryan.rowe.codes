@@ -28,7 +28,7 @@ interface DocState {
   rev: DocRev;
 }
 
-/** Frontmatter⇄filename name-sync status for a tab (from `post.namesync`); default synced. */
+/** Frontmatter/filename name-sync status for a tab (from `post.namesync`); default synced. */
 interface NameSync {
   synced: boolean;
   expectedStem?: string;
@@ -56,7 +56,7 @@ interface TabState {
   permissions: PendingPermission[];
   /** Pending disk change from an external writer, awaiting the reload banner. */
   externalChange: { text: string; rev: DocRev } | null;
-  /** Frontmatter⇄filename name-sync (active post; drives the desync banner + ship gate). */
+  /** Frontmatter/filename name-sync (active post; drives the desync banner + ship gate). */
   nameSync: NameSync;
 }
 
@@ -241,7 +241,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       return patchTab(state, state.activePath, (t) => ({ ...t, preview: msg.preview }));
 
     case "post.namesync":
-      // Active-post-scoped (no path), like preview.url: the frontmatter⇄filename sync status.
+      // Active-post-scoped (no path), like preview.url: the frontmatter/filename sync status.
       return patchTab(state, state.activePath, (t) => ({
         ...t,
         nameSync: {
@@ -283,11 +283,11 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
 
     case "post.renamed": {
       // A rename changed the post's canonical path. Migrate the tab's conversation state onto the
-      // new path BEFORE the `tabs`/`active`/`file.changed` that follow, so the transcript, session,
+      // new path before the `tabs`/`active`/`file.changed` that follow, so the transcript, session,
       // and pending permissions survive (the `tabs` handler then keeps this migrated tab via its
       // byPath preserve, rather than makeTab-ing a fresh one and dropping the chat).
       //
-      // We deliberately do NOT carry the pre-rename `doc`/`remoteUpdate`: the rename rewrote the
+      // We deliberately do not carry the pre-rename `doc`/`remoteUpdate`: the rename rewrote the
       // frontmatter slug, so that buffer is stale, and the authoritative `file.changed` published
       // right after this re-seeds the buffer with the new text via the tab's `!doc` bootstrap (no
       // spurious external-change banner, which carrying the old lower-rev doc would trip).
@@ -670,7 +670,7 @@ export default function App() {
   const onDeletePost = useCallback((path: string) => requestDestructive("delete", path), [requestDestructive]);
   const onRevertPost = useCallback((path: string) => requestDestructive("revert", path), [requestDestructive]);
 
-  // Resolve a frontmatter⇄filename desync by renaming the file/worktree/branch to match the
+  // Resolve a frontmatter/filename desync by renaming the file/worktree/branch to match the
   // frontmatter. The sidecar derives the target from the post's own text; a refusal (e.g. the target
   // stem is taken by an on-disk file or a draft branch) surfaces as a transient notice.
   const onCompleteRename = useCallback(
@@ -680,6 +680,19 @@ export default function App() {
         if (!ok && error) showNotice(error);
       });
       socketRef.current?.send({ type: "post.completeRename", requestId, path });
+    },
+    [showNotice],
+  );
+
+  // Resolve the desync from the filename side: rewrite the frontmatter (slug/created_at) so the
+  // deployed URL matches the filename; an ordinary edit, no rename. The editor adopts the rewrite.
+  const onRevertUrl = useCallback(
+    (path: string) => {
+      const requestId = nid();
+      pendingRef.current.set(requestId, (ok, error) => {
+        if (!ok && error) showNotice(error);
+      });
+      socketRef.current?.send({ type: "post.revertUrl", requestId, path });
     },
     [showNotice],
   );
@@ -848,11 +861,12 @@ export default function App() {
       )}
 
       {activeTab && !activeTab.nameSync.synced && (
-        <div className="banner">
+        <div className="banner banner--warn">
+          <svg className="banner__icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+          </svg>
           <span>
-            This post's frontmatter no longer matches its filename — it would deploy at{" "}
-            <code>{activeTab.nameSync.expectedStem}</code> but lives at <code>{activeTab.nameSync.currentStem}</code>.
-            Shipping is blocked until they agree.
+            This post's deployed URL has changed to <code>{activeTab.nameSync.expectedStem}</code>.
           </span>
           <button
             className="btn btn--primary"
@@ -861,10 +875,10 @@ export default function App() {
             title={activeTab.nameSync.canComplete === false ? activeTab.nameSync.reason : undefined}
             onClick={() => onCompleteRename(activeTab.path)}
           >
-            Complete rename
+            Rename worktree
           </button>
-          <button className="btn btn--ghost" onClick={() => onRevertPost(activeTab.path)}>
-            Revert
+          <button className="btn btn--ghost" onClick={() => onRevertUrl(activeTab.path)}>
+            Revert URL
           </button>
         </div>
       )}

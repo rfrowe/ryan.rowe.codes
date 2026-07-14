@@ -262,7 +262,7 @@ async function isFile(path: string): Promise<boolean> {
 async function summarize(path: string): Promise<PostSummary> {
   let title = path;
   try {
-    // Shared frontmatter parser: block-aware, BOM-tolerant, and strips a matched quote pair — a
+    // Shared frontmatter parser: block-aware, BOM-tolerant, and strips a matched quote pair, a
     // small improvement over the old single-line title regex, and the one title source of truth.
     title = frontmatterTitle(await readFile(path, "utf8")) ?? path;
   } catch {
@@ -302,7 +302,7 @@ const ENTRY_POINTS: ReadonlyArray<{ path: string; hint: string }> = [
   { path: "src/styles/theme.css.ts", hint: "vanilla-extract design tokens (MUI-like palette/spacing/type scale)" },
   { path: "src/styles/theme-utils.ts", hint: "mediaUp/mediaDown/mediaBetween/spacing/transition helpers" },
   { path: "src/lib/useThemeMode.ts", hint: "light/dark theme-mode hook" },
-  { path: "src/lib/blog.ts", hint: "formatPostDate (created_at → YYYY-MM-DD)" },
+  { path: "src/lib/blog.ts", hint: "parsePostDate (created_at → author-local day + instant)" },
   { path: "src/content.config.ts", hint: "blog collection frontmatter Zod schema" },
 ];
 

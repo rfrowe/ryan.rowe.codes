@@ -101,7 +101,11 @@ describe("committed blog content obeys the created_at rule", () => {
   it.each(files)("%s has a timezone-unambiguous created_at", (file) => {
     const data = parseFrontmatter(readFileSync(file, "utf8"));
     expect(data, `${file} has no frontmatter block`).not.toBeNull();
-    const createdAt = data?.created_at?.value ?? "";
+    const entry = data?.created_at;
+    const createdAt = entry?.value ?? "";
     expect(createdAtError(createdAt), `${file}: ${createdAtError(createdAt) ?? ""}`).toBeNull();
+    // created_at must be quoted so Astro's YAML parser keeps it a string and preserves its timezone
+    // offset; an unquoted value is coerced to an offset-less Date, which the content schema rejects.
+    expect(entry?.quoted, `${file}: created_at must be quoted (e.g. "2022-03-12T02:51:10-08:00")`).toBe(true);
   });
 });

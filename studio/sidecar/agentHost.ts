@@ -63,8 +63,8 @@ export interface StudioAgentHost extends AgentHost {
   resolvePermission(requestId: string, decision: PermissionDecision): void;
   /**
    * Re-key a post's SDK session from its old canonical path to a new one when the post is renamed
-   * (slug and/or date), so the resumable session — and thus the whole conversation the human can
-   * resume — follows the post instead of being orphaned under the vanished path. Mirrors the store's
+   * (slug and/or date), so the resumable session (and thus the whole conversation the human can
+   * resume) follows the post instead of being orphaned under the vanished path. Mirrors the store's
    * open-map re-key: a no-op when the old key has no session or the new key already has one.
    */
   renameSessionKey(oldPath: string, newPath: string): void;

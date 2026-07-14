@@ -1,6 +1,5 @@
 ---
 import { getCollection, render, type CollectionEntry } from "astro:content"
-import { formatPostDate } from "@lib/blog"
 import BlogPost from "@layouts/BlogPost.astro"
 import { mdxComponents } from "@components/mdx-components"
 
@@ -18,7 +17,7 @@ export async function getStaticPaths() {
 
   return posts.map(post => ({
     params: {
-      date: formatPostDate(post.data.created_at),
+      date: post.data.created_at.day,
       slug: post.data.slug,
     },
     props: { post },

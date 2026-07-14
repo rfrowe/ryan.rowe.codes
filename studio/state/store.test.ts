@@ -532,8 +532,8 @@ describe("store.renamePost", () => {
     const newWtFile = `${WT}/2022-03-11_goodbye/src/content/blog/2022-03-11_goodbye.mdx`;
     expect(result.path).toBe(newCanon);
 
-    // A post.renamed broadcast carries old→new (path, title, branch) so clients migrate the tab's
-    // transcript/session, and it is published BEFORE the active/tabs rebuild that follows.
+    // A post.renamed broadcast carries old-to-new (path, title, branch) so clients migrate the tab's
+    // transcript/session, and it is published before the active/tabs rebuild that follows.
     const rename = messages.slice(before);
     const renamedAt = rename.findIndex((m) => m.type === "post.renamed");
     expect(renamedAt).toBeGreaterThanOrEqual(0);
@@ -562,6 +562,21 @@ describe("store.renamePost", () => {
     // The active doc + worktree tracking followed the rename.
     expect(store.getActive()?.path).toBe(newCanon);
     expect(store.getActiveWorktree()?.branch).toBe("blog/2022-03-11_goodbye");
+  });
+
+  it("stops the preview daemon before the move and drops the moved .astro cache", async () => {
+    // Regression: `git worktree move` carries the worktree's `.astro` content-layer cache, which
+    // still imports the old filename (deferred content module) and makes Astro throw "Cannot find
+    // module" for the renamed post. The rename must stop the daemon (it holds the dir/port) and clear
+    // the moved `.astro` so Astro regenerates content modules from the new filename.
+    const { store, stopPreviewFor, removedPaths } = newStore({ [HELLO_WT_FILE]: HELLO });
+    await store.openPost(HELLO_CANON);
+    const result = await store.renamePost(HELLO_CANON, { slug: "goodbye" });
+    expect(result.ok).toBe(true);
+    // The old worktree's preview was stopped before the move relocated it.
+    expect(stopPreviewFor).toContain(`${WT}/2022-03-11_hello`);
+    // The NEW worktree's stale content-layer cache was dropped.
+    expect(removedPaths()).toContain(`${WT}/2022-03-11_goodbye/.astro`);
   });
 
   it("rejects an invalid slug", async () => {
@@ -914,7 +929,7 @@ describe("store.createPost / renamePost refuse a taken draft branch", () => {
   });
 
   it("renamePost refuses when the target slug's draft branch exists remote-only", async () => {
-    // Seed the hello worktree's .git so opening REUSES it (no branch probing during open).
+    // Seed the hello worktree's .git so opening reuses it (no branch probing during open).
     const { store, lines } = newStore(
       { [`${WT}/2022-03-11_hello/.git`]: "gitdir", [HELLO_WT_FILE]: HELLO },
       { remoteBranchExists: true },
@@ -965,7 +980,7 @@ describe("store.completeRename (resolve a desync from the frontmatter)", () => {
   it("renames the file/branch/worktree to match the frontmatter (slug + date), without rewriting it", async () => {
     const { store, fs, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
     const active = await store.openPost(SKYLINE_CANON);
-    // Desync the frontmatter: a new slug AND a new (still date-only, valid) date.
+    // Desync the frontmatter: a new slug and a new (still date-only, valid) date.
     const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: skyline").replace("created_at: 2026-07-10", "created_at: 2026-08-01");
     await store.writeByPath(SKYLINE_CANON, edited, active.rev);
     expect(store.getActiveNameSync()).toMatchObject({ synced: false, expectedStem: "2026-08-01_skyline" });
@@ -1012,5 +1027,48 @@ describe("store.completeRename (resolve a desync from the frontmatter)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/invalid/);
     expect(lines().some((l) => l.includes("branch -m"))).toBe(false);
+  });
+});
+
+describe("store.revertUrl (resolve a desync from the filename side)", () => {
+  it("rewrites the frontmatter slug back to the filename stem, with no git rename", async () => {
+    const { store, fs, lines, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    const active = await store.openPost(SKYLINE_CANON);
+    const edited = SKYLINE.replace("slug: aligning-a-skyline", "slug: new-slug");
+    await store.writeByPath(SKYLINE_CANON, edited, active.rev);
+    expect(store.getActiveNameSync().synced).toBe(false);
+
+    const before = messages.length;
+    const res = await store.revertUrl(SKYLINE_CANON);
+    expect(res.ok).toBe(true);
+    // Frontmatter slug rewritten to the filename's; the post is synced; the path is unchanged (no rename).
+    expect(fs.store.get(SKYLINE_WT_FILE)).toContain("slug: aligning-a-skyline");
+    expect(store.getActive()?.path).toBe(SKYLINE_CANON);
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
+    expect(lines().some((l) => l.includes("branch -m") || l.includes("worktree move"))).toBe(false);
+    // Announced as an agent-origin write so the editor adopts the rewritten frontmatter.
+    expect(messages.slice(before).find((m) => m.type === "file.changed")).toMatchObject({
+      origin: "agent",
+      path: SKYLINE_CANON,
+    });
+  });
+
+  it("rewrites created_at to the filename's date (date-only) when the date is what diverged", async () => {
+    // Filename says 2022-03-11 but created_at derives 2022-03-12 (a committed-style mismatch).
+    const seeded = doc("Hello", "hello", "2022-03-12T02:00:00.000Z");
+    const { store, fs } = newStore({ [HELLO_WT_FILE]: seeded });
+    await store.openPost(HELLO_CANON);
+    expect(store.getActiveNameSync()).toMatchObject({
+      synced: false,
+      expectedStem: "2022-03-12_hello",
+      currentStem: "2022-03-11_hello",
+    });
+
+    const res = await store.revertUrl(HELLO_CANON);
+    expect(res.ok).toBe(true);
+    // created_at rewritten to the filename's date (date-only, timezone-unambiguous, and quoted so
+    // Astro's YAML keeps it a string); slug already matched.
+    expect(fs.store.get(HELLO_WT_FILE)).toContain('created_at: "2022-03-11"');
+    expect(store.getActiveNameSync()).toEqual({ synced: true });
   });
 });

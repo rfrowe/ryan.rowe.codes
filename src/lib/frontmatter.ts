@@ -1,8 +1,8 @@
 /**
  * Shared frontmatter contract for blog posts.
  *
- * Single source of truth for the required frontmatter keys — and the framework-free
- * parsing/validation helpers built on them — consumed by both the Astro content collection
+ * Single source of truth for the required frontmatter keys, and the framework-free
+ * parsing/validation helpers built on them, consumed by both the Astro content collection
  * schema (`src/content.config.ts`) and the authoring studio (preview-URL derivation, the
  * store, and the MCP tools) so the two cannot drift. Deliberately free of any `astro:content`
  * import so non-Astro tooling (the studio sidecar, run under `tsx`, and its browser SPA) can
@@ -76,7 +76,7 @@ export function frontmatterTitle(text: string): string | null {
 
 // created_at must resolve to the same calendar date in dev (local zone) and CI (UTC). A
 // timezone-less datetime does not: `new Date("2026-07-10T22:00:00")` reads local, while js-yaml
-// reads UTC, so the URL — and the derived filename — can disagree by a day. The rule shrinks the
+// reads UTC, so the URL (and the derived filename) can disagree by a day. The rule shrinks the
 // valid set to values that resolve identically everywhere: a bare date, or a datetime that carries
 // its own timezone.
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -86,7 +86,7 @@ const TIMEZONE_RE = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/;
 /**
  * Validate a raw `created_at` value against the timezone-unambiguity rule: it must be a date-only
  * `YYYY-MM-DD` or a datetime carrying `Z` / an explicit `±HH:MM` (or `±HHMM`) offset. Returns an
- * error string for anything else — most importantly a bare, timezone-less datetime, which resolves
+ * error string for anything else, most importantly a bare, timezone-less datetime, which resolves
  * to different instants (and possibly different dates) in the studio's local zone vs. the UTC CI
  * build. Null means the value is acceptable. Note this validates the *format*, not calendar
  * validity: `2026-13-45` passes here (a separate `new Date` parse catches unparseable dates).

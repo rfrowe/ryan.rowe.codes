@@ -27,7 +27,7 @@ export interface ShipDeps {
   /** The active post's worktree (branch/paths); ship runs entirely inside it. */
   getActiveWorktree: () => ActiveWorktree | null;
   /**
-   * The active post's frontmatter⇄filename name-sync status. Ship refuses a desynced post (its live
+   * The active post's frontmatter/filename name-sync status. Ship refuses a desynced post (its live
    * URL wouldn't match where it deploys); the author resolves it via Complete-rename or Revert first.
    */
   getActiveNameSync: () => { synced: boolean; expectedStem?: string; currentStem?: string };
@@ -77,7 +77,7 @@ export function createShipService(deps: ShipDeps): ShipService {
     if (!wt) {
       return { ok: false, error: "no active post to ship" };
     }
-    // Refuse a frontmatter⇄filename desync before any git/gh side effect: the post's live URL
+    // Refuse a frontmatter/filename desync before any git/gh side effect: the post's live URL
     // (from its frontmatter slug/date) wouldn't match where it deploys (its filename/branch). The
     // author resolves it first via the editor banner's Complete-rename or Revert.
     const nameSync = getActiveNameSync();

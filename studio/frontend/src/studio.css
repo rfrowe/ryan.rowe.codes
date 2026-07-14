@@ -218,6 +218,17 @@ body {
   border-bottom: 1px solid var(--border);
   color: var(--fg);
 }
+/* Warning variant (amber): the frontmatter/filename (deployed-URL) desync notice. Distinct from the
+   red-tinted external-change banner, with a left stripe + warning icon so it reads as "heads up". */
+.banner--warn {
+  background: rgba(226, 179, 65, 0.14);
+  border-bottom-color: rgba(226, 179, 65, 0.5);
+  border-left: 3px solid var(--warn);
+}
+.banner__icon {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
 
 /* Transient, floating toast (reconnecting / dropped-send feedback). Fixed so it never
    shifts the layout; centered just below the tab bar. */
@@ -1773,7 +1784,7 @@ body {
 }
 .palette__row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);

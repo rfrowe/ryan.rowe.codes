@@ -1,6 +1,6 @@
 // Pure, import-free slug/stem helpers shared across the studio: the sidecar store, the MCP tools,
 // and the browser SPA (the tab bar, new-post dialog, and command palette). Kept free of any `node:`
-// import so nothing node-only leaks into the browser bundle — this is the first runtime *value*
+// import so nothing node-only leaks into the browser bundle; this is the first runtime *value*
 // import from `studio/shared` into the frontend, safe only because the module is pure.
 
 /**
