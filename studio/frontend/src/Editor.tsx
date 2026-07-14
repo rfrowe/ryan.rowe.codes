@@ -12,6 +12,7 @@ import type { PromptContext, PutDocResponse } from "../../shared/protocol";
 import { putDoc } from "./api";
 import { frontmatterCompletionSource } from "./editor/frontmatterCompletion";
 import { recipeSnippetSource } from "./editor/recipeSnippets";
+import { filePathToUri, getLspClient } from "./lsp/client";
 
 /** Imperative handle so the app can flush pending autosave before dispatching a prompt. */
 export interface EditorHandle {
@@ -283,11 +284,17 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     // autocompletion({override})) lets these compose with each other and with the Phase 3 LSP
     // plugin's own language-data source — an `override` would suppress all of them.
     const md = markdown();
+    // The MDX language server (completion + hover + signature help), when a real sidecar is present.
+    // Its completion source composes with the two Phase-1 language-data sources above (serverCompletion
+    // registers as an additional source, not an override); languageId "mdx" is mandatory or the server
+    // won't attach its MDX/TS service. Null under the mock / tokenless dev → Phase-1 sources only.
+    const lspClient = getLspClient();
     const extensions = [
       basicSetup,
       md,
       md.language.data.of({ autocomplete: frontmatterCompletionSource }),
       md.language.data.of({ autocomplete: recipeSnippetSource }),
+      ...(lspClient ? [lspClient.plugin(filePathToUri(cb.current.path), "mdx")] : []),
       EditorView.lineWrapping,
       Prec.highest(
         keymap.of([
