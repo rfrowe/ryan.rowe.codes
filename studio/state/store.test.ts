@@ -496,8 +496,9 @@ describe("store.reloadActive (watcher-adopted disk changes)", () => {
 
 describe("store.renamePost", () => {
   it("moves the file, renames the branch + worktree, and rewrites the frontmatter slug", async () => {
-    const { store, fs, lines } = newStore({ [HELLO_WT_FILE]: HELLO });
+    const { store, fs, lines, messages } = newStore({ [HELLO_WT_FILE]: HELLO });
     await store.openPost(HELLO_CANON);
+    const before = messages.length;
     const result = await store.renamePost(HELLO_CANON, "goodbye");
 
     expect(result.ok).toBe(true);
@@ -505,6 +506,21 @@ describe("store.renamePost", () => {
     const newCanon = `${BLOG}/2022-03-11_goodbye.mdx`;
     const newWtFile = `${WT}/2022-03-11_goodbye/src/content/blog/2022-03-11_goodbye.mdx`;
     expect(result.path).toBe(newCanon);
+
+    // A post.renamed broadcast carries old→new (path, title, branch) so clients migrate the tab's
+    // transcript/session, and it is published BEFORE the active/tabs rebuild that follows.
+    const rename = messages.slice(before);
+    const renamedAt = rename.findIndex((m) => m.type === "post.renamed");
+    expect(renamedAt).toBeGreaterThanOrEqual(0);
+    expect(rename[renamedAt]).toMatchObject({
+      type: "post.renamed",
+      oldPath: HELLO_CANON,
+      newPath: newCanon,
+      title: "Hello",
+      branch: "blog/2022-03-11_goodbye",
+    });
+    const activeAt = rename.findIndex((m) => m.type === "active" && m.path === newCanon);
+    expect(renamedAt).toBeLessThan(activeAt);
     expect(lines()).toContain("git -C /repo/.claude/worktrees/blog/2022-03-11_hello branch -m blog/2022-03-11_goodbye");
     // A tracked post is renamed via `git mv`, so git's index records a rename (not a delete+add).
     expect(lines()).toContain(

@@ -61,6 +61,13 @@ export interface StudioAgentHost extends AgentHost {
   getPermissionMode(): PermissionMode;
   /** Resolve an in-flight `permission.request` (by requestId) with the human's decision. */
   resolvePermission(requestId: string, decision: PermissionDecision): void;
+  /**
+   * Re-key a post's SDK session from its old canonical path to a new one when the post is renamed
+   * (slug and/or date), so the resumable session — and thus the whole conversation the human can
+   * resume — follows the post instead of being orphaned under the vanished path. Mirrors the store's
+   * open-map re-key: a no-op when the old key has no session or the new key already has one.
+   */
+  renameSessionKey(oldPath: string, newPath: string): void;
 }
 
 /** One post's SDK session: its id and how the next turn resumes/forks. Keyed by the post's canonical path. */
@@ -194,6 +201,17 @@ class EmbeddedAgentHost implements StudioAgentHost {
     if (!resolve) return;
     this.pendingPermissions.delete(requestId);
     resolve(decision);
+  }
+
+  renameSessionKey(oldPath: string, newPath: string): void {
+    if (oldPath === newPath) return;
+    const session = this.sessions.get(oldPath);
+    // Only move it when there's a session to move and the destination is free; a session already at
+    // the new key (shouldn't happen for a fresh target) is left untouched rather than clobbered.
+    if (session && !this.sessions.has(newPath)) {
+      this.sessions.set(newPath, session);
+      this.sessions.delete(oldPath);
+    }
   }
 
   /** Resolve every still-pending prompt as an abort: the turn ended, so none can be answered. */

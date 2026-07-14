@@ -324,15 +324,19 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`.
+      // On success, re-key the post's SDK session old→new so the resumable conversation follows the
+      // rename (the store already broadcast `post.renamed` for the clients' tab migration).
       case "post.rename": {
-        const { requestId } = message;
-        store.renamePost(message.path, message.newSlug).then(
-          (result) =>
+        const { requestId, path } = message;
+        store.renamePost(path, message.newSlug).then(
+          (result) => {
+            if (result.ok) agentHost.renameSessionKey(path, result.path);
             sendPostResult(
               ws,
               requestId,
               result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
-            ),
+            );
+          },
           (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
         );
         return;

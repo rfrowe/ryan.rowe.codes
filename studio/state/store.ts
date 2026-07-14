@@ -784,6 +784,11 @@ export function createStore(deps: StoreDeps): StudioStore {
         doc.rev = nextRev;
         doc.title = frontmatterTitle(nextText) ?? doc.title;
         open.set(newCanonical, doc);
+        // Announce the rename old→new BEFORE publishActivation's tabs/active/file.changed rebuild, so
+        // every client migrates the tab's transcript + session onto the new path first (else the tab
+        // is rebuilt fresh at the new path and the conversation is lost). Server-side session re-key
+        // is done by the caller (server.ts) via agentHost.renameSessionKey.
+        publish({ type: "post.renamed", oldPath: jailed, newPath: newCanonical, title: doc.title, branch: doc.branch });
         publishActivation(doc);
         return { ok: true, path: newCanonical };
       });

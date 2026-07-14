@@ -255,6 +255,30 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       return next;
     }
 
+    case "post.renamed": {
+      // A rename changed the post's canonical path. Migrate the tab's conversation state onto the
+      // new path BEFORE the `tabs`/`active`/`file.changed` that follow, so the transcript, session,
+      // and pending permissions survive (the `tabs` handler then keeps this migrated tab via its
+      // byPath preserve, rather than makeTab-ing a fresh one and dropping the chat).
+      //
+      // We deliberately do NOT carry the pre-rename `doc`/`remoteUpdate`: the rename rewrote the
+      // frontmatter slug, so that buffer is stale, and the authoritative `file.changed` published
+      // right after this re-seeds the buffer with the new text via the tab's `!doc` bootstrap (no
+      // spurious external-change banner, which carrying the old lower-rev doc would trip).
+      if (msg.oldPath === msg.newPath) return state;
+      const tabs = state.tabs.map((t) =>
+        t.path === msg.oldPath
+          ? { ...t, path: msg.newPath, title: msg.title, branch: msg.branch, doc: null, remoteUpdate: null, externalChange: null }
+          : t,
+      );
+      const activePath = state.activePath === msg.oldPath ? msg.newPath : state.activePath;
+      const promptOwners = Object.fromEntries(
+        Object.entries(state.promptOwners).map(([id, p]) => [id, p === msg.oldPath ? msg.newPath : p]),
+      );
+      const turn = state.turn && state.turn.path === msg.oldPath ? { ...state.turn, path: msg.newPath } : state.turn;
+      return { ...state, tabs, activePath, promptOwners, turn };
+    }
+
     case "active": {
       // Ensure a tab entry exists (in case `active` lands before `tabs`), then focus it.
       const exists = state.tabs.some((t) => t.path === msg.path);

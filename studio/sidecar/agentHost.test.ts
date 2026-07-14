@@ -5,7 +5,8 @@
 import { describe, expect, it } from "vitest";
 import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 
-import { decisionToPermissionResult, mutationTarget, withinAnyDir, worktreeAskHook } from "./agentHost";
+import type { StudioTools } from "../shared/services";
+import { createAgentHost, decisionToPermissionResult, mutationTarget, withinAnyDir, worktreeAskHook } from "./agentHost";
 
 const WT = "/repo/.claude/worktrees/blog/2026-07-10_a-post";
 
@@ -78,6 +79,62 @@ describe("withinAnyDir", () => {
 
   it("resolves `..` escapes against the worktree", () => {
     expect(withinAnyDir(`${WT}/../../secret.mdx`, [WT])).toBe(false);
+  });
+});
+
+describe("renameSessionKey", () => {
+  // A minimal host: renameSessionKey only touches the private `sessions` map, so the deps can be
+  // stubs. The test seeds/inspects that map directly (the host exposes no session getter) to prove
+  // a rename carries the resumable session with the post instead of orphaning it.
+  function makeHost() {
+    return createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => null,
+      skillInstructions: "",
+      emit: () => {},
+      getEditorContext: () => null,
+    });
+  }
+  const sessionsOf = (host: ReturnType<typeof makeHost>) =>
+    (host as unknown as { sessions: Map<string, unknown> }).sessions;
+  const aSession = () => ({ sessionId: "sess-1", mode: "new", firstTurn: true });
+
+  it("moves a post's session from the old path to the new one", () => {
+    const host = makeHost();
+    const sessions = sessionsOf(host);
+    const s = aSession();
+    sessions.set("/old", s);
+    host.renameSessionKey("/old", "/new");
+    expect(sessions.has("/old")).toBe(false);
+    expect(sessions.get("/new")).toBe(s); // same object, so the resumable session id is preserved
+  });
+
+  it("is a no-op when the old path has no session", () => {
+    const host = makeHost();
+    const sessions = sessionsOf(host);
+    host.renameSessionKey("/old", "/new");
+    expect(sessions.has("/new")).toBe(false);
+  });
+
+  it("does not clobber an existing session at the new path", () => {
+    const host = makeHost();
+    const sessions = sessionsOf(host);
+    const oldS = aSession();
+    const newS = { sessionId: "sess-2", mode: "resume", firstTurn: false };
+    sessions.set("/old", oldS);
+    sessions.set("/new", newS);
+    host.renameSessionKey("/old", "/new");
+    expect(sessions.get("/new")).toBe(newS); // untouched
+    expect(sessions.get("/old")).toBe(oldS); // left in place rather than lost
+  });
+
+  it("is a no-op when old and new are the same path", () => {
+    const host = makeHost();
+    const sessions = sessionsOf(host);
+    const s = aSession();
+    sessions.set("/same", s);
+    host.renameSessionKey("/same", "/same");
+    expect(sessions.get("/same")).toBe(s);
   });
 });
 

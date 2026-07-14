@@ -147,7 +147,8 @@ function branchFromPath(path: string): string {
   return `blog/${base.split("/").pop() ?? ""}`;
 }
 
-// One open post's live state.
+// One open post's live state. `agent` is per-post (each tab has its own session), so a rename can
+// carry the session with the post and `?mock` exercises the post.renamed transcript migration.
 interface MockDoc {
   path: string;
   title: string;
@@ -155,10 +156,11 @@ interface MockDoc {
   text: string;
   rev: DocRev;
   preview: PreviewState;
+  agent: AgentState;
 }
 
 function makeDoc(path: string, title: string, text: string, preview: PreviewState): MockDoc {
-  return { path, title, branch: branchFromPath(path), text, rev: makeRev(1, text), preview };
+  return { path, title, branch: branchFromPath(path), text, rev: makeRev(1, text), preview, agent: { sessionId: null, mode: "new" } };
 }
 
 // ---- shared mock state ----
@@ -169,7 +171,6 @@ class MockBackend {
   private open: string[] = [];
   private activePath: string;
   private mcp = MOCK_MCP.map((s) => ({ ...s }));
-  private agent: AgentState = { sessionId: null, mode: "new" };
   private mode: PermissionMode = "auto";
   // Resolver for an in-flight demo permission prompt, set while a turn awaits the author's answer.
   private pendingPerm: ((decision: PermissionDecision) => void) | null = null;
@@ -203,7 +204,8 @@ class MockBackend {
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
     this.deliverActive(socket);
-    if (this.agent.sessionId) socket.deliver({ type: "session", sessionId: this.agent.sessionId, mode: this.agent.mode });
+    const active = this.docs.get(this.activePath);
+    if (active?.agent.sessionId) socket.deliver({ type: "session", sessionId: active.agent.sessionId, mode: active.agent.mode });
   }
 
   unregister(socket: MockWebSocket): void {
@@ -285,8 +287,11 @@ class MockBackend {
         this.broadcast({ type: "done", promptId: msg.promptId, stopReason: "cancelled" });
         break;
       case "session.select": {
-        this.agent = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
-        this.broadcast({ type: "session", sessionId: this.agent.sessionId!, mode: this.agent.mode });
+        // Per-tab: the selection applies to the active post's session.
+        const agent: AgentState = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
+        const doc = this.docs.get(this.activePath);
+        if (doc) doc.agent = agent;
+        this.broadcast({ type: "session", sessionId: agent.sessionId!, mode: agent.mode });
         break;
       }
       case "editor.state":
@@ -393,6 +398,10 @@ class MockBackend {
     }
     const [date] = splitPath(path);
     const nextPath = postPath(date, newSlug);
+    if (nextPath !== path && this.docs.has(nextPath)) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `a post already exists at ${newSlug}` });
+      return;
+    }
     doc.path = nextPath;
     doc.branch = branchFromPath(nextPath);
     doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${newSlug}`);
@@ -402,6 +411,9 @@ class MockBackend {
     this.docs.set(nextPath, doc);
     this.open = this.open.map((p) => (p === path ? nextPath : p));
     if (this.activePath === path) this.activePath = nextPath;
+    // Announce the rename (old→new) BEFORE the tabs/active rebuild so the client migrates the tab's
+    // transcript + session onto the new path (doc.agent already moved with the doc object above).
+    this.broadcast({ type: "post.renamed", oldPath: path, newPath: nextPath, title: doc.title, branch: doc.branch });
     this.broadcast(this.tabsMsg());
     this.deliverActive();
     this.broadcast({ type: "post.result", requestId, ok: true, path: nextPath });

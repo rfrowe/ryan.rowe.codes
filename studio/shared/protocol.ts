@@ -66,6 +66,13 @@ export type ServerMessage =
   // the unified diff the confirm would discard (revert: `git diff HEAD`; delete: the full delta
   // from the published base plus synthesized diffs for untracked files).
   | { type: "post.confirm"; requestId: string; op: "delete" | "revert"; path: string; changedFiles: number; ahead: number; diff: string }
+  // A post was renamed (slug and/or date changed): its canonical path, worktree, branch, and title
+  // all changed at once. Carries old→new so a client can migrate that tab's chat transcript,
+  // session, and pending permissions onto the new path *before* the `tabs`/`active`/`file.changed`
+  // rebuild that immediately follows (published right after this). Without it, the tab is rebuilt
+  // fresh at the new path and the conversation + resumable SDK session are silently lost. `branch`
+  // is the post's new isolation branch. Applies to both tab-bar rename and Complete-rename.
+  | { type: "post.renamed"; oldPath: string; newPath: string; title: string; branch: string }
   // The active post changed (open/create/switch/rename); `file.changed` and `preview.url` follow.
   // `branch` is the post's real isolation branch (`blog/<date>_<slug>`), the branch the ship flow
   // pushes; the SPA displays it read-only rather than deriving (or inviting) a branch name.
