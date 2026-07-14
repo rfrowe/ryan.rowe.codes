@@ -15,7 +15,7 @@
 import path from "node:path";
 
 import type { ApplyEditResult } from "../shared/mcpTools";
-import type { ServerMessage } from "../shared/protocol";
+import type { DraftSummary, ServerMessage } from "../shared/protocol";
 import type { Fs, GitRunner } from "../shared/seams";
 import type { Store } from "../shared/services";
 import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/types";
@@ -285,6 +285,14 @@ export interface StudioStore extends Store {
    */
   dirtyPostPaths(): Promise<string[]>;
   /**
+   * Enumerate `blog/*` draft branches (local and/or remote-tracking) that have NO live worktree and
+   * are not open — drafts started elsewhere or left behind, invisible to the open-tabs and main-tree
+   * post listings. Offline-safe (reads refs already on disk, never fetches). Each result carries the
+   * canonical reopen path, the stem, and where the branch lives; selecting one runs the adopt→open
+   * path. Powers the ⌘P palette's draft entries.
+   */
+  listDrafts(): Promise<DraftSummary[]>;
+  /**
    * Delete a draft post: remove its worktree and force-delete its branch (never touches
    * origin/main), re-focusing another open post like close. The active post's preview daemon is
    * stopped (awaited) before the worktree is removed so a lingering daemon can't hold the port.
@@ -385,11 +393,40 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
+   * Whether a post's isolation branch `blog/<stem>` exists locally (`refs/heads`) and/or as a
+   * remote-tracking ref (`refs/remotes/origin`). Offline-safe: it reads refs already on disk and
+   * never fetches, so `remote` reflects the last-known `origin/*` (possibly stale) rather than a
+   * live probe. Used to adopt an existing draft into a worktree and to refuse forking over one.
+   */
+  async function branchRefs(stem: string): Promise<{ local: boolean; remote: boolean }> {
+    const branch = `blog/${stem}`;
+    const local = (await git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot })).code === 0;
+    const remote =
+      (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: repoRoot })).code === 0;
+    return { local, remote };
+  }
+
+  /**
+   * Refusal message when `blog/<stem>` already exists as a branch (local and/or on origin), so
+   * creating or renaming a *new* post into that stem would fork a divergent branch that only
+   * collides at push time. Null when the stem is free. The author is pointed at ⌘P, where the
+   * existing draft is now adoptable.
+   */
+  async function draftBranchTaken(stem: string): Promise<string | null> {
+    const { local, remote } = await branchRefs(stem);
+    if (!local && !remote) return null;
+    const where = local && remote ? "locally and on origin" : local ? "locally" : "on origin";
+    return `a draft already exists on that slug/date (branch blog/${stem} ${where}); open it from ⌘P instead.`;
+  }
+
+  /**
    * Ensure (or reuse) the worktree for post `stem` (its date-qualified filename stem: the unique
    * post identity, not the bare slug, so two posts sharing a slug on different dates never share a
    * worktree/branch). Reuses when the worktree dir already holds a `.git` link (kept across close);
-   * otherwise adds a fresh worktree off origin/<default> (or off the branch if it already exists
-   * from a previous session). Returns its paths.
+   * otherwise ADOPTS an existing `blog/<stem>` draft branch — the local branch directly, or a
+   * remote-only one via `--track` off `origin/blog/<stem>` — so a draft started elsewhere (or left
+   * behind) opens instead of being silently forked over into a divergent branch; when there is no
+   * branch at all it forks a fresh one off origin/<default>. Returns its paths.
    */
   async function ensureWorktree(stem: string): Promise<{ worktreePath: string; branch: string }> {
     const branch = `blog/${stem}`;
@@ -398,21 +435,20 @@ export function createStore(deps: StoreDeps): StudioStore {
     if (!(await fs.exists(path.join(worktreePath, ".git")))) {
       // Clear any stale registration for a dir that was removed out-of-band.
       await git.git(["worktree", "prune"], { cwd: repoRoot });
-      const branchExists =
-        (await git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot })).code === 0;
+      const { local: localExists, remote: remoteExists } = await branchRefs(stem);
 
       // Self-heal a leftover (husk) directory at `worktreePath`. `astro dev --background` forks a
       // detached daemon (reparented to init); on a hard kill/crash it's orphaned, keeps its cwd on
       // this worktree, and recreates the worktree's `.astro/` cache dir. That leftover (just
       // `.astro/` and a `node_modules` symlink, no valid `.git`) can survive worktree removal and
       // then block `git worktree add` below, since git only accepts an empty existing dir (never a
-      // non-empty one, even with --force). Only delete the dir wholesale when there's no branch to
-      // adopt; when the branch exists, its worktree registration is what we actually want back, so
-      // clear just the regenerable cruft and let `git worktree add` repopulate the dir in place. If
-      // something unexpected (non-cruft) remains, that add fails below and the error surfaces; we
-      // never blindly delete real content.
+      // non-empty one, even with --force). Only preserve the dir when a LOCAL branch's worktree
+      // registration is what we want back (`git worktree add <path> <branch>`); a remote-only or
+      // brand-new branch is checked out fresh, so the dir must be empty — remove it wholesale. If
+      // something unexpected (non-cruft) remains in the preserved case, the add fails below and the
+      // error surfaces; we never blindly delete real content.
       if (await fs.exists(worktreePath)) {
-        if (branchExists) {
+        if (localExists) {
           await deps.removePath?.(path.join(worktreePath, ".astro"));
           await deps.removePath?.(path.join(worktreePath, "node_modules"));
         } else {
@@ -420,9 +456,12 @@ export function createStore(deps: StoreDeps): StudioStore {
         }
       }
 
-      const args = branchExists
+      // Adopt local → adopt remote-only (create a tracking branch) → fork fresh off the default.
+      const args = localExists
         ? ["worktree", "add", worktreePath, branch]
-        : ["worktree", "add", worktreePath, "-b", branch, `origin/${await defaultBranch()}`];
+        : remoteExists
+          ? ["worktree", "add", "--track", "-b", branch, worktreePath, `origin/${branch}`]
+          : ["worktree", "add", worktreePath, "-b", branch, `origin/${await defaultBranch()}`];
       const res = await git.git(args, { cwd: repoRoot, timeoutMs: 120_000 });
       if (res.code !== 0) {
         throw new Error(`git worktree add (${stem}) failed: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}`);
@@ -431,6 +470,49 @@ export function createStore(deps: StoreDeps): StudioStore {
 
     if (deps.prepareWorktree) await deps.prepareWorktree(worktreePath);
     return { worktreePath, branch };
+  }
+
+  /**
+   * Absolute paths of every git worktree registered under `worktreesRoot` (the main checkout is
+   * excluded — it isn't under that root). Parses `git worktree list --porcelain` blocks (each has a
+   * `worktree <path>` line, blank-line separated). Shared by the dirty-scan and draft enumeration.
+   */
+  async function worktreePathsOnDisk(): Promise<string[]> {
+    const listRes = await git.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
+    const wtPaths: string[] = [];
+    for (const block of listRes.stdout.split(/\r?\n\r?\n/)) {
+      const m = /^worktree (.+)$/m.exec(block);
+      if (!m) continue;
+      const wtPath = m[1].trim();
+      if (wtPath === worktreesRoot || wtPath.startsWith(worktreesRoot + path.sep)) wtPaths.push(wtPath);
+    }
+    return wtPaths;
+  }
+
+  /**
+   * The post file path (relative to the repo root) for `stem` on git `ref`, checking the simple
+   * (`<stem>.mdx`) then folder (`<stem>/post.mdx`) layout via `git cat-file -e` (reads the ref's
+   * tree object; offline-safe, no working tree needed), or null when the branch carries no post
+   * file under the blog dir. Lets draft enumeration build the right canonical path before any
+   * worktree exists to inspect.
+   */
+  async function draftUnitRel(ref: string, stem: string): Promise<string | null> {
+    const candidates = [`${BLOG_CONTENT_DIR}/${stem}.mdx`, `${BLOG_CONTENT_DIR}/${stem}/post.mdx`];
+    for (const rel of candidates) {
+      if ((await git.git(["cat-file", "-e", `${ref}:${rel}`], { cwd: repoRoot })).code === 0) return rel;
+    }
+    return null;
+  }
+
+  /** Run a `for-each-ref` and return the set of stems, stripping `prefix` from each refname. */
+  async function refStems(args: string[], prefix: string): Promise<Set<string>> {
+    const res = await git.git(args, { cwd: repoRoot });
+    const stems = new Set<string>();
+    for (const line of res.stdout.split(/\r?\n/)) {
+      const ref = line.trim();
+      if (ref.startsWith(prefix)) stems.add(ref.slice(prefix.length));
+    }
+    return stems;
   }
 
   function computePreview(doc: OpenDoc | null): PreviewState {
@@ -602,6 +684,9 @@ export function createStore(deps: StoreDeps): StudioStore {
 
       const slug = slugFromPath(jailed);
       const relPath = path.relative(repoRoot, jailed);
+      // ensureWorktree adopts an existing blog/<stem> draft (local or remote-only) or forks a fresh
+      // one off origin/<default>, so an already-authored post materializes in the worktree here even
+      // when it isn't in the main checkout — a draft started elsewhere opens rather than failing.
       const { worktreePath, branch } = await ensureWorktree(postStem(jailed));
       const worktreeFilePath = path.join(worktreePath, relPath);
       let text: string;
@@ -609,8 +694,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         text = await fs.readFile(worktreeFilePath);
       } catch {
         throw new Error(
-          `post not found in its worktree (${relPath}). Existing posts must be committed to ` +
-            `origin/${cachedDefaultBranch ?? "the default branch"} to open them here.`,
+          `post not found in its worktree (${relPath}). Open an existing post that is committed to ` +
+            `origin/${cachedDefaultBranch ?? "the default branch"} or has a blog/<stem> draft branch.`,
         );
       }
       const doc: OpenDoc = {
@@ -646,6 +731,12 @@ export function createStore(deps: StoreDeps): StudioStore {
         if (open.has(canonicalPath)) {
           return { ok: false, error: `a post is already open at ${path.relative(blogContentRoot, canonicalPath)}` };
         }
+        // Refuse if that slug/date already has a draft branch (local or remote-only) with no live
+        // worktree: creating here would fork a divergent branch that collides only at push time. The
+        // author should adopt the existing draft from ⌘P instead. (`ensureWorktree` would otherwise
+        // adopt a local branch — surfacing "a post already exists" — or fork over a remote-only one.)
+        const taken = await draftBranchTaken(postStem(canonicalPath));
+        if (taken) return { ok: false, error: taken };
 
         const slug = slugFromPath(canonicalPath);
         const relPath = path.relative(repoRoot, canonicalPath);
@@ -744,6 +835,11 @@ export function createStore(deps: StoreDeps): StudioStore {
         const oldUnitInWt = isFolder ? path.dirname(doc.worktreeFilePath) : doc.worktreeFilePath;
         const newUnitInWt = isFolder ? path.join(doc.worktreePath, path.dirname(newRel)) : path.join(doc.worktreePath, newRel);
         if (await fs.exists(newUnitInWt)) return { ok: false, error: `a post already exists at ${newRel}` };
+        // Refuse if the target stem already has a draft branch (local or remote-only): `git branch -m`
+        // would fail on a local collision anyway, and would silently fork over a remote-only one. The
+        // author should adopt that draft from ⌘P rather than diverge from it.
+        const taken = await draftBranchTaken(newName);
+        if (taken) return { ok: false, error: taken };
 
         // Rename the branch, move the post file/folder, then move the worktree dir to match
         // the new slug. Order matters: move the file while the worktree is still at its old path.
@@ -865,17 +961,9 @@ export function createStore(deps: StoreDeps): StudioStore {
     },
 
     async dirtyPostPaths() {
-      // Enumerate the worktrees actually on disk (not the in-memory `open` map): parse `git
-      // worktree list --porcelain`'s blocks (each has a `worktree <path>` line, blank-line
-      // separated) and keep only the ones under `worktreesRoot`; that excludes the main checkout.
-      const listRes = await git.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
-      const wtPaths: string[] = [];
-      for (const block of listRes.stdout.split(/\r?\n\r?\n/)) {
-        const m = /^worktree (.+)$/m.exec(block);
-        if (!m) continue;
-        const wtPath = m[1].trim();
-        if (wtPath === worktreesRoot || wtPath.startsWith(worktreesRoot + path.sep)) wtPaths.push(wtPath);
-      }
+      // Enumerate the worktrees actually on disk (not the in-memory `open` map), so open tabs, stray
+      // worktrees from a failed boot, and worktrees created outside the studio are all covered.
+      const wtPaths = await worktreePathsOnDisk();
 
       const canonicalPaths: string[] = [];
       for (const wtPath of wtPaths) {
@@ -913,6 +1001,38 @@ export function createStore(deps: StoreDeps): StudioStore {
         if (canonical) canonicalPaths.push(canonical);
       }
       return [...new Set(canonicalPaths)];
+    },
+
+    async listDrafts() {
+      // Enumerate blog/* branches both locally and on origin (remote-tracking). Offline-safe: reads
+      // refs already on disk; a stale origin/* is possible (no fetch), the accepted tradeoff for not
+      // blocking on the network. A branch with no post file under the blog dir is skipped, not guessed.
+      const localStems = await refStems(["for-each-ref", "--format=%(refname)", "refs/heads/blog"], "refs/heads/blog/");
+      const remoteStems = await refStems(
+        ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/blog"],
+        "refs/remotes/origin/blog/",
+      );
+
+      // A "draft w/o worktree" is one whose stem has neither a live worktree on disk nor an open tab.
+      const liveStems = new Set((await worktreePathsOnDisk()).map((p) => path.basename(p)));
+      const openStems = new Set([...open.values()].map((d) => postStem(d.canonicalPath)));
+
+      const drafts: DraftSummary[] = [];
+      for (const stem of new Set([...localStems, ...remoteStems])) {
+        if (liveStems.has(stem) || openStems.has(stem)) continue;
+        const isLocal = localStems.has(stem);
+        const isRemote = remoteStems.has(stem);
+        const ref = isLocal ? `blog/${stem}` : `origin/blog/${stem}`;
+        const rel = await draftUnitRel(ref, stem);
+        if (!rel) continue;
+        drafts.push({
+          path: path.join(repoRoot, rel),
+          stem,
+          origin: isLocal && isRemote ? "both" : isLocal ? "local" : "remote",
+        });
+      }
+      drafts.sort((a, b) => a.stem.localeCompare(b.stem));
+      return drafts;
     },
 
     async deletePost(canonicalPath) {

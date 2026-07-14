@@ -26,6 +26,7 @@ import type {
   ClientMessage,
   DiffResponse,
   DirtyPostsResponse,
+  DraftsResponse,
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
@@ -159,6 +160,15 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         // tab broadcast.
         const dirty = await store.dirtyPostPaths();
         return sendJson(res, 200, { dirty } satisfies DirtyPostsResponse);
+      }
+
+      case "GET /posts/drafts": {
+        // Existing blog/* draft branches (local or remote-tracking) that have no live worktree and
+        // aren't open — invisible to /posts (which scans the main tree) and to the open-tab set.
+        // The palette lists these as reopenable entries; selecting one runs the adopt→open path.
+        // Offline-safe (reads local refs only); probed on demand (palette open).
+        const drafts = await store.listDrafts();
+        return sendJson(res, 200, { drafts } satisfies DraftsResponse);
       }
 
       case "POST /ship": {

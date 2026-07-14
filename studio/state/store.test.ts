@@ -89,8 +89,16 @@ interface GitConfig {
   checkoutTo?: string;
   /** `git ls-files --error-unmatch` reports the post as untracked (a brand-new, never-committed post). */
   untracked?: boolean;
-  /** `git rev-parse --verify --quiet refs/heads/<branch>` exits 0 (branch exists) instead of the default 1. */
+  /** `git rev-parse --verify --quiet refs/heads/<branch>` exits 0 (local branch exists) instead of the default 1. */
   branchExists?: boolean;
+  /** `git rev-parse --verify --quiet refs/remotes/origin/<branch>` exits 0 (remote-tracking branch exists). */
+  remoteBranchExists?: boolean;
+  /** Stems returned by `for-each-ref refs/heads/blog` (local blog branches), for listDrafts. */
+  localBranches?: string[];
+  /** Stems returned by `for-each-ref refs/remotes/origin/blog` (remote blog branches), for listDrafts. */
+  remoteBranches?: string[];
+  /** `<ref>:<rel>` specs `git cat-file -e` reports as present (draft layout detection); default none. */
+  catFilePaths?: string[];
   /**
    * Files a fresh `git worktree add` (fork off origin) "checks out": written into the fake fs as
    * part of handling `worktree add`, simulating that the branch's tracked content lands on disk,
@@ -124,12 +132,25 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return { ...ok, stdout: blocks.join("\n") };
       }
       if (args[0] === "worktree" && args[1] === "add") {
-        // Simulate the fork: register the worktree's .git link. Existing-post tests seed the
-        // worktree file separately (the fork "already has" it), or, when a test can't pre-seed it
-        // (e.g. the whole dir was just wiped by a husk self-heal), via `cfg.originFiles`.
-        fs.store.set(`${args[2]}/.git`, "gitdir");
+        // Simulate the fork/adopt: register the worktree's .git link. The worktree path's position
+        // varies by form (`add <path> …`, `add … -b <branch> <path> <start>`, `add --track -b
+        // <branch> <path> origin/<branch>`), so find it by prefix rather than a fixed index.
+        const wtPath = args.find((a) => a.startsWith(`${WT}/`)) ?? args[2];
+        fs.store.set(`${wtPath}/.git`, "gitdir");
+        // Existing-post tests seed the worktree file separately (the fork/adopt "already has" it),
+        // or, when a test can't pre-seed it (husk self-heal, remote adopt), via `cfg.originFiles`.
         for (const [p, content] of Object.entries(cfg.originFiles ?? {})) fs.store.set(p, content);
         return ok;
+      }
+      if (args[0] === "for-each-ref") {
+        const pattern = args[args.length - 1];
+        const isRemote = pattern.startsWith("refs/remotes/origin/");
+        const stems = isRemote ? (cfg.remoteBranches ?? []) : (cfg.localBranches ?? []);
+        const prefix = isRemote ? "refs/remotes/origin/blog/" : "refs/heads/blog/";
+        return { ...ok, stdout: stems.map((s) => `${prefix}${s}`).join("\n") + (stems.length ? "\n" : "") };
+      }
+      if (args[0] === "cat-file" && args[1] === "-e") {
+        return { ...ok, code: (cfg.catFilePaths ?? []).includes(args[2]) ? 0 : 1 };
       }
       if (args[0] === "worktree" && args[1] === "move") {
         movePrefix(fs, args[2], args[3]);
@@ -143,7 +164,11 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return ok;
       }
       if (args[0] === "branch" && args[1] === "-D") return ok;
-      if (args[0] === "rev-parse" && args.includes("--verify")) return { ...ok, code: cfg.branchExists ? 0 : 1 };
+      if (args[0] === "rev-parse" && args.includes("--verify")) {
+        const ref = args[args.length - 1];
+        if (ref.startsWith("refs/remotes/origin/")) return { ...ok, code: cfg.remoteBranchExists ? 0 : 1 };
+        return { ...ok, code: cfg.branchExists ? 0 : 1 };
+      }
       if (args.includes("ls-files")) return { ...ok, code: cfg.untracked ? 1 : 0 };
       if (args.includes("mv")) {
         const from = args[args.length - 2];
@@ -806,5 +831,98 @@ describe("store.revertPost", () => {
     const before = messages.length;
     expect(await store.revertPost(SKYLINE_CANON)).toEqual({ ok: true, reverted: false });
     expect(messages.slice(before).some((m) => m.type === "file.changed")).toBe(false);
+  });
+});
+
+describe("ensureWorktree adopts an existing draft branch (open path)", () => {
+  const WTP = `${WT}/2026-07-10_aligning-a-skyline`;
+  const BRANCH = "blog/2026-07-10_aligning-a-skyline";
+
+  it("adopts a remote-only branch via --track rather than forking a divergent one", async () => {
+    // No local branch, but origin/blog/<stem> exists: the fork "checks out" the post via originFiles.
+    const { store, lines } = newStore({}, { remoteBranchExists: true, originFiles: { [SKYLINE_WT_FILE]: SKYLINE } });
+    const active = await store.openPost(SKYLINE_CANON);
+
+    expect(active.text).toBe(SKYLINE);
+    expect(lines()).toContain(`git worktree add --track -b ${BRANCH} ${WTP} origin/${BRANCH}`);
+    // Neither a fresh fork off the default nor a plain local adopt.
+    expect(lines().some((l) => l.includes(`-b ${BRANCH} origin/main`))).toBe(false);
+    expect(lines()).not.toContain(`git worktree add ${WTP} ${BRANCH}`);
+  });
+
+  it("prefers the local branch when both local and remote exist", async () => {
+    const { store, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { branchExists: true, remoteBranchExists: true });
+    await store.openPost(SKYLINE_CANON);
+    expect(lines()).toContain(`git worktree add ${WTP} ${BRANCH}`);
+    expect(lines().some((l) => l.includes("--track"))).toBe(false);
+  });
+});
+
+describe("store.listDrafts (branches without a live worktree)", () => {
+  it("enumerates local + remote blog branches, flagging origin and the post layout", async () => {
+    const { store } = newStore(
+      {},
+      {
+        localBranches: ["2026-05-01_local-only", "2026-05-02_both"],
+        remoteBranches: ["2026-05-02_both", "2026-05-03_remote-only"],
+        catFilePaths: [
+          "blog/2026-05-01_local-only:src/content/blog/2026-05-01_local-only.mdx",
+          "blog/2026-05-02_both:src/content/blog/2026-05-02_both.mdx",
+          // A folder-post draft on origin only.
+          "origin/blog/2026-05-03_remote-only:src/content/blog/2026-05-03_remote-only/post.mdx",
+        ],
+      },
+    );
+    expect(await store.listDrafts()).toEqual([
+      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", origin: "local" },
+      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", origin: "both" },
+      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", origin: "remote" },
+    ]);
+  });
+
+  it("excludes a stem that already has a live worktree on disk", async () => {
+    const { store, fs } = newStore({}, { localBranches: ["2026-05-01_kept"] });
+    fs.store.set(`${WT}/2026-05-01_kept/.git`, "gitdir"); // a kept worktree → not a draft-w/o-worktree
+    expect(await store.listDrafts()).toEqual([]);
+  });
+
+  it("skips a branch that carries no post file under the blog dir", async () => {
+    // A blog/* branch with nothing under src/content/blog matching the stem: can't resolve a path.
+    const { store } = newStore({}, { localBranches: ["2026-05-04_empty"], catFilePaths: [] });
+    expect(await store.listDrafts()).toEqual([]);
+  });
+});
+
+describe("store.createPost / renamePost refuse a taken draft branch", () => {
+  const INPUT = { title: "Aligning a Skyline", slug: "aligning-a-skyline", headline: "on straight lines", created_at: "2026-07-10" };
+
+  it("createPost refuses when a local draft branch already exists (no fork, no write)", async () => {
+    const { store, fs, lines } = newStore({}, { branchExists: true });
+    const result = await store.createPost(INPUT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/draft already exists/);
+    expect(lines().some((l) => l.startsWith("git worktree add"))).toBe(false);
+    expect(fs.store.size).toBe(0);
+  });
+
+  it("createPost refuses a remote-only draft branch (would otherwise fork a divergent branch)", async () => {
+    const { store, lines } = newStore({}, { remoteBranchExists: true });
+    const result = await store.createPost(INPUT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/on origin/);
+    expect(lines().some((l) => l.startsWith("git worktree add"))).toBe(false);
+  });
+
+  it("renamePost refuses when the target slug's draft branch exists remote-only", async () => {
+    // Seed the hello worktree's .git so opening REUSES it (no branch probing during open).
+    const { store, lines } = newStore(
+      { [`${WT}/2022-03-11_hello/.git`]: "gitdir", [HELLO_WT_FILE]: HELLO },
+      { remoteBranchExists: true },
+    );
+    await store.openPost(HELLO_CANON);
+    const result = await store.renamePost(HELLO_CANON, "goodbye");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/draft already exists/);
+    expect(lines().some((l) => l.includes("branch -m"))).toBe(false); // refused before any mutation
   });
 });

@@ -1810,6 +1810,21 @@ body {
   background: var(--accent);
   border: 0;
 }
+/* Outline chip (distinct from the filled Draft badge): marks a remote-only draft branch whose
+   reopen adopts a tracking worktree from origin. */
+.palette__chip {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  border-radius: 3px;
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
 .palette__foot {
   padding: 8px 12px;
   border-top: 1px solid var(--border);

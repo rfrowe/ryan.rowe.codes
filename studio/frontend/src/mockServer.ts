@@ -12,7 +12,7 @@
 // and can be exercised with no real sidecar.
 
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
-import type { ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
+import type { ClientMessage, DraftSummary, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import type { ShipRequest, ShipResponse } from "../../shared/protocol";
 import { REST_BASE, WS_BASE } from "./config";
@@ -82,6 +82,19 @@ const CLOSED_POSTS: PostSummaryDTO[] = [
     path: postPath("2022-03-11", "algorithmic-art"),
     title: "Algorithmic Art",
     url: previewUrl("2022-03-11", "algorithmic-art"),
+  },
+];
+
+// Existing blog/* draft branches with no live worktree, for the ⌘P palette's draft entries. One
+// local, one remote-only (renders the "remote" chip; reopening it adopts a tracking worktree).
+const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
+  {
+    summary: { path: postPath("2026-04-18", "a-half-written-idea"), stem: "2026-04-18_a-half-written-idea", origin: "local" },
+    title: "A Half-Written Idea",
+  },
+  {
+    summary: { path: postPath("2026-02-02", "notes-from-a-plane"), stem: "2026-02-02_notes-from-a-plane", origin: "remote" },
+    title: "Notes From a Plane",
   },
 ];
 
@@ -269,6 +282,11 @@ class MockBackend {
     return [...this.open];
   }
 
+  drafts(): DraftSummary[] {
+    // Draft branches with no worktree: drop any that have since been adopted (opened) this session.
+    return MOCK_DRAFTS.filter((d) => !this.open.includes(d.summary.path)).map((d) => d.summary);
+  }
+
   ship(req: ShipRequest): ShipResponse {
     if (!req.confirm) return { ok: false, error: "confirmation required" };
     return { ok: true, prUrl: "https://github.com/rfrowe/ryan.rowe.codes/pull/42" };
@@ -330,17 +348,19 @@ class MockBackend {
   }
 
   private openPost(requestId: string, path: string): void {
-    // Adopt a known-but-closed post into `docs` on first open.
+    // Adopt a known-but-closed post (or an existing draft branch) into `docs` on first open.
     if (!this.docs.has(path)) {
       const closed = CLOSED_POSTS.find((p) => p.path === path);
-      if (!closed) {
+      const draft = MOCK_DRAFTS.find((d) => d.summary.path === path);
+      const known = closed ?? (draft ? { path, title: draft.title } : null);
+      if (!known) {
         this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
         return;
       }
-      const [date, slug] = splitPath(closed.path);
+      const [date, slug] = splitPath(known.path);
       this.docs.set(
         path,
-        makeDoc(path, closed.title, frontmatter(closed.title, slug, date, "") + `# ${closed.title}\n`, {
+        makeDoc(path, known.title, frontmatter(known.title, slug, date, "") + `# ${known.title}\n`, {
           valid: true,
           url: previewUrl(date, slug),
         }),
@@ -670,6 +690,7 @@ export function installMock(): void {
     if (method === "GET" && path === "/sessions") return ok({ sessions: backend.sessions() });
     if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
     if (method === "GET" && path === "/posts/dirty") return ok({ dirty: backend.dirtyPosts() });
+    if (method === "GET" && path === "/posts/drafts") return ok({ drafts: backend.drafts() });
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
 
     return ok({ error: `mock: no route for ${method} ${path}` }, 404);

@@ -127,6 +127,21 @@ export interface DirtyPostsResponse {
   dirty: string[];
 }
 
+/**
+ * A `blog/<stem>` draft branch that has NO live worktree (started elsewhere, or left behind), so it
+ * is invisible to the open-tabs / main-tree post listings. `path` is the canonical (main-repo) path
+ * to reopen it at; `stem` is its date-qualified identity (branch = `blog/<stem>`); `origin` says
+ * where the branch lives — reopening a `remote`-only draft adopts a tracking worktree from origin.
+ */
+export interface DraftSummary {
+  path: string;
+  stem: string;
+  origin: "local" | "remote" | "both";
+}
+export interface DraftsResponse {
+  drafts: DraftSummary[];
+}
+
 export interface ShipRequest {
   branch: string;
   subject: string;
