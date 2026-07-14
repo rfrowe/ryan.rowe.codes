@@ -1,17 +1,13 @@
-// The web face of the sidecar: a loopback-only HTTP and WebSocket server for the studio
-// SPA. REST covers the request/response calls (autosave, diff, sessions, session
-// select, health); the single WebSocket relays ClientMessage to services and streams
-// every ServerMessage (doc-sync pushes and the agent conversation) back out.
+// The web face of the sidecar: a loopback-only HTTP and WebSocket server for the SPA. REST covers
+// the request/response calls; the single WebSocket relays ClientMessage to services and streams
+// every ServerMessage (doc-sync and agent conversation) back out.
 //
-// Security: bound to 127.0.0.1 only; a per-launch bearer token is required on
-// every request (Authorization header for REST, `?token=` for the WS since browsers
-// can't set WS headers); the Host header must be loopback (DNS-rebinding guard) and,
-// when present, the Origin must be on the SPA allowlist (loopback-CSRF guard).
+// Security: bound to 127.0.0.1; a per-launch bearer token on every request (Authorization for REST,
+// `?token=` for the WS since browsers can't set WS headers); the Host header must be loopback (DNS
+// rebinding) and any Origin must be on the allowlist (loopback CSRF).
 //
-// The agent host does not expose its own subscription. It is wired to publish its
-// assistant.delta / tool.* / done / error messages through `store.publish`, so this
-// server only subscribes to `services.store` and both the doc-sync and agent streams
-// reach the browser through that one fan-out.
+// The agent host has no subscription of its own; it publishes through `store.publish`, so this
+// server subscribes only to `services.store` and both streams reach the browser via that fan-out.
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -52,8 +48,8 @@ export interface ServerOptions {
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
   const { token, webPort } = opts;
-  // The sidecar always injects the concretes; the frozen DI seams omit the studio-only
-  // multi-doc/worktree and MCP-status accessors, so recover them here for the post and mcp paths.
+  // The frozen DI seams omit the studio-only worktree and MCP-status accessors; the sidecar always
+  // injects the concretes, so recover them here for the post and mcp paths.
   const store = services.store as StudioStore;
   const agentHost = services.agentHost as StudioAgentHost;
 
@@ -98,11 +94,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     if (!hostOk(req)) return sendJson(res, 403, { error: "forbidden host" });
     if (!originOk(req)) return sendJson(res, 403, { error: "forbidden origin" });
 
-    // CORS: the SPA (http://localhost:5199) and the sidecar (127.0.0.1:4319) are different
-    // origins (different port), and the Authorization header makes every call a *preflighted*
-    // cross-origin request. Echo the already-allowlisted Origin so the browser accepts the
-    // response, and answer the OPTIONS preflight up front; preflight carries no credentials,
-    // so it must be handled before the bearer check.
+    // CORS: the SPA and the sidecar are different origins, and the Authorization header makes every
+    // call a preflighted cross-origin request. Echo the allowlisted Origin and answer the OPTIONS
+    // preflight up front, before the bearer check (preflight carries no credentials).
     const origin = req.headers.origin;
     if (typeof origin === "string") {
       res.setHeader("Access-Control-Allow-Origin", origin);
@@ -121,8 +115,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     const method = req.method ?? "GET";
     const route = `${method} ${url.pathname}`;
 
-    // Health is unauthenticated (no sensitive data, no mutation) so the orchestrator can
-    // poll it to health-gate startup without holding the token. Still loopback and Host-guarded.
+    // Unauthenticated so the orchestrator can health-gate startup without the token. Still
+    // loopback and Host-guarded.
     if (route === "GET /health") return sendJson(res, 200, { ok: true });
 
     if (!bearerOk(req)) return sendJson(res, 401, { error: "unauthorized" });
@@ -130,8 +124,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     switch (route) {
       case "PUT /doc": {
         const body = await readJson<PutDocRequest>(req);
-        // Route by the request's path (not "the active doc"): a save-before-switch flush can
-        // arrive after the active tab has already changed, and must still land on its post.
+        // Route by the request's path, not "the active doc": a save-before-switch flush can arrive
+        // after the active tab changed and must still land on its post.
         const result = await store.writeByPath(body.path, body.text, body.baseRev);
         return sendJson(res, 200, result satisfies PutDocResponse);
       }
@@ -153,20 +147,17 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       case "GET /posts/dirty": {
-        // Which posts have unshipped changes (uncommitted or unmerged): the palette's dirty
-        // badge. Reflects every worktree actually on disk (open tabs, stray worktrees left over
-        // from a failed boot, and worktrees/branches created outside the studio, e.g. on the
-        // CLI), not just this session's open tabs. Probed on demand (palette open), not on every
-        // tab broadcast.
+        // Posts with unshipped changes (the palette's dirty badge). Reflects every worktree on disk,
+        // not just this session's open tabs (also strays and worktrees created on the CLI). Probed
+        // on demand, not on every tab broadcast.
         const dirty = await store.dirtyPostPaths();
         return sendJson(res, 200, { dirty } satisfies DirtyPostsResponse);
       }
 
       case "GET /posts/drafts": {
-        // Existing blog/* draft branches (local or remote-tracking) that have no live worktree and
-        // aren't open, invisible to /posts (which scans the main tree) and to the open-tab set.
-        // The palette lists these as reopenable entries; selecting one runs the adopt-then-open path.
-        // Offline-safe (reads local refs only); probed on demand (palette open).
+        // blog/* draft branches with no live worktree, invisible to /posts and the open-tab set. The
+        // palette lists them as reopenable; selecting one runs the adopt-then-open path. Offline-safe
+        // (local refs only); probed on demand.
         const drafts = await store.listDrafts();
         return sendJson(res, 200, { drafts } satisfies DraftsResponse);
       }
@@ -204,11 +195,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
     });
 
-    // Replay the current snapshot so a freshly-connected SPA can bootstrap (the store's bootstrap
-    // openPost ran before any client connected, so its emits were missed): the open tab set, the
-    // active post and its buffer, the preview, and the MCP inventory. Order matches the store's
-    // publishActivation (tabs and active before file.changed) so the target tab exists before its
-    // buffer arrives (the client drops a file.changed for a path it has no tab for).
+    // Replay the current snapshot so a freshly-connected SPA can bootstrap (the bootstrap openPost
+    // ran before any client connected). Order matches the store's publishActivation (tabs and active
+    // before file.changed) so the target tab exists before its buffer arrives.
     ws.send(JSON.stringify({ type: "tabs", open: store.getOpenTabs() } satisfies ServerMessage));
     const doc = store.getActiveDoc();
     if (doc) {
@@ -224,8 +213,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       ws.send(JSON.stringify(snapshot));
     }
     ws.send(JSON.stringify({ type: "preview.url", preview: store.getPreview() } satisfies ServerMessage));
-    // Replay the active post's name-sync so a reconnecting client re-raises the desync banner + ship
-    // gate without waiting for the next edit. (Snapshot omits `canComplete`; the next refresh refines it.)
+    // Replay the name-sync so a reconnecting client re-raises the desync banner + ship gate without
+    // waiting for the next edit. (Snapshot omits `canComplete`; the next refresh refines it.)
     ws.send(JSON.stringify({ type: "post.namesync", ...store.getActiveNameSync() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mcp.status", servers: agentHost.getMcpStatus() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mode.status", mode: agentHost.getPermissionMode() } satisfies ServerMessage));
@@ -288,10 +277,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         });
         return;
 
-      // Open (or focus, if already open) a post by its canonical path, ensuring/reusing its
-      // worktree. The store publishes the switch (file.changed, active, tabs, preview.url) to
-      // every socket and, via its onActiveChange subscriber wired in main.ts, retargets the file
-      // watcher and restarts astro in the worktree; here we only correlate the outcome back.
+      // Open (or focus) a post by canonical path, ensuring/reusing its worktree. The store publishes
+      // the switch to every socket and retargets the watcher/astro via its onActiveChange subscriber;
+      // here we only correlate the outcome back.
       case "post.open": {
         const { requestId } = message;
         store.openPost(message.path).then(
@@ -301,8 +289,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Create a new post (in its own worktree) and make it active. Routed through scaffold_post
-      // so the WS and MCP paths share one implementation; the store publishes the switch.
+      // Create a new post (in its own worktree) and make it active. Routed through scaffold_post so
+      // the WS and MCP paths share one implementation; the store publishes the switch.
       case "post.create": {
         const { requestId } = message;
         services.tools
@@ -325,8 +313,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       // Close a tab. The store keeps the worktree/branch for a tab with a draft (reused on re-open)
-      // but tears down a clean tab via the delete-draft path; either way it re-focuses another open
-      // post (or clears the active doc) and publishes the new tab set.
+      // but tears down a clean tab; either way it re-focuses another post and publishes the tab set.
       case "post.close": {
         const { requestId, path } = message;
         store.closePost(path).then(
@@ -336,9 +323,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`.
-      // On success, re-key the post's SDK session old-to-new so the resumable conversation follows the
-      // rename (the store already broadcast `post.renamed` for the clients' tab migration).
+      // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`. On
+      // success, re-key the SDK session so the resumable conversation follows the rename (the store
+      // already broadcast `post.renamed` for the clients' tab migration).
       case "post.rename": {
         const { requestId, path } = message;
         store.renamePost(path, { slug: message.newSlug }).then(
@@ -355,8 +342,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Resolve a frontmatter/filename desync: rename to match the post's own frontmatter. Same seam
-      // as post.rename (session re-key + post.renamed migration); the store derives the target itself.
+      // Resolve a frontmatter/filename desync by renaming to match the frontmatter. Same seam as
+      // post.rename, but the store derives the target itself.
       case "post.completeRename": {
         const { requestId, path } = message;
         store.completeRename(path).then(
@@ -373,8 +360,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // The inverse: rewrite the frontmatter so its derived URL matches the filename (an uncommitted
-      // edit). No file rename, so no session re-key/path change; the store broadcasts file.changed.
+      // The inverse: rewrite the frontmatter so its derived URL matches the filename. No file rename,
+      // so no session re-key; the store broadcasts file.changed.
       case "post.revertUrl": {
         const { requestId, path } = message;
         store.revertUrl(path).then(
@@ -384,9 +371,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Delete a draft post (remove its worktree and branch). Gated: probe what would be lost first,
-      // and if there's uncommitted or unmerged work reply post.confirm instead of acting, unless the
-      // client already confirmed. A clean post (nothing to lose) is deleted without a prompt.
+      // Delete a draft post (worktree and branch). Gated: if there's work to lose, reply post.confirm
+      // instead of acting unless the client already confirmed. A clean post deletes without a prompt.
       case "post.delete": {
         const { requestId, path, confirm } = message;
         void (async () => {
@@ -417,8 +403,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Revert a post's uncommitted edits to HEAD. Gated: if there's nothing to discard it's a
-      // no-op success; otherwise reply post.confirm (carrying the diff to be lost) unless confirmed.
+      // Revert a post's uncommitted edits to HEAD. Gated: nothing to discard is a no-op success;
+      // otherwise reply post.confirm (carrying the diff to be lost) unless confirmed.
       case "post.revert": {
         const { requestId, path, confirm } = message;
         void (async () => {
@@ -453,8 +439,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Toggle one MCP server for the studio's sessions. The agent host tracks the disabled set
-      // and re-broadcasts mcp.status through the store fan-out (so every socket updates).
+      // Toggle one MCP server. The agent host tracks the disabled set and re-broadcasts mcp.status
+      // through the store fan-out.
       case "mcp.setEnabled": {
         const { requestId, server, enabled } = message;
         try {
@@ -467,7 +453,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       // Set the permission mode for subsequent turns; the agent host broadcasts the authoritative
-      // mode.status through the store fan-out (so every socket's mode chip updates).
+      // mode.status through the store fan-out.
       case "mode.set":
         agentHost.setPermissionMode(message.mode);
         return;
