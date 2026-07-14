@@ -1,0 +1,667 @@
+// In-browser mock of the sidecar's web face (REST + WS). It lets the SPA run and
+// develop with no real backend: enable with a `?mock` query flag or VITE_STUDIO_MOCK.
+//
+// `installMock()` patches `globalThis.fetch` and `globalThis.WebSocket`, but only
+// intercepts sidecar traffic (REST_BASE / WS_BASE). Any other URL (Vite's own HMR
+// socket, the preview iframe) is delegated to the real implementations, so the mock
+// is safe to install in dev. It speaks the exact frozen wire protocol.
+//
+// The mock is tab-aware: it seeds a couple of open posts, a small MCP inventory, and a
+// bag of not-yet-open posts (for ⌘P), and it services the full tab lifecycle
+// (post.open/create/close/rename) and mcp.setEnabled so all of the studio chrome renders
+// and can be exercised with no real sidecar.
+
+import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
+import type { ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
+import type { SessionListItem } from "../../sessions/pickerViewModel";
+import type { ShipRequest, ShipResponse } from "../../shared/protocol";
+import { REST_BASE, WS_BASE } from "./config";
+
+// ---- mock enable check ----
+export function isMockEnabled(): boolean {
+  const env = import.meta.env.VITE_STUDIO_MOCK;
+  if (env === "1" || env === "true") return true;
+  try {
+    return new URLSearchParams(window.location.search).has("mock");
+  } catch {
+    return false;
+  }
+}
+
+// ---- fixtures ----
+const REPO = "/Users/ryanrowe/indeed/rfrowe/ryan.rowe.codes";
+const CONTENT = `${REPO}/src/content/blog`;
+
+/** File path for a folder post `YYYY-MM-DD_slug/post.mdx`. */
+function postPath(date: string, slug: string): string {
+  return `${CONTENT}/${date}_${slug}/post.mdx`;
+}
+/** Astro dev URL a valid post previews at (`/blog/<date>/<slug>`). */
+function previewUrl(date: string, slug: string): string {
+  return `http://127.0.0.1:4321/blog/${date}/${slug}`;
+}
+
+function frontmatter(title: string, slug: string, date: string, headline: string): string {
+  return `---\ntitle: ${title}\nslug: ${slug}\ncreated_at: ${date}\nheadline: ${headline}\n---\n\n`;
+}
+
+const SKYLINE_MDX =
+  frontmatter("Aligning a Skyline", "aligning-a-skyline", "2026-07-10", "teaching a horizon to stand up straight") +
+  `# Aligning a Skyline
+
+The photo was almost right. The buildings leaned a few degrees off true, the way
+a hand-held frame always does, and the eye kept snagging on it.
+
+![A city skyline, subtly rotated](./skyline.webp)
+*The raw frame, before any correction.*
+
+So I wrote a small script to find the dominant vertical lines and rotate the
+image until they stood up straight.
+`;
+
+const CACHE_MDX =
+  frontmatter("The Shape of a Cache", "the-shape-of-a-cache", "2026-06-22", "what a good hit rate quietly hides") +
+  `# The Shape of a Cache
+
+A cache is mostly a bet about the future: that what you asked for once, you will
+ask for again soon. The hit rate is how often the bet pays off — but the number
+alone hides the *shape* of the misses.
+
+Two caches can share a 92% hit rate and behave nothing alike. One misses at
+random; the other misses in bursts, at exactly the moments you can least afford it.
+`;
+
+// Not-yet-open posts, so ⌘P (GET /posts) and "open an existing post" have something.
+const CLOSED_POSTS: PostSummaryDTO[] = [
+  {
+    path: postPath("2026-05-03", "a-grammar-of-diagrams"),
+    title: "A Grammar of Diagrams",
+    url: previewUrl("2026-05-03", "a-grammar-of-diagrams"),
+  },
+  {
+    path: postPath("2022-03-11", "algorithmic-art"),
+    title: "Algorithmic Art",
+    url: previewUrl("2022-03-11", "algorithmic-art"),
+  },
+];
+
+const SAMPLE_DIFF = `diff --git a/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx b/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx
+index 1111111..2222222 100644
+--- a/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx
++++ b/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx
+@@ -7,6 +7,8 @@
+ # Aligning a Skyline
+
++**TL;DR** — detect the dominant verticals, then rotate until they are truly plumb.
++
+ The photo was almost right. The buildings leaned a few degrees off true, the way
+ a hand-held frame always does, and the eye kept snagging on it.
+`;
+
+const SAMPLE_SESSIONS: SessionListItem[] = [
+  {
+    sessionId: "mock-sess-blog-001",
+    title: "Draft the skyline post",
+    mtime: Date.now() - 1000 * 60 * 12,
+    sizeBytes: 48_120,
+    repoPath: REPO,
+  },
+  {
+    sessionId: "mock-sess-build-002",
+    title: "Build the skyline-align script (numpy + PIL)",
+    mtime: Date.now() - 1000 * 60 * 60 * 3,
+    sizeBytes: 191_004,
+    repoPath: "/Users/ryanrowe/projects/skyline-align",
+  },
+  {
+    sessionId: "mock-sess-blog-003",
+    title: "(untitled)",
+    mtime: Date.now() - 1000 * 60 * 60 * 26,
+    sizeBytes: null,
+    repoPath: REPO,
+  },
+];
+
+// A small MCP inventory spanning every status the popover renders: connected (green),
+// needs-auth (amber), disabled (grey).
+const MOCK_MCP: { name: string; status: string; enabled: boolean }[] = [
+  { name: "studio", status: "connected", enabled: true },
+  { name: "chrome-devtools", status: "connected", enabled: true },
+  { name: "context7", status: "needs-auth", enabled: true },
+  { name: "playwright", status: "disabled", enabled: false },
+];
+
+// ---- rev helper (mock hash, not sha256) ----
+function makeRev(n: number, text: string): DocRev {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return { n, hash: (h >>> 0).toString(16).padStart(8, "0") };
+}
+
+// The post's isolation branch, mirroring the sidecar: `blog/<date-qualified stem>`.
+function branchFromPath(path: string): string {
+  const base = path.replace(/\/post\.mdx$/, "").replace(/\.mdx$/, "");
+  return `blog/${base.split("/").pop() ?? ""}`;
+}
+
+// One open post's live state.
+interface MockDoc {
+  path: string;
+  title: string;
+  branch: string;
+  text: string;
+  rev: DocRev;
+  preview: PreviewState;
+}
+
+function makeDoc(path: string, title: string, text: string, preview: PreviewState): MockDoc {
+  return { path, title, branch: branchFromPath(path), text, rev: makeRev(1, text), preview };
+}
+
+// ---- shared mock state ----
+class MockBackend {
+  // Every doc the mock knows about, keyed by path (open, created, and previously-opened).
+  private readonly docs = new Map<string, MockDoc>();
+  // Ordered open tab set (paths). Titles come from `docs`.
+  private open: string[] = [];
+  private activePath: string;
+  private mcp = MOCK_MCP.map((s) => ({ ...s }));
+  private agent: AgentState = { sessionId: null, mode: "new" };
+  private mode: PermissionMode = "auto";
+  // Resolver for an in-flight demo permission prompt, set while a turn awaits the author's answer.
+  private pendingPerm: ((decision: PermissionDecision) => void) | null = null;
+  // Demo the approve/deny card once per page session, then stop nagging on later turns.
+  private permDemoed = false;
+  private readonly sockets = new Set<MockWebSocket>();
+
+  constructor() {
+    const skyline = makeDoc(
+      postPath("2026-07-10", "aligning-a-skyline"),
+      "Aligning a Skyline",
+      SKYLINE_MDX,
+      { valid: true, url: previewUrl("2026-07-10", "aligning-a-skyline") },
+    );
+    const cache = makeDoc(
+      postPath("2026-06-22", "the-shape-of-a-cache"),
+      "The Shape of a Cache",
+      CACHE_MDX,
+      { valid: true, url: previewUrl("2026-06-22", "the-shape-of-a-cache") },
+    );
+    this.docs.set(skyline.path, skyline);
+    this.docs.set(cache.path, cache);
+    this.open = [skyline.path, cache.path];
+    this.activePath = skyline.path;
+  }
+
+  register(socket: MockWebSocket): void {
+    this.sockets.add(socket);
+    // Bootstrap the just-connected client with the full authoritative state.
+    socket.deliver(this.tabsMsg());
+    socket.deliver(this.mcpMsg());
+    socket.deliver({ type: "mode.status", mode: this.mode });
+    this.deliverActive(socket);
+    if (this.agent.sessionId) socket.deliver({ type: "session", sessionId: this.agent.sessionId, mode: this.agent.mode });
+  }
+
+  unregister(socket: MockWebSocket): void {
+    this.sockets.delete(socket);
+  }
+
+  private broadcast(msg: ServerMessage): void {
+    for (const s of this.sockets) s.deliver(msg);
+  }
+
+  private tabsMsg(): ServerMessage {
+    return { type: "tabs", open: this.open.map((p) => ({ path: p, title: this.docs.get(p)?.title ?? p })) };
+  }
+
+  private mcpMsg(): ServerMessage {
+    return { type: "mcp.status", servers: this.mcp.map((s) => ({ ...s })) };
+  }
+
+  // Push the active post's `active`, doc, and preview to one socket (or all if omitted). Mirrors
+  // the real sidecar: switching the active post is always followed by its file and preview.
+  private deliverActive(target?: MockWebSocket): void {
+    const doc = this.docs.get(this.activePath);
+    if (!doc) return;
+    const send = (m: ServerMessage) => (target ? target.deliver(m) : this.broadcast(m));
+    send({ type: "active", path: doc.path, title: doc.title, branch: doc.branch });
+    send({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "external" });
+    send({ type: "preview.url", preview: doc.preview });
+  }
+
+  // ---- REST ----
+  putDoc(req: PutDocRequest): PutDocResponse {
+    const doc = this.docs.get(req.path);
+    if (!doc) return { ok: false, error: "stale-rev", currentRev: makeRev(1, "") };
+    if (req.baseRev.n !== doc.rev.n) return { ok: false, error: "stale-rev", currentRev: doc.rev };
+    doc.text = req.text;
+    doc.rev = makeRev(doc.rev.n + 1, req.text);
+    return { ok: true, rev: doc.rev };
+  }
+
+  diff(): { status: string; diff: string } {
+    return { status: " M src/content/blog/2026-07-10_aligning-a-skyline/post.mdx", diff: SAMPLE_DIFF };
+  }
+
+  sessions(): SessionListItem[] {
+    return SAMPLE_SESSIONS;
+  }
+
+  posts(): PostSummaryDTO[] {
+    // Every open post plus the not-yet-open bag, deduped, so the palette shows both.
+    const openSummaries: PostSummaryDTO[] = this.open.map((p) => {
+      const d = this.docs.get(p)!;
+      return { path: d.path, title: d.title, url: d.preview.valid ? d.preview.url : null };
+    });
+    const openPaths = new Set(this.open);
+    return [...openSummaries, ...CLOSED_POSTS.filter((p) => !openPaths.has(p.path))];
+  }
+
+  dirtyPosts(): string[] {
+    // The mock treats every open post as carrying unshipped work (matches its always-confirm
+    // delete/revert), so the palette's dirty badge is exercised in dev.
+    return [...this.open];
+  }
+
+  ship(req: ShipRequest): ShipResponse {
+    if (!req.confirm) return { ok: false, error: "confirmation required" };
+    return { ok: true, prUrl: "https://github.com/rfrowe/ryan.rowe.codes/pull/42" };
+  }
+
+  // ---- WS client messages ----
+  handle(socket: MockWebSocket, msg: ClientMessage): void {
+    switch (msg.type) {
+      case "prompt":
+        void this.runTurn(msg.promptId, msg.text);
+        break;
+      case "resolveDirective":
+        void this.runTurn(msg.promptId, `resolve directive: ${msg.instruction}`);
+        break;
+      case "cancel":
+        this.broadcast({ type: "done", promptId: msg.promptId, stopReason: "cancelled" });
+        break;
+      case "session.select": {
+        this.agent = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
+        this.broadcast({ type: "session", sessionId: this.agent.sessionId!, mode: this.agent.mode });
+        break;
+      }
+      case "editor.state":
+        // Cursor tracking is not modelled by the mock.
+        break;
+      case "post.open":
+        this.openPost(msg.requestId, msg.path);
+        break;
+      case "post.create":
+        this.createPost(msg.requestId, msg.title, msg.slug, msg.headline, msg.created_at);
+        break;
+      case "post.close":
+        this.closePost(msg.requestId, msg.path);
+        break;
+      case "post.rename":
+        this.renamePost(msg.requestId, msg.path, msg.newSlug);
+        break;
+      case "post.delete":
+        this.deletePost(msg.requestId, msg.path, msg.confirm);
+        break;
+      case "post.revert":
+        this.revertPost(msg.requestId, msg.path, msg.confirm);
+        break;
+      case "mcp.setEnabled":
+        this.setMcpEnabled(msg.server, msg.enabled);
+        break;
+      case "mode.set":
+        this.mode = msg.mode;
+        this.broadcast({ type: "mode.status", mode: this.mode });
+        break;
+      case "permission.response":
+        this.pendingPerm?.(msg.decision);
+        this.pendingPerm = null;
+        break;
+    }
+  }
+
+  private openPost(requestId: string, path: string): void {
+    // Adopt a known-but-closed post into `docs` on first open.
+    if (!this.docs.has(path)) {
+      const closed = CLOSED_POSTS.find((p) => p.path === path);
+      if (!closed) {
+        this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
+        return;
+      }
+      const [date, slug] = splitPath(closed.path);
+      this.docs.set(
+        path,
+        makeDoc(path, closed.title, frontmatter(closed.title, slug, date, "") + `# ${closed.title}\n`, {
+          valid: true,
+          url: previewUrl(date, slug),
+        }),
+      );
+    }
+    if (!this.open.includes(path)) {
+      this.open.push(path);
+      this.broadcast(this.tabsMsg());
+    }
+    this.activePath = path;
+    this.deliverActive();
+    this.broadcast({ type: "post.result", requestId, ok: true, path });
+  }
+
+  private createPost(requestId: string, title: string, slug: string, headline: string, date: string): void {
+    const path = postPath(date, slug);
+    if (this.docs.has(path)) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `a post already exists at ${slug}` });
+      return;
+    }
+    // No `# H1`: the BlogPost layout renders the title from frontmatter (matches renderNewPost).
+    const text = frontmatter(title, slug, date, headline) + "Start writing…\n";
+    this.docs.set(path, makeDoc(path, title, text, { valid: true, url: previewUrl(date, slug) }));
+    this.open.push(path);
+    this.activePath = path;
+    this.broadcast(this.tabsMsg());
+    this.deliverActive();
+    this.broadcast({ type: "post.result", requestId, ok: true, path });
+  }
+
+  private closePost(requestId: string, path: string): void {
+    const at = this.open.indexOf(path);
+    if (at === -1) {
+      this.broadcast({ type: "post.result", requestId, ok: true, path });
+      return;
+    }
+    this.open.splice(at, 1);
+    const wasActive = this.activePath === path;
+    this.broadcast(this.tabsMsg());
+    if (wasActive) {
+      const next = this.open[at] ?? this.open[at - 1] ?? this.open[0] ?? null;
+      if (next) {
+        this.activePath = next;
+        this.deliverActive();
+      }
+    }
+    this.broadcast({ type: "post.result", requestId, ok: true, path });
+  }
+
+  private renamePost(requestId: string, path: string, newSlug: string): void {
+    const doc = this.docs.get(path);
+    if (!doc) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
+      return;
+    }
+    const [date] = splitPath(path);
+    const nextPath = postPath(date, newSlug);
+    doc.path = nextPath;
+    doc.branch = branchFromPath(nextPath);
+    doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${newSlug}`);
+    doc.rev = makeRev(doc.rev.n + 1, doc.text);
+    doc.preview = { valid: true, url: previewUrl(date, newSlug) };
+    this.docs.delete(path);
+    this.docs.set(nextPath, doc);
+    this.open = this.open.map((p) => (p === path ? nextPath : p));
+    if (this.activePath === path) this.activePath = nextPath;
+    this.broadcast(this.tabsMsg());
+    this.deliverActive();
+    this.broadcast({ type: "post.result", requestId, ok: true, path: nextPath });
+  }
+
+  // A synthetic "what would be lost" diff for the confirm dialog (real diffs come from git in the
+  // sidecar). The mock treats every open post as having a little uncommitted work to demo the gate.
+  private lossDiff(path: string): string {
+    const [, slug] = splitPath(path);
+    return [
+      `diff --git a/src/content/blog/${slug}.mdx b/src/content/blog/${slug}.mdx`,
+      "index 1111111..2222222 100644",
+      `--- a/src/content/blog/${slug}.mdx`,
+      `+++ b/src/content/blog/${slug}.mdx`,
+      "@@ -1,3 +1,3 @@",
+      "-Start writing…",
+      "+A few unsaved edits that this action would discard.",
+    ].join("\n");
+  }
+
+  private deletePost(requestId: string, path: string, confirm: boolean): void {
+    if (!this.docs.has(path)) {
+      this.broadcast({ type: "post.result", requestId, ok: true, path });
+      return;
+    }
+    if (!confirm) {
+      this.broadcast({ type: "post.confirm", requestId, op: "delete", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path) });
+      return;
+    }
+    const at = this.open.indexOf(path);
+    if (at !== -1) this.open.splice(at, 1);
+    this.docs.delete(path);
+    const wasActive = this.activePath === path;
+    this.broadcast(this.tabsMsg());
+    if (wasActive) {
+      const next = this.open[at] ?? this.open[at - 1] ?? this.open[0] ?? null;
+      if (next) {
+        this.activePath = next;
+        this.deliverActive();
+      }
+    }
+    this.broadcast({ type: "post.result", requestId, ok: true, path });
+  }
+
+  private revertPost(requestId: string, path: string, confirm: boolean): void {
+    const doc = this.docs.get(path);
+    if (!doc) {
+      this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
+      return;
+    }
+    if (!confirm) {
+      this.broadcast({ type: "post.confirm", requestId, op: "revert", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path) });
+      return;
+    }
+    // Simulate restoring to a clean baseline and pushing it to the editor (origin "agent", so the
+    // buffer is replaced rather than raising a keep-mine banner).
+    doc.rev = makeRev(doc.rev.n + 1, doc.text);
+    this.broadcast({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "agent" });
+    this.broadcast({ type: "post.result", requestId, ok: true, path });
+  }
+
+  private setMcpEnabled(server: string, enabled: boolean): void {
+    this.mcp = this.mcp.map((s) =>
+      s.name === server ? { ...s, enabled, status: enabled ? "connected" : "disabled" } : s,
+    );
+    this.broadcast(this.mcpMsg());
+  }
+
+  /** Emit a permission.request and resolve when the SPA answers: the mock demo of the approve/deny UX. */
+  private askPermission(
+    promptId: string,
+    toolName: string,
+    input: unknown,
+    meta: { title?: string; reason?: string },
+  ): Promise<PermissionDecision> {
+    const requestId = `mock-perm-${Date.now().toString(36)}`;
+    return new Promise<PermissionDecision>((resolve) => {
+      this.pendingPerm = resolve;
+      this.broadcast({ type: "permission.request", promptId, requestId, toolName, input, ...meta });
+    });
+  }
+
+  // Simulate a streamed agent turn that edits the active doc through the sanctioned path.
+  private async runTurn(promptId: string, text: string): Promise<void> {
+    const doc = this.docs.get(this.activePath);
+    if (!doc) return;
+    const say = (t: string) => this.broadcast({ type: "assistant.delta", promptId, text: t });
+    await delay(120);
+    say("On it — ");
+    await delay(160);
+    say("reading the active document and ");
+    await delay(160);
+    say("applying a focused edit.");
+    await delay(150);
+
+    // Demo the approve/deny card once per page session: ask for a build the mode won't auto-approve.
+    if (!this.permDemoed) {
+      this.permDemoed = true;
+      const decision = await this.askPermission(
+        promptId,
+        "Bash",
+        { command: "npm run build" },
+        { title: "Run `npm run build`?", reason: "A shell command the current mode won't auto-approve." },
+      );
+      if (decision === "deny") {
+        this.broadcast({ type: "assistant.message", promptId, text: "Understood — skipping the build; I'll just apply the edit." });
+      }
+    }
+
+    const toolUseId = `mock-tool-${Date.now().toString(36)}`;
+    this.broadcast({ type: "tool.start", promptId, toolUseId, name: "mcp__studio__apply_edit", input: { path: doc.path, note: text } });
+    await delay(300);
+
+    // Insert a TL;DR under the first heading, byte-faithfully.
+    const marker = doc.text.match(/^# .+\n/m)?.[0];
+    if (marker) {
+      const at = doc.text.indexOf(marker);
+      const insertAt = at + marker.length;
+      const insertion = "\n**TL;DR** — detect the dominant verticals, then rotate until they are truly plumb.\n";
+      doc.text = doc.text.slice(0, insertAt) + insertion + doc.text.slice(insertAt);
+      doc.rev = makeRev(doc.rev.n + 1, doc.text);
+    }
+    this.broadcast({ type: "tool.end", promptId, toolUseId, isError: false, resultPreview: "ok — 1 edit applied" });
+    this.broadcast({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "agent" });
+    await delay(120);
+    this.broadcast({ type: "preview.url", preview: doc.preview });
+    this.broadcast({ type: "assistant.message", promptId, text: "Added a one-sentence TL;DR under the first heading and left the rest untouched." });
+    await delay(80);
+    this.broadcast({ type: "done", promptId, stopReason: "end_turn" });
+  }
+}
+
+/** `[date, slug]` from a folder-post path (`.../YYYY-MM-DD_slug/post.mdx`). */
+function splitPath(path: string): [string, string] {
+  const m = path.match(/\/(\d{4}-\d{2}-\d{2})_([^/]+)\/post\.mdx$/);
+  return m ? [m[1], m[2]] : ["2026-01-01", "post"];
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+const backend = new MockBackend();
+
+// ---- mock WebSocket ----
+type WsEventName = "open" | "message" | "close" | "error";
+
+class MockWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
+  readonly CONNECTING = 0;
+  readonly OPEN = 1;
+  readonly CLOSING = 2;
+  readonly CLOSED = 3;
+
+  readyState = 0;
+  onopen: ((ev: Event) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onclose: ((ev: CloseEvent) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+
+  private readonly listeners: Record<WsEventName, Set<(ev: unknown) => void>> = {
+    open: new Set(),
+    message: new Set(),
+    close: new Set(),
+    error: new Set(),
+  };
+
+  constructor(url: string | URL, protocols?: string | string[]) {
+    const href = typeof url === "string" ? url : url.toString();
+    if (!href.startsWith(WS_BASE)) {
+      // Not sidecar traffic (e.g. Vite HMR); hand back a real socket. Forward the
+      // subprotocol too, or Vite HMR's `new WebSocket(url, "vite-hmr")` loses it and
+      // reconnection dies.
+      return new RealWebSocket(url, protocols) as unknown as MockWebSocket;
+    }
+    setTimeout(() => {
+      this.readyState = MockWebSocket.OPEN;
+      this.fire("open", new Event("open"));
+      backend.register(this);
+    }, 0);
+  }
+
+  send(data: string): void {
+    if (this.readyState !== MockWebSocket.OPEN) return;
+    let msg: ClientMessage;
+    try {
+      msg = JSON.parse(data) as ClientMessage;
+    } catch {
+      return;
+    }
+    backend.handle(this, msg);
+  }
+
+  close(): void {
+    if (this.readyState === MockWebSocket.CLOSED) return;
+    this.readyState = MockWebSocket.CLOSED;
+    backend.unregister(this);
+    this.fire("close", { code: 1000, reason: "", wasClean: true } as unknown as CloseEvent);
+  }
+
+  addEventListener(name: WsEventName, fn: (ev: unknown) => void): void {
+    this.listeners[name]?.add(fn);
+  }
+  removeEventListener(name: WsEventName, fn: (ev: unknown) => void): void {
+    this.listeners[name]?.delete(fn);
+  }
+
+  /** Backend to client push. */
+  deliver(msg: ServerMessage): void {
+    if (this.readyState !== MockWebSocket.OPEN) return;
+    const ev = { data: JSON.stringify(msg) } as MessageEvent;
+    this.fire("message", ev);
+  }
+
+  private fire(name: WsEventName, ev: Event | MessageEvent | CloseEvent): void {
+    const handler =
+      name === "open" ? this.onopen : name === "message" ? this.onmessage : name === "close" ? this.onclose : this.onerror;
+    (handler as ((e: unknown) => void) | null)?.(ev);
+    for (const fn of this.listeners[name]) fn(ev);
+  }
+}
+
+// ---- install ----
+let installed = false;
+let RealWebSocket: typeof WebSocket;
+
+export function installMock(): void {
+  if (installed) return;
+  installed = true;
+
+  RealWebSocket = globalThis.WebSocket;
+  const realFetch: typeof fetch = globalThis.fetch.bind(globalThis);
+
+  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (!url.startsWith(REST_BASE)) return realFetch(input, init);
+
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    const path = new URL(url).pathname;
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+
+    const ok = (data: unknown, status = 200): Response =>
+      new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
+
+    if (path === "/health") return ok({ ok: true });
+    if (method === "PUT" && path === "/doc") return ok(backend.putDoc(body as PutDocRequest));
+    if (method === "GET" && path === "/diff") return ok(backend.diff());
+    if (method === "GET" && path === "/sessions") return ok({ sessions: backend.sessions() });
+    if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
+    if (method === "GET" && path === "/posts/dirty") return ok({ dirty: backend.dirtyPosts() });
+    if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
+
+    return ok({ error: `mock: no route for ${method} ${path}` }, 404);
+  };
+
+  console.info("[studio] mock backend installed (REST + WS intercepted on :4319)");
+}

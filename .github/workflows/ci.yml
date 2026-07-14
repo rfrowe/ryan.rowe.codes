@@ -25,5 +25,9 @@ jobs:
         run: npx astro check
       - name: Test 🧪
         run: npm run test
+      - name: Studio typecheck 🔎
+        run: npm run studio:typecheck
+      - name: Studio test 🧪
+        run: npm run studio:test
       - name: Build 🔨
         run: npm run build
