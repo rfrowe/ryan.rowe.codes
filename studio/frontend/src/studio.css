@@ -556,74 +556,10 @@ body {
   background: var(--accent-soft) !important;
 }
 
-/* ---- editor tooltips: autocomplete, hover, signature help ----
-   CodeMirror renders these at the document body (not inside .editor__surface), so they're styled
-   globally. The library defaults are near-invisible grey-on-grey on this dark theme; give them the
-   app's popover chrome and readable contrast (bright labels, dim-but-legible detail, solid info panel). */
-.cm-tooltip {
-  background: var(--bg-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  color: var(--fg);
-  box-shadow: var(--shadow-pop);
-}
-.cm-tooltip.cm-tooltip-autocomplete > ul {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  max-height: 18em;
-}
-.cm-tooltip.cm-tooltip-autocomplete > ul > li {
-  padding: 3px 9px;
-  color: var(--fg-dim);
-  line-height: 1.6;
-}
-.cm-tooltip-autocomplete > ul > li[aria-selected] {
-  background: var(--accent-soft);
-  color: var(--fg);
-}
-.cm-completionLabel {
-  color: var(--fg);
-}
-.cm-completionMatchedText {
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 600;
-}
-.cm-completionDetail {
-  color: var(--fg-dim);
-  font-style: italic;
-  margin-left: 0.6em;
-}
-.cm-completionIcon {
-  color: var(--fg-dim);
-  opacity: 0.85;
-  margin-right: 0.35em;
-}
-/* The detail popout to the side of the selected completion — the panel that was grey-on-grey. */
-.cm-tooltip.cm-completionInfo {
-  background: var(--bg-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  color: var(--fg);
-  padding: 8px 11px;
-  max-width: 360px;
-  font-family: var(--sans);
-  font-size: 12px;
-  line-height: 1.55;
-}
-/* LSP hover + signature-help tooltips (Markdown/code the server returns). */
-.cm-tooltip-hover,
-.cm-tooltip-section {
-  color: var(--fg);
-}
-.cm-tooltip pre,
-.cm-tooltip.cm-completionInfo pre {
-  margin: 0;
-  white-space: pre-wrap;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--fg);
-}
+/* Editor tooltip theming (autocomplete dropdown, completion info popout, LSP hover / signature help)
+   lives in a CodeMirror `EditorView.theme({ dark: true })` in Editor.tsx — a plain CSS `.cm-tooltip`
+   rule here loses to CodeMirror's injected light base theme. `.cm-completionInfo code` inline code is
+   still styled from CSS since the theme leaves it to the base. */
 .cm-tooltip code,
 .cm-completionInfo code {
   font-family: var(--mono);

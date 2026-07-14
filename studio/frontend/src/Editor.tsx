@@ -66,6 +66,52 @@ const SAVE_RETRY_MAX = 5;
 // Marks transactions the app applied programmatically, so they don't trigger autosave.
 const remoteAnnotation = Annotation.define<boolean>();
 
+// Dark theme for the editor's tooltips: the autocomplete dropdown, the completion info popout, and
+// the LSP hover / signature-help tooltips. The studio styles the editor surface via plain CSS rather
+// than a CodeMirror theme, so CodeMirror still believes it's light and renders light, low-contrast
+// tooltips whose injected styles beat plain `.cm-tooltip` CSS. `{ dark: true }` flips CodeMirror's own
+// tooltip base theme to its dark variant, and these rules — carrying theme-level specificity that
+// wins over both the base theme and the LSP client's bundled theme — paint them with the app tokens.
+const tooltipTheme = EditorView.theme(
+  {
+    ".cm-tooltip": {
+      background: "var(--bg-2)",
+      border: "1px solid var(--border-strong)",
+      borderRadius: "var(--radius)",
+      color: "var(--fg)",
+      boxShadow: "var(--shadow-pop)",
+    },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul": {
+      fontFamily: "var(--mono)",
+      fontSize: "12.5px",
+      maxHeight: "18em",
+    },
+    ".cm-tooltip-autocomplete > ul > li": { padding: "3px 9px", color: "var(--fg-dim)", lineHeight: "1.6" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected]": { background: "var(--accent-strong)", color: "#fff" },
+    ".cm-completionLabel": { color: "var(--fg)" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionLabel": { color: "#fff" },
+    ".cm-completionMatchedText": { color: "var(--accent)", textDecoration: "none", fontWeight: "600" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionMatchedText": { color: "#fff" },
+    ".cm-completionDetail": { color: "var(--fg-dim)", fontStyle: "italic", marginLeft: "0.6em" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail": { color: "rgba(255,255,255,0.85)" },
+    ".cm-completionIcon": { color: "var(--fg-dim)", opacity: "0.85" },
+    ".cm-tooltip.cm-completionInfo": {
+      background: "var(--bg-3)",
+      border: "1px solid var(--border-strong)",
+      borderRadius: "var(--radius)",
+      color: "var(--fg)",
+      padding: "8px 11px",
+      maxWidth: "360px",
+      fontFamily: "var(--sans)",
+      fontSize: "12px",
+      lineHeight: "1.55",
+    },
+    ".cm-tooltip.cm-tooltip-hover, .cm-tooltip-section": { color: "var(--fg)" },
+    ".cm-tooltip pre": { margin: "0", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: "12px" },
+  },
+  { dark: true },
+);
+
 interface PopoverState {
   left: number;
   top: number;
@@ -295,6 +341,8 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
       md.language.data.of({ autocomplete: frontmatterCompletionSource }),
       md.language.data.of({ autocomplete: recipeSnippetSource }),
       ...(lspClient ? [lspClient.plugin(filePathToUri(cb.current.path), "mdx")] : []),
+      // After the LSP plugin so it overrides that plugin's bundled tooltip theme.
+      tooltipTheme,
       EditorView.lineWrapping,
       Prec.highest(
         keymap.of([
