@@ -9,9 +9,71 @@
  * import it directly.
  */
 
-export const REQUIRED_FRONTMATTER_KEYS = ["title", "slug", "headline", "created_at"] as const;
+/**
+ * Declarative spec for every frontmatter field: the single source the Astro content-collection
+ * schema (`src/content.config.ts`) builds from and the studio editor's frontmatter completion
+ * source reads its key descriptions and value hints from. One spec means the schema keys, the
+ * required-key contract, and the editor's hints cannot drift — which is why `content.config.ts`
+ * no longer carries a runtime drift guard. Astro-free like the rest of this module.
+ */
+export interface FrontmatterField {
+  /** The frontmatter key, e.g. `created_at`. */
+  name: string;
+  /** One-line description of the field, surfaced as the completion `info`. */
+  description: string;
+  /** Whether a post is invalid without it (all four are, today). */
+  required: boolean;
+  /** A representative value, offered as the completion snippet's default. */
+  example: string;
+  /** Short placeholder shown in the value snippet's tab stop (falls back to `example`). */
+  valueHint?: string;
+  /** Discriminant the schema builder switches on: a plain string, or the date-typed created_at. */
+  zodType: "string" | "date";
+}
 
-export type RequiredFrontmatterKey = (typeof REQUIRED_FRONTMATTER_KEYS)[number];
+// `as const satisfies` (rather than a `: readonly FrontmatterField[]` annotation) preserves the
+// literal `name`/`zodType` types, so the schema output type and REQUIRED_FRONTMATTER_KEYS below can
+// be derived from this one spec.
+export const FRONTMATTER_FIELDS = [
+  {
+    name: "title",
+    description: "Post title — rendered as the page heading and used in the tab and social metadata.",
+    required: true,
+    example: "Aligning a Skyline",
+    zodType: "string",
+  },
+  {
+    name: "slug",
+    description: "URL slug; joins the created_at date as /blog/<date>/<slug>. Lowercase letters, digits, and hyphens.",
+    required: true,
+    example: "aligning-a-skyline",
+    valueHint: "kebab-case-slug",
+    zodType: "string",
+  },
+  {
+    name: "headline",
+    description: "One-line headline cycled by the animated typist on the home page.",
+    required: true,
+    example: "teaching a horizon to stand up straight",
+    zodType: "string",
+  },
+  {
+    name: "created_at",
+    description:
+      "Publish date driving the <date> in the URL. Use a date-only YYYY-MM-DD, or a datetime carrying a timezone (Z or ±HH:MM) — never a bare local time.",
+    required: true,
+    example: "2026-07-10",
+    valueHint: "YYYY-MM-DD",
+    zodType: "date",
+  },
+] as const satisfies readonly FrontmatterField[];
+
+/** A frontmatter key a post is invalid without; derived from the spec so it cannot drift. */
+export type RequiredFrontmatterKey = Extract<(typeof FRONTMATTER_FIELDS)[number], { required: true }>["name"];
+
+export const REQUIRED_FRONTMATTER_KEYS: readonly RequiredFrontmatterKey[] = FRONTMATTER_FIELDS.filter(
+  (field): field is Extract<(typeof FRONTMATTER_FIELDS)[number], { required: true }> => field.required,
+).map((field) => field.name);
 
 /** Raw (pre-Zod-coercion) frontmatter as authored in an `.mdx` file. */
 export interface PostFrontmatter {
