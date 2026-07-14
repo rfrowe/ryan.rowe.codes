@@ -9,13 +9,14 @@ import { Preview } from "./Preview";
 import { Chat, type ChatItem, type PendingPermission } from "./Chat";
 import { SessionPicker } from "./SessionPicker";
 import { ShipPanel } from "./ShipPanel";
-import { TabBar } from "./TabBar";
+import { TabBar, type StackComponent } from "./TabBar";
 import { NewPostDialog, type NewPostFields } from "./NewPostDialog";
 import { CommandPalette } from "./CommandPalette";
 import { McpStatusBar, type McpServerStatus } from "./McpStatusBar";
 import { ModeChip } from "./ModeChip";
 import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveConfirm";
 import { StudioSocket, type SocketStatus } from "./ws";
+import { onLspStatus, type LspStatus } from "./lsp/client";
 import { getDirtyPosts } from "./api";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { PromptContext, ServerMessage } from "../../shared/protocol";
@@ -87,6 +88,21 @@ function nid(): string {
 }
 
 const WAITING_PREVIEW: PreviewState = { valid: false, url: null, errors: ["Waiting for the sidecar preview…"] };
+
+// ---- stack-status dot mapping (SocketStatus / LspStatus / MCP status to a shared health level) ----
+type Health = StackComponent["status"];
+function socketHealth(s: SocketStatus): Health {
+  return s === "open" ? "ok" : s === "connecting" ? "connecting" : "down";
+}
+function lspHealth(s: LspStatus): Health {
+  return s === "open" ? "ok" : s === "connecting" ? "connecting" : s === "disabled" ? "disabled" : "down";
+}
+function mcpHealth(status: string, enabled: boolean): Health {
+  if (!enabled || status === "disabled") return "disabled";
+  if (status === "connected") return "ok";
+  if (status === "needs-auth" || status === "connecting") return "connecting";
+  return "down";
+}
 
 function makeTab(path: string, title: string, branch: string | null = null): TabState {
   return {
@@ -736,6 +752,27 @@ export default function App() {
   const activeDoc = activeTab?.doc ?? null;
   const turnOnActive = state.turn !== null && state.turn.path === state.activePath;
 
+  // LSP connection status (the editor's /lsp channel) for the stack-status popover. The editor
+  // creates the client; here we only observe, so this stays "disabled" under the mock / no token.
+  const [lspStatus, setLspStatus] = useState<LspStatus>("disabled");
+  useEffect(() => onLspStatus(setLspStatus), []);
+
+  // Per-component stack health for the connection-dot popover. Endpoints are the studio's fixed
+  // loopback ports (see studio/bin/studio.mjs); shown faded.
+  const stackStatus = useMemo<StackComponent[]>(() => {
+    const preview = activeTab?.preview;
+    return [
+      { label: "Sidecar", status: socketHealth(status), endpoint: "127.0.0.1:4319" },
+      { label: "MDX language server", status: lspHealth(lspStatus), endpoint: "127.0.0.1:4319/lsp" },
+      {
+        label: "Preview (Astro)",
+        status: !preview ? "connecting" : preview.valid ? "ok" : "connecting",
+        endpoint: "localhost:4321",
+      },
+      ...state.mcp.map((m) => ({ label: `MCP · ${m.name}`, status: mcpHealth(m.status, m.enabled) })),
+    ];
+  }, [status, lspStatus, activeTab?.preview, state.mcp]);
+
   const onChatSend = useCallback(
     (text: string) => {
       const path = activeDoc?.path;
@@ -794,6 +831,7 @@ export default function App() {
         tabs={tabDescriptors}
         activePath={state.activePath}
         status={status}
+        stackStatus={stackStatus}
         dirtyPaths={dirtyPaths}
         onSelect={openPost}
         onClose={onCloseTab}

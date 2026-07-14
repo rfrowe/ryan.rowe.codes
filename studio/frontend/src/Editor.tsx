@@ -10,6 +10,10 @@ import { basicSetup } from "codemirror";
 import type { DocRev, Range } from "../../shared/types";
 import type { PromptContext, PutDocResponse } from "../../shared/protocol";
 import { putDoc } from "./api";
+import { frontmatterCompletionSource } from "./editor/frontmatterCompletion";
+import { recipeSnippetSource } from "./editor/recipeSnippets";
+import { filePathToUri, getLspClient } from "./lsp/client";
+import { docResolvingCompletionSource } from "./lsp/completion";
 
 /** Imperative handle so the app can flush pending autosave before dispatching a prompt. */
 export interface EditorHandle {
@@ -62,6 +66,63 @@ const SAVE_RETRY_MAX = 5;
 
 // Marks transactions the app applied programmatically, so they don't trigger autosave.
 const remoteAnnotation = Annotation.define<boolean>();
+
+// Dark theme for the editor's tooltips (autocomplete dropdown, completion info, LSP hover and
+// signature help). The studio styles the surface via plain CSS, so CodeMirror thinks it's light and
+// renders low-contrast tooltips; `{ dark: true }` flips its tooltip base theme and these rules,
+// carrying theme-level specificity, repaint them with the app tokens.
+const tooltipTheme = EditorView.theme(
+  {
+    ".cm-tooltip": {
+      background: "var(--bg-2)",
+      border: "1px solid var(--border-strong)",
+      borderRadius: "var(--radius)",
+      color: "var(--fg)",
+      boxShadow: "var(--shadow-pop)",
+    },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul": {
+      fontFamily: "var(--mono)",
+      fontSize: "12.5px",
+      maxHeight: "18em",
+    },
+    ".cm-tooltip-autocomplete > ul > li": { padding: "3px 9px", color: "var(--fg-dim)", lineHeight: "1.6" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected]": { background: "var(--accent-strong)", color: "#fff" },
+    ".cm-completionLabel": { color: "var(--fg)" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionLabel": { color: "#fff" },
+    ".cm-completionMatchedText": { color: "var(--accent)", textDecoration: "none", fontWeight: "600" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionMatchedText": { color: "#fff" },
+    ".cm-completionDetail": { color: "var(--fg-dim)", fontStyle: "italic", marginLeft: "0.6em" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail": { color: "rgba(255,255,255,0.85)" },
+    ".cm-completionIcon": { color: "var(--fg-dim)", opacity: "0.85" },
+    ".cm-tooltip.cm-completionInfo": {
+      background: "var(--bg-3)",
+      border: "1px solid var(--border-strong)",
+      borderRadius: "var(--radius)",
+      color: "var(--fg)",
+      padding: "8px 11px",
+      maxWidth: "360px",
+      fontFamily: "var(--sans)",
+      fontSize: "12px",
+      lineHeight: "1.55",
+    },
+    ".cm-tooltip.cm-tooltip-hover, .cm-tooltip-section": { color: "var(--fg)" },
+    ".cm-tooltip pre": { margin: "0", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: "12px" },
+    // Resolved completion info: the type signature (detail) above its JSDoc (documentation).
+    ".cm-lsp-completion-detail": {
+      fontFamily: "var(--mono)",
+      fontSize: "11.5px",
+      color: "var(--fg)",
+      whiteSpace: "pre-wrap",
+      paddingBottom: "6px",
+      marginBottom: "6px",
+      borderBottom: "1px solid var(--border-subtle)",
+    },
+    ".cm-lsp-completion-doc": { color: "var(--fg-dim)", fontSize: "12px", lineHeight: "1.5" },
+    ".cm-lsp-completion-doc p": { margin: "0 0 6px" },
+    ".cm-lsp-completion-doc code": { fontFamily: "var(--mono)", background: "var(--bg)", padding: "0.1em 0.3em", borderRadius: "4px" },
+  },
+  { dark: true },
+);
 
 interface PopoverState {
   left: number;
@@ -276,9 +337,29 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     const parent = hostRef.current;
     if (!parent) return;
 
+    // Register the completion sources via language data (not autocompletion({override})) so they
+    // compose with each other and with the LSP plugin's source; an override would suppress them.
+    const md = markdown();
+    // The MDX language server (completion, hover, signature help), when a real sidecar is present.
+    // Composes with the two built-in sources above; languageId "mdx" is mandatory or the server
+    // won't attach its MDX/TS service. Null under the mock / tokenless dev.
+    const lspClient = getLspClient();
     const extensions = [
       basicSetup,
-      markdown(),
+      md,
+      md.language.data.of({ autocomplete: frontmatterCompletionSource }),
+      md.language.data.of({ autocomplete: recipeSnippetSource }),
+      ...(lspClient
+        ? [
+            lspClient.plugin(filePathToUri(cb.current.path), "mdx"),
+            // LSP completion with resolved detail/docs (the library's source omits them). Registered
+            // via global language data, not markdown-scoped: inside a `<Component …>` tag markdown
+            // switches to embedded HTML, so a markdown-scoped source wouldn't fire there.
+            EditorState.languageData.of(() => [{ autocomplete: docResolvingCompletionSource }]),
+          ]
+        : []),
+      // After the LSP plugin so it overrides that plugin's bundled tooltip theme.
+      tooltipTheme,
       EditorView.lineWrapping,
       Prec.highest(
         keymap.of([

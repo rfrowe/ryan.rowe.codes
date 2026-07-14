@@ -235,6 +235,12 @@ export interface StoreDeps {
   repoRoot: string;
   /** Default branch worktrees fork from; resolved via `gh` lazily when omitted (tests pass it). */
   defaultBranch?: string;
+  /**
+   * Git ref a new post's worktree forks from. Defaults to `origin/<defaultBranch>`. Override (e.g.
+   * the local branch) so worktrees carry studio changes not yet on main, to test them before they
+   * merge. Set from STUDIO_FORK_BASE.
+   */
+  forkBase?: string;
   /** Preview origin (defaults to the Astro dev server). */
   previewBase?: string;
   /** Prepare a freshly-created/reused worktree (e.g. symlink node_modules). Omitted in tests. */
@@ -326,6 +332,13 @@ export interface StudioStore extends Store {
   /** The worktree of the open post at `canonicalPath` (not necessarily active); null if not open.
    *  Resolves the owning worktree even during a switch race. */
   getWorktreeFor(canonicalPath: string): ActiveWorktree | null;
+  /**
+   * Worktree file backing the open post at `canonicalPath` (not necessarily the active one); null if
+   * it isn't open. The canonical-to-worktree companion to {@link getDocByWatchPath}: the LSP bridge
+   * rewrites a browser's `textDocument.uri` to the worktree path TS resolves against. Path-keyed so a
+   * tab-switch race can't misattribute a URI.
+   */
+  getWorktreeFilePath(canonicalPath: string): string | null;
   /** Absolute on-disk file the active post's watcher should follow; null if none. */
   getActiveWatchPath(): string | null;
   /**
@@ -456,12 +469,13 @@ export function createStore(deps: StoreDeps): StudioStore {
         }
       }
 
-      // Adopt local, then adopt remote-only (create a tracking branch), then fork fresh off the default.
+      // Adopt local, then adopt remote-only (create a tracking branch), then fork fresh off the base
+      // (forkBase override, else origin/<default>).
       const args = localExists
         ? ["worktree", "add", worktreePath, branch]
         : remoteExists
           ? ["worktree", "add", "--track", "-b", branch, worktreePath, `origin/${branch}`]
-          : ["worktree", "add", worktreePath, "-b", branch, `origin/${await defaultBranch()}`];
+          : ["worktree", "add", worktreePath, "-b", branch, deps.forkBase ?? `origin/${await defaultBranch()}`];
       const res = await git.git(args, { cwd: repoRoot, timeoutMs: 120_000 });
       if (res.code !== 0) {
         throw new Error(`git worktree add (${stem}) failed: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}`);
@@ -798,6 +812,11 @@ export function createStore(deps: StoreDeps): StudioStore {
     getWorktreeFor(canonicalPath) {
       const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
       return doc ? worktreeOf(doc) : null;
+    },
+
+    getWorktreeFilePath(canonicalPath) {
+      const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
+      return doc ? doc.worktreeFilePath : null;
     },
 
     async openPost(canonicalPath) {

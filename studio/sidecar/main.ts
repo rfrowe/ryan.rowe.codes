@@ -25,6 +25,9 @@ import { createStudioTools } from "../mcp/tools";
 import { createAgentHost } from "./agentHost";
 import { createMcpHttpServer } from "../mcp/httpServer";
 import { createServer } from "./server";
+import { createMdxLspServer } from "./lspServer";
+import { createLspBridge } from "./lspBridge";
+import { createLspWatcher } from "./lspWatcher";
 import type { StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
@@ -58,6 +61,9 @@ async function main(): Promise<void> {
     fs: nodeFs,
     git,
     repoRoot: REPO_ROOT,
+    // Fork new-post worktrees from origin/<default>; STUDIO_FORK_BASE overrides it (e.g. the local
+    // branch) so worktrees carry studio changes not yet on main, to test them before shipping.
+    forkBase: process.env.STUDIO_FORK_BASE || undefined,
     // Symlink node_modules into a freshly-created/reused worktree so Astro and the agent's tools run.
     prepareWorktree: linkNodeModules,
     // Rename a file/dir on disk (used by post.rename).
@@ -86,12 +92,29 @@ async function main(): Promise<void> {
   const astro = createAstroManager();
   await astro.stopStrayDaemons();
 
-  // The doc-sync watcher follows the active post's worktree file: created on the first activation
-  // (there may be no openable post at bootstrap) and retargeted on every switch.
+  // The MDX language server and its browser bridge. One long-lived child, restarted per `/lsp`
+  // connection for a clean `initialize`; the bridge rewrites the browser's canonical URIs to the
+  // active post's worktree so TS resolves against its tsconfig. Best-effort: if it can't start,
+  // `/lsp` is refused and the editor keeps its built-in completion sources.
+  const lspServer = createMdxLspServer({ repoRoot: REPO_ROOT });
+  const lspBridge = createLspBridge({
+    lsp: lspServer,
+    store,
+    repoRoot: REPO_ROOT,
+    tsdk: path.join(NODE_MODULES, "typescript", "lib"),
+  });
+  // Watch the active post's worktree source tree and relay changes to the language server as
+  // workspace/didChangeWatchedFiles, so out-of-editor edits (e.g. the agent modifying a component)
+  // aren't stranded behind the server's stale TS program (the browser client can't watch the fs).
+  const lspWatcher = createLspWatcher((changes) => lspBridge.notifyFilesChanged(changes));
+
+  // The doc-sync watcher follows the active post's worktree file. It's created on the first
+  // activation (there may be no openable post at bootstrap) and retargeted on every switch.
   let docSync: DocSync | null = null;
   store.onActiveChange((info) => {
     if (docSync) docSync.retarget(info.worktreeFilePath);
     else docSync = createDocSync(store, { filePath: info.worktreeFilePath });
+    lspWatcher.retarget(info.worktreePath);
     void astro.switchTo(info.worktreePath);
   });
 
@@ -126,7 +149,7 @@ async function main(): Promise<void> {
   const services: StudioServices = { store, agentHost, tools, ship, sessions };
 
   // ---- start faces ----
-  const web = createServer(services, { token, webPort: WEB_PORT });
+  const web = createServer(services, { token, webPort: WEB_PORT, lspConnect: (ws) => lspBridge.connect(ws) });
   await web.listen();
   const mcp = createMcpHttpServer(tools, { token, instructions: conventions });
 
@@ -141,7 +164,14 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (closing) return;
     closing = true;
-    await Promise.allSettled([docSync?.close() ?? Promise.resolve(), web.close(), mcp.close(), astro.close()]);
+    await Promise.allSettled([
+      docSync?.close() ?? Promise.resolve(),
+      lspWatcher.close(),
+      web.close(),
+      mcp.close(),
+      astro.close(),
+      lspServer.close(),
+    ]);
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

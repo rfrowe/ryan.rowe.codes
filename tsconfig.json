@@ -1,5 +1,8 @@
 {
   "extends": "astro/tsconfigs/strict",
+  "mdx": {
+    "plugins": [["remark-frontmatter", "yaml"], ["remark-gfm"], ["remark-math"]]
+  },
   "compilerOptions": {
     "paths": {
       "@components/*": [
