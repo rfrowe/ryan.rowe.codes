@@ -360,6 +360,14 @@ export interface StudioStore extends Store {
   /** The worktree of the open post at `canonicalPath` (not necessarily the active one); null if it
    *  isn't open. Lets a path-scoped consumer resolve the owning worktree even during a switch race. */
   getWorktreeFor(canonicalPath: string): ActiveWorktree | null;
+  /**
+   * The absolute on-disk worktree file backing the open post at `canonicalPath` (not necessarily the
+   * active one); null if it isn't open. The forward (canonical → worktree) companion to
+   * {@link getDocByWatchPath}: the LSP bridge uses it to rewrite a browser's canonical
+   * `textDocument.uri` to the worktree path TS resolves against. Path-keyed, not "active", so a
+   * tab-switch race can't misattribute an incoming URI.
+   */
+  getWorktreeFilePath(canonicalPath: string): string | null;
   /** Absolute on-disk file the active post's watcher should follow; null if none. */
   getActiveWatchPath(): string | null;
   /**
@@ -865,6 +873,11 @@ export function createStore(deps: StoreDeps): StudioStore {
     getWorktreeFor(canonicalPath) {
       const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
       return doc ? worktreeOf(doc) : null;
+    },
+
+    getWorktreeFilePath(canonicalPath) {
+      const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
+      return doc ? doc.worktreeFilePath : null;
     },
 
     async openPost(canonicalPath) {

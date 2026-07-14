@@ -28,6 +28,8 @@ import { createStudioTools } from "../mcp/tools";
 import { createAgentHost } from "./agentHost";
 import { createMcpHttpServer } from "../mcp/httpServer";
 import { createServer } from "./server";
+import { createMdxLspServer } from "./lspServer";
+import { createLspBridge } from "./lspBridge";
 import type { StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
@@ -90,6 +92,19 @@ async function main(): Promise<void> {
   const astro = createAstroManager();
   await astro.stopStrayDaemons();
 
+  // The MDX language server + its browser bridge (Phase 2). One long-lived child, spawned on the
+  // first `/lsp` connection and restarted per connection for a clean `initialize`; the bridge
+  // rewrites the browser's canonical URIs to the active post's worktree so TS resolves against the
+  // worktree's tsconfig + symlinked node_modules. Best-effort: if the child can't start, `/lsp` is
+  // refused and the editor keeps its Phase-1 completion sources.
+  const lspServer = createMdxLspServer({ repoRoot: REPO_ROOT });
+  const lspBridge = createLspBridge({
+    lsp: lspServer,
+    store,
+    repoRoot: REPO_ROOT,
+    tsdk: path.join(NODE_MODULES, "typescript", "lib"),
+  });
+
   // The doc-sync watcher follows the active post's worktree file. It's created on the first
   // activation (there may be no openable post at bootstrap) and retargeted on every switch.
   let docSync: DocSync | null = null;
@@ -130,7 +145,7 @@ async function main(): Promise<void> {
   const services: StudioServices = { store, agentHost, tools, ship, sessions };
 
   // ---- start faces ----
-  const web = createServer(services, { token, webPort: WEB_PORT });
+  const web = createServer(services, { token, webPort: WEB_PORT, lspConnect: (ws) => lspBridge.connect(ws) });
   await web.listen();
   const mcp = createMcpHttpServer(tools, { token, instructions: conventions });
 
@@ -145,7 +160,7 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (closing) return;
     closing = true;
-    await Promise.allSettled([docSync?.close() ?? Promise.resolve(), web.close(), mcp.close(), astro.close()]);
+    await Promise.allSettled([docSync?.close() ?? Promise.resolve(), web.close(), mcp.close(), astro.close(), lspServer.close()]);
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

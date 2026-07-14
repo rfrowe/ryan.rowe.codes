@@ -48,10 +48,16 @@ export interface StudioServer {
 export interface ServerOptions {
   token: string;
   webPort: number;
+  /**
+   * Attach a `/lsp` WebSocket to the MDX language-server bridge (Phase 2). Omitted when the LSP
+   * feature is unavailable, in which case `/lsp` upgrades are refused and the editor degrades to the
+   * Phase-1 completion sources.
+   */
+  lspConnect?: (ws: WebSocket) => void;
 }
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
-  const { token, webPort } = opts;
+  const { token, webPort, lspConnect } = opts;
   // The sidecar always injects the concretes; the frozen DI seams omit the studio-only
   // multi-doc/worktree and MCP-status accessors, so recover them here for the post and mcp paths.
   const store = services.store as StudioStore;
@@ -63,6 +69,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     });
   });
   const wss = new WebSocketServer({ noServer: true });
+  // A second noServer WS pool for the raw LSP JSON-RPC channel (`/lsp`), kept separate from the
+  // frozen ClientMessage/ServerMessage protocol carried by `wss`.
+  const lspWss = new WebSocketServer({ noServer: true });
 
   // ---- auth primitives ----
   function tokenOk(candidate: string | undefined): boolean {
@@ -194,6 +203,16 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     if (!hostOk(req) || !originOk(req) || !tokenOk(url.searchParams.get("token") ?? undefined)) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
+      return;
+    }
+    // The raw LSP JSON-RPC channel rides its own path, behind the same host/origin/token guard.
+    if (url.pathname === "/lsp") {
+      if (!lspConnect) {
+        socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      lspWss.handleUpgrade(req, socket, head, (ws) => lspConnect(ws));
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
@@ -513,7 +532,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     close() {
       return new Promise<void>((resolve) => {
         for (const client of wss.clients) client.terminate();
-        wss.close(() => http.close(() => resolve()));
+        for (const client of lspWss.clients) client.terminate();
+        lspWss.close(() => wss.close(() => http.close(() => resolve())));
       });
     },
   };
