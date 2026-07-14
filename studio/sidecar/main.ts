@@ -1,13 +1,10 @@
-// Sidecar bootstrap. Constructs every concrete service, wires them through the frozen DI
-// interfaces, and starts the sidecar's two faces: the web (REST and WS) server for the SPA and
-// the Studio MCP over StreamableHTTP for external clients.
+// Sidecar bootstrap. Constructs every concrete service, wires them through the frozen DI interfaces,
+// and starts the two faces: the web (REST and WS) server for the SPA and the Studio MCP over
+// StreamableHTTP for external clients.
 //
-// The sidecar owns the Astro dev server: each open post is a git worktree, and Astro's
-// dev daemon is project-scoped (its registry lives in <worktree>/.astro), so we run exactly
-// one daemon at a time on port 4321, restarting it in the active worktree on every active
-// change (open/create/switch/rename); a restart re-runs the [date]/[slug] getStaticPaths so a
-// newly-opened/created post's route exists (Astro memoizes it in dev; only a restart re-runs it).
-// Worktrees have no node_modules (gitignored), so each gets a symlink to the repo's before Astro runs.
+// The sidecar owns the Astro dev daemon. It's project-scoped (registry in <worktree>/.astro), so we
+// run exactly one at a time on port 4321, restarting it in the active worktree on every active
+// change; the restart re-runs getStaticPaths so a new post's route exists (dev memoizes it).
 //
 // Invoked by `npm run studio:sidecar` (the orchestrator injects STUDIO_TOKEN, and may pass the
 // target post via `--post <path>` / STUDIO_POST; otherwise the newest post is opened).
@@ -38,8 +35,7 @@ const NODE_MODULES = path.join(REPO_ROOT, "node_modules");
 const ASTRO_BIN_NAME = process.platform === "win32" ? "astro.cmd" : "astro";
 const WEB_PORT = 4319;
 const ASTRO_PORT = 4321;
-// How long to wait for a freshly-started Astro daemon to answer on ASTRO_PORT before declaring the
-// preview unavailable. Generous for a cold `astro dev` start.
+// How long to wait for a fresh Astro daemon to answer before declaring the preview unavailable.
 const ASTRO_HEALTH_TIMEOUT_MS = 30_000;
 
 async function main(): Promise<void> {
@@ -52,8 +48,8 @@ async function main(): Promise<void> {
   const postArg = readPostArg() ?? process.env.STUDIO_POST;
   const bootstrapPath = postArg ? path.resolve(REPO_ROOT, postArg) : await newestPost(BLOG_CONTENT_ROOT);
 
-  // Conventions briefing for the MCP `instructions` and the agent's appended system prompt: the
-  // blog-authoring skill body (frontmatter stripped) so it stays in sync with the skill.
+  // The blog-authoring skill body (frontmatter stripped), reused as the MCP `instructions` and the
+  // agent's appended system prompt so both stay in sync with the skill.
   const conventions = await loadSkillBody(path.join(REPO_ROOT, ".claude", "skills", "blog-authoring", "SKILL.md"));
 
   // ---- construct concretes ----
@@ -71,8 +67,8 @@ async function main(): Promise<void> {
     },
     // Stop the preview daemon in a worktree before post.delete removes it (see astro.stopServing).
     stopPreview: (worktreePath) => astro.stopServing(worktreePath),
-    // Recursively remove a leftover/husk worktree dir before ensureWorktree re-creates it (see
-    // ensureWorktree's self-heal comment for how a detached Astro daemon can leave one behind).
+    // Remove a leftover/husk worktree dir before ensureWorktree re-creates it (see its self-heal
+    // comment for how a detached Astro daemon leaves one behind).
     removePath: async (p) => {
       await rm(p, { recursive: true, force: true });
     },
@@ -90,8 +86,8 @@ async function main(): Promise<void> {
   const astro = createAstroManager();
   await astro.stopStrayDaemons();
 
-  // The doc-sync watcher follows the active post's worktree file. It's created on the first
-  // activation (there may be no openable post at bootstrap) and retargeted on every switch.
+  // The doc-sync watcher follows the active post's worktree file: created on the first activation
+  // (there may be no openable post at bootstrap) and retargeted on every switch.
   let docSync: DocSync | null = null;
   store.onActiveChange((info) => {
     if (docSync) docSync.retarget(info.worktreeFilePath);
@@ -107,8 +103,8 @@ async function main(): Promise<void> {
     // same store.subscribe fan-out the web server listens on.
     emit: (msg) => store.publish(msg),
     getEditorContext: () => store.getEditorContext(),
-    // Soft-lock the editor for the turn so the watcher classifies the agent's native writes as
-    // agent-origin (live-applied) rather than external (reload banner).
+    // Soft-lock the editor for the turn so the watcher treats the agent's writes as agent-origin
+    // (live-applied) rather than external (reload banner).
     onTurnStart: () => docSync?.dispatch({ type: "prompt.dispatch" }),
     onTurnEnd: () => docSync?.dispatch({ type: "agent.turn.end" }),
   });
@@ -150,9 +146,8 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
-  // A terminal close (e.g. the tab running the sidecar is closed) sends SIGHUP; handle it the same
-  // way so the Astro daemon is stopped gracefully instead of being left orphaned (see ensureWorktree's
-  // self-heal comment for what an orphaned daemon leaves behind).
+  // A terminal close sends SIGHUP; shut down the same way so the Astro daemon stops gracefully
+  // instead of being left orphaned.
   process.on("SIGHUP", () => void shutdown());
 }
 
@@ -163,8 +158,8 @@ async function linkNodeModules(worktreePath: string): Promise<void> {
   try {
     await symlink(NODE_MODULES, link, "dir");
   } catch (err) {
-    // A race (another activation created it) or a pre-existing entry is fine; anything else is
-    // logged but non-fatal, and Astro/agent tooling will simply fail more loudly if deps are missing.
+    // A race or pre-existing entry is fine; anything else is logged but non-fatal (Astro/agent
+    // tooling fails more loudly if deps are missing).
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
       console.error(`[sidecar] could not link node_modules into ${worktreePath}: ${(err as Error).message}`);
     }
@@ -172,15 +167,13 @@ async function linkNodeModules(worktreePath: string): Promise<void> {
 }
 
 /**
- * Owns the single Astro dev daemon. Astro's `dev --background` daemon is project-scoped (registry
- * in <cwd>/.astro), so `dev stop` must run with cwd = the worktree that owns it. We track the
- * current worktree and, on switch, stop the old daemon (freeing the port) then start a fresh one
- * in the new worktree, which re-runs getStaticPaths so the new post's route resolves.
+ * Owns the single Astro dev daemon. `dev stop` must run with cwd = the worktree that owns the daemon
+ * (registry in <cwd>/.astro), so we track the current worktree and, on switch, stop the old daemon
+ * then start a fresh one in the new worktree (which re-runs getStaticPaths for the new post's route).
  */
 function createAstroManager() {
   let current: string | null = null;
-  // Serialize all daemon ops: rapid tab switches must not race two `astro dev --background`
-  // onto the same port. Each switchTo/close chains after the previous op completes.
+  // Serialize daemon ops so rapid tab switches don't race two `astro dev` onto the same port.
   let queue: Promise<void> = Promise.resolve();
   const enqueue = (op: () => Promise<void>): Promise<void> => {
     queue = queue.then(op, op);
@@ -188,9 +181,8 @@ function createAstroManager() {
   };
 
   /**
-   * Stop any background daemon owning `worktreePath`. Async (spawn and await), never `spawnSync`: a
-   * synchronous stop on every active change blocks the Node event loop, freezing autosave and the
-   * agent stream. Best-effort: the outcome is ignored.
+   * Stop any background daemon owning `worktreePath`. Async, never `spawnSync`: a sync stop on every
+   * active change would block the event loop, freezing autosave and the agent stream. Best-effort.
    */
   async function stopAt(worktreePath: string): Promise<void> {
     const bin = path.join(worktreePath, "node_modules", ".bin", ASTRO_BIN_NAME);
@@ -211,10 +203,9 @@ function createAstroManager() {
     },
 
     /**
-     * (Re)start Astro in `worktreePath` on the fixed port; stops the previously-active daemon first.
-     * Only claims the worktree as `current` once the CLI launch succeeded (exit 0) and the daemon
-     * actually answers on ASTRO_PORT, so a failed bind can't silently leave the preview pointed at a
-     * stale/foreign server. On failure it logs and leaves the preview unavailable (no `current`).
+     * (Re)start Astro in `worktreePath` on the fixed port, stopping the previously-active daemon
+     * first. Only claims the worktree as `current` once the launch succeeded and the daemon actually
+     * answers, so a failed bind can't leave the preview pointed at a stale server. Logs on failure.
      */
     switchTo(worktreePath: string): Promise<void> {
       return enqueue(async () => {
@@ -228,7 +219,7 @@ function createAstroManager() {
           console.error(`[sidecar] astro binary missing in ${worktreePath}; preview unavailable`);
           return;
         }
-        // `astro dev --background` forks a daemon and the CLI exits 0 on a successful launch.
+        // `astro dev --background` forks a daemon and exits 0 on a successful launch.
         const launch = await runToExit(bin, ["dev", "--background", "--port", String(ASTRO_PORT)], worktreePath);
         if (launch.code !== 0) {
           current = null;
@@ -239,15 +230,13 @@ function createAstroManager() {
           );
           return;
         }
-        // Exit 0 only means the daemon forked; wait until it actually serves the fixed port before
-        // treating the preview as live (and before claiming this worktree). If it never answers, the
-        // port may be held by another server, so surface that instead of pointing preview at it.
+        // Exit 0 only means the daemon forked; wait until it actually serves the port before
+        // treating the preview as live. If it never answers, the port may be held by another server.
         const healthy = await waitForHttp(`http://localhost:${ASTRO_PORT}/`, ASTRO_HEALTH_TIMEOUT_MS);
         if (!healthy) {
-          // The CLI forked a daemon (exit 0) that simply hasn't answered in time. Stop it before
-          // dropping the claim: a slow cold start that later binds ASTRO_PORT would otherwise become
-          // an orphan no future switchTo can stop (current is null), pointing every later preview at
-          // the wrong post's server until the sidecar restarts.
+          // Stop the forked daemon before dropping the claim: a slow cold start that later binds the
+          // port would otherwise orphan (current is null, so no switchTo can stop it), pointing every
+          // later preview at the wrong post until the sidecar restarts.
           await stopAt(worktreePath);
           current = null;
           console.error(
@@ -262,10 +251,9 @@ function createAstroManager() {
     },
 
     /**
-     * Stop the daemon serving `worktreePath` and await it (queued behind any in-flight switch). If
-     * that worktree is the current one, drop the claim too, so a subsequent switchTo won't try to
-     * `dev stop` a directory that's about to be removed. Used by the store before a delete removes
-     * the worktree, so no daemon is left orphaned holding the fixed port.
+     * Stop the daemon serving `worktreePath` and await it (queued behind any in-flight switch),
+     * dropping the claim if it's current. Used by the store before a delete removes the worktree, so
+     * no daemon is left orphaned holding the port.
      */
     stopServing(worktreePath: string): Promise<void> {
       return enqueue(async () => {

@@ -1,20 +1,18 @@
-// Ship-as-PR flow. Studio-run, never the agent. Each open post lives in its own git
-// worktree already on branch `blog/<slug>` (forked from origin/<default>), so there is no
-// branch-from-base / checkout dance: review the diff, stage the post precisely (explicit
-// blog paths, never `git add -A`), commit with the pinned identity, push, and open a PR.
-// It opens the PR only, never merges, and only behind one non-negotiable gate: explicit
-// human confirmation. Every git/gh call runs with cwd = the active post's worktree.
+// Ship-as-PR flow. Studio-run, never the agent. Each open post already lives in its own git
+// worktree on branch `blog/<slug>` (forked from origin/<default>), so there's no checkout dance:
+// stage the post precisely (never `git add -A`), commit with the pinned identity, push, open a PR.
+// Opens the PR only, never merges, and only behind an explicit human confirm. Every git/gh call
+// runs with cwd = the active post's worktree.
 
 import type { GitRunner } from "../shared/seams";
 import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
 
-// The ship flow only ever stages paths under this dir (relative to the worktree root).
+// Ship only ever stages paths under this dir (relative to the worktree root).
 const BLOG_CONTENT_DIR = "src/content/blog";
 
-// Commit identity is pinned (CLAUDE.md): every commit is authored by Ryan Rowe,
-// independent of whatever local git config happens to be set.
+// Pinned commit identity (CLAUDE.md), independent of local git config.
 const PINNED_NAME = "Ryan Rowe";
 const PINNED_EMAIL = "ryan@rowe.codes";
 const PINNED_IDENTITY = `${PINNED_NAME} <${PINNED_EMAIL}>`;
@@ -26,10 +24,8 @@ export interface ShipDeps {
   git: GitRunner;
   /** The active post's worktree (branch/paths); ship runs entirely inside it. */
   getActiveWorktree: () => ActiveWorktree | null;
-  /**
-   * The active post's frontmatter/filename name-sync status. Ship refuses a desynced post (its live
-   * URL wouldn't match where it deploys); the author resolves it via Complete-rename or Revert first.
-   */
+  /** Frontmatter/filename name-sync. Ship refuses a desynced post (its live URL wouldn't match
+   *  where it deploys); the author resolves it via Complete-rename or Revert first. */
   getActiveNameSync: () => { synced: boolean; expectedStem?: string; currentStem?: string };
 }
 
@@ -42,8 +38,8 @@ export function createShipService(deps: ShipDeps): ShipService {
     if (!wt) return { status: "", diff: "" };
     const cwd = wt.worktreePath;
     const pathspec = scope === "post" ? ["--", BLOG_CONTENT_DIR] : [];
-    // `--untracked-files=all` lists new files individually (not collapsed dirs) so each
-    // can be diffed below; `core.quotePath=false` keeps non-ASCII paths UTF-8, not octal.
+    // `--untracked-files=all` lists new files individually so each can be diffed below;
+    // `core.quotePath=false` keeps non-ASCII paths UTF-8, not octal.
     const status = await git.git(
       ["-c", "core.quotePath=false", "status", "--short", "--untracked-files=all", ...pathspec],
       { cwd },
@@ -52,14 +48,12 @@ export function createShipService(deps: ShipDeps): ShipService {
     const staged = await git.git(["diff", "--staged", ...pathspec], { cwd });
 
     const parts = [unstaged.stdout, staged.stdout];
-    // `git diff` / `git diff --staged` both omit untracked files, so a brand-new post
-    // would show an empty diff in the panel yet still get committed. Synthesize a diff
-    // for each untracked file in scope so the reviewer sees it before it's shipped.
+    // `git diff` omits untracked files, so a brand-new post would show an empty diff yet still
+    // get committed. Synthesize an add-diff for each untracked file in scope so the reviewer sees it.
     for (const path of untrackedPaths(status.stdout)) {
       if (scope === "post" && !underBlog(path)) continue;
       const added = await git.git(["diff", "--no-index", "--", "/dev/null", path], { cwd });
-      // `--no-index` exits non-zero when the files differ (always, vs /dev/null); the
-      // diff we want is on stdout regardless, so the exit code is intentionally ignored.
+      // `--no-index` always exits non-zero vs /dev/null; the diff is on stdout regardless.
       if (added.stdout.trim().length > 0) parts.push(added.stdout);
     }
     const combined = parts.filter((s) => s.trim().length > 0).join("\n");
@@ -71,15 +65,13 @@ export function createShipService(deps: ShipDeps): ShipService {
     if (!input.confirm) {
       return { ok: false, error: "confirmation required" };
     }
-    // The PR branch is the worktree's own branch (blog/<date>_<slug>); `input.branch` from the
-    // SPA is ignored; the branch is the post's identity, not a free-text field.
+    // The PR branch is the worktree's own branch; `input.branch` from the SPA is ignored.
     const wt = getActiveWorktree();
     if (!wt) {
       return { ok: false, error: "no active post to ship" };
     }
-    // Refuse a frontmatter/filename desync before any git/gh side effect: the post's live URL
-    // (from its frontmatter slug/date) wouldn't match where it deploys (its filename/branch). The
-    // author resolves it first via the editor banner's Complete-rename or Revert.
+    // Refuse a frontmatter/filename desync before any side effect: the post's live URL wouldn't
+    // match where it deploys. The author resolves it first via Complete-rename or Revert.
     const nameSync = getActiveNameSync();
     if (!nameSync.synced) {
       return {
@@ -93,8 +85,7 @@ export function createShipService(deps: ShipDeps): ShipService {
     const cwd = wt.worktreePath;
 
     try {
-      // Integrity check: the worktree must be on its own isolation branch. This is where the
-      // post's edits live; a mismatch means we're not in the worktree we think we are.
+      // The worktree must be on its own isolation branch; a mismatch means we're not where we think.
       const headRes = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
       if (headRes.code !== 0) {
         return fail("git rev-parse --abbrev-ref HEAD", headRes.stderr, headRes.code);
@@ -107,8 +98,8 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Derive the staging set and enforce the scope. `core.quotePath=false` keeps non-ASCII
-      // paths (e.g. an accented slug) UTF-8 so `git add -- <path>` matches.
+      // Derive the staging set and enforce scope. `core.quotePath=false` keeps non-ASCII paths
+      // UTF-8 so `git add -- <path>` matches.
       const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd });
       if (statusRes.code !== 0) {
         return fail("git status", statusRes.stderr, statusRes.code);
@@ -117,8 +108,8 @@ export function createShipService(deps: ShipDeps): ShipService {
       const blogPaths = changed.filter(underBlog);
       const outside = changed.filter((p) => !underBlog(p));
 
-      // `all` still never runs `git add -A`; it refuses when there are changes outside the
-      // blog tree that it would otherwise silently drop. `post` simply ignores them.
+      // `all` still never runs `git add -A`; it refuses when there are changes outside the blog
+      // tree that it would otherwise silently drop. `post` just ignores them.
       if (input.scope === "all" && outside.length > 0) {
         return {
           ok: false,
@@ -132,7 +123,7 @@ export function createShipService(deps: ShipDeps): ShipService {
         return { ok: false, error: `no changes under ${BLOG_CONTENT_DIR} to ship` };
       }
 
-      // Default base branch (repo's real default, not an assumption).
+      // The repo's real default base branch, not an assumption.
       const baseRes = await git.gh(
         ["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
         { cwd, timeoutMs: NETWORK_TIMEOUT_MS },
@@ -151,7 +142,7 @@ export function createShipService(deps: ShipDeps): ShipService {
         return fail("git add", addRes.stderr, addRes.code);
       }
 
-      // Commit with the pinned identity via `-c` overrides (does not depend on config).
+      // Commit with the pinned identity via `-c` overrides.
       const commitArgs = [
         "-c",
         `user.name=${PINNED_NAME}`,
@@ -181,9 +172,8 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Scope assertion: the branch's diff vs the base must contain only the post. The worktree
-      // was forked from origin/<base>, so this range is exactly our post commit; it catches a
-      // worktree that somehow carries unrelated commits before anything is pushed.
+      // The branch's diff vs base must contain only the post. Catches a worktree that somehow
+      // carries unrelated commits before anything is pushed.
       const rangeRes = await git.git(
         ["-c", "core.quotePath=false", "diff", "--name-only", `origin/${base}...HEAD`],
         { cwd },
@@ -206,9 +196,8 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Push the worktree's own branch as-is: the PR branch is `blog/<date>_<slug>` (blog-prefixed
-      // and slug-based, date-qualified so two posts sharing a slug across dates don't collide on one
-      // branch). Partial failure here = committed locally, nothing on the remote yet.
+      // Push the worktree's own branch as-is. Partial failure here = committed locally, nothing on
+      // the remote yet.
       const remoteBranch = wt.branch;
       try {
         const pushRes = await git.git(["push", "-u", "origin", remoteBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
@@ -263,8 +252,7 @@ function parseStatusPaths(porcelain: string): string[] {
     // Renames/copies render as "orig -> new"; the new path is what gets staged.
     const arrow = p.indexOf(" -> ");
     if (arrow !== -1) p = p.slice(arrow + 4);
-    // The caller passes `-c core.quotePath=false`, so non-ASCII paths arrive UTF-8 and
-    // unquoted; only genuinely unusual paths (control chars) stay quoted. Unwrap that.
+    // With `core.quotePath=false` only control-char paths stay quoted; unwrap those.
     if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
     paths.push(p);
   }
