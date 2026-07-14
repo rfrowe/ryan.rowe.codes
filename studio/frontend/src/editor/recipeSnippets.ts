@@ -1,0 +1,80 @@
+// CodeMirror completion source offering the blog-authoring recipe snippets (the SKILL.md
+// vocabulary): static figures, interactive-island import + client:load / client:only="react"
+// usage, KaTeX inline/display/aligned math, fenced code, and the client-rendered CodeBlock island.
+// Each is a `snippetCompletion` with tab stops. Keyed to a memorable label so typing e.g. "figure"
+// or "math" filters to it.
+//
+// Gated to the MDX body: the source returns null while the caret is inside the leading `---`…`---`
+// frontmatter block (that region belongs to frontmatterCompletionSource). Templates are plain
+// strings (not JS template literals), so their `${…}` sequences reach snippetCompletion literally
+// as tab stops rather than being interpolated at build time.
+
+import { snippetCompletion, type Completion, type CompletionSource } from "@codemirror/autocomplete";
+
+/** Offset just past the leading `---`…`---` block, or 0 when the source has no frontmatter. */
+function frontmatterEnd(doc: string): number {
+  const bomOffset = doc.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const open = /^---[ \t]*\r?\n/.exec(doc.slice(bomOffset));
+  if (!open) return 0;
+  const from = bomOffset + open[0].length;
+  const close = /\r?\n---[ \t]*(?:\r?\n|$)/.exec(doc.slice(from));
+  return close ? from + close.index + close[0].length : doc.length;
+}
+
+const snip = (template: string, label: string, detail: string, info: string): Completion =>
+  snippetCompletion(template, { label, detail, info, type: "keyword" });
+
+const RECIPES: Completion[] = [
+  snip(
+    "![${alt text}](./${image.webp})\n*${caption}*",
+    "figure",
+    "image + italic caption",
+    "Static figure: a committed .webp next to the post, embedded with real alt text and an italic caption line — the blog's figure convention.",
+  ),
+  snip(
+    "import ${Component} from './${component}'",
+    "import island",
+    "co-located component import",
+    "Import a co-located interactive island by relative path with no extension (folder-post convention).",
+  ),
+  snip(
+    "<${Component} client:load />",
+    "island (client:load)",
+    "hydrate a server-rendered island",
+    "client:load — for an island that renders on the server and just needs to hydrate (e.g. CodeBlock). Prefer this unless the component touches window/canvas at import time.",
+  ),
+  snip(
+    '<${Component} client:only="react" />',
+    "island (client:only)",
+    "client-only island",
+    'client:only="react" — for an island that touches window/canvas at import time (e.g. a p5 renderer) and would crash the static build if imported eagerly.',
+  ),
+  snip("$${expr}$", "math (inline)", "inline KaTeX", "Inline math via remark-math / rehype-katex."),
+  snip("$$\n${expr}\n$$", "math (display)", "display KaTeX", "Display math block via remark-math / rehype-katex."),
+  snip(
+    "$$\n\\begin{align*}\n${line} \\\\\n\\end{align*}\n$$",
+    "math (align)",
+    "multi-line aligned KaTeX",
+    "Multi-line aligned display math (\\begin{align*} … \\end{align*}).",
+  ),
+  snip(
+    "```${language}\n${code}\n```",
+    "code (fenced)",
+    "highlighted fenced block",
+    "Fenced code block, highlighted at build time by astro-expressive-code — just tag the language.",
+  ),
+  snip(
+    "<CodeBlock language='${language}' source={${props.source}} client:load />",
+    "CodeBlock island",
+    "client-rendered raw source",
+    "The client-rendered CodeBlock island — use only when the raw source must survive verbatim in the static output (as in the hello-world post).",
+  ),
+];
+
+export const recipeSnippetSource: CompletionSource = (context) => {
+  const doc = context.state.doc.toString();
+  if (context.pos < frontmatterEnd(doc)) return null; // the frontmatter region isn't ours
+  const word = context.matchBefore(/[A-Za-z][\w-]*/);
+  if (!word && !context.explicit) return null; // don't surface on every keystroke with no prefix
+  return { from: word ? word.from : context.pos, options: RECIPES, validFor: /^[\w-]*$/ };
+};

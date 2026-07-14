@@ -10,6 +10,8 @@ import { basicSetup } from "codemirror";
 import type { DocRev, Range } from "../../shared/types";
 import type { PromptContext, PutDocResponse } from "../../shared/protocol";
 import { putDoc } from "./api";
+import { frontmatterCompletionSource } from "./editor/frontmatterCompletion";
+import { recipeSnippetSource } from "./editor/recipeSnippets";
 
 /** Imperative handle so the app can flush pending autosave before dispatching a prompt. */
 export interface EditorHandle {
@@ -276,9 +278,16 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     const parent = hostRef.current;
     if (!parent) return;
 
+    // One markdown instance, so the completion sources register against the same language whose
+    // data basicSetup's autocompletion() reads. Registering via language data (not
+    // autocompletion({override})) lets these compose with each other and with the Phase 3 LSP
+    // plugin's own language-data source — an `override` would suppress all of them.
+    const md = markdown();
     const extensions = [
       basicSetup,
-      markdown(),
+      md,
+      md.language.data.of({ autocomplete: frontmatterCompletionSource }),
+      md.language.data.of({ autocomplete: recipeSnippetSource }),
       EditorView.lineWrapping,
       Prec.highest(
         keymap.of([
