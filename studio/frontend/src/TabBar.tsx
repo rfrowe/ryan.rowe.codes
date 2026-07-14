@@ -21,6 +21,14 @@ export interface StackComponent {
   endpoint?: string;
 }
 
+/** Human words for the stack states; the green dot alone conveys "ok" so only the others are shown. */
+const STATE_WORD: Record<StackComponent["status"], string> = {
+  ok: "ok",
+  connecting: "connecting",
+  down: "down",
+  disabled: "off",
+};
+
 interface TabBarProps {
   tabs: TabDescriptor[];
   activePath: string | null;
@@ -190,10 +198,17 @@ export function TabBar({
         <div className="tabbar__statuspop" role="tooltip">
           <div className="statuspop__title">Stack</div>
           {stackStatus.map((c) => (
-            <div className="statuspop__row" key={c.label}>
+            <div
+              className="statuspop__row"
+              key={c.label}
+              title={`${c.label}: ${STATE_WORD[c.status]}${c.endpoint ? ` · ${c.endpoint}` : ""}`}
+            >
               <span className={`statuspop__dot statuspop__dot--${c.status}`} aria-hidden="true" />
               <span className="statuspop__label">{c.label}</span>
-              <span className="statuspop__state">{c.status}</span>
+              {/* The dot already conveys "ok"; only spell out abnormal states. */}
+              {c.status !== "ok" && (
+                <span className={`statuspop__state statuspop__state--${c.status}`}>{STATE_WORD[c.status]}</span>
+              )}
               {c.endpoint && <span className="statuspop__endpoint">{c.endpoint}</span>}
             </div>
           ))}
