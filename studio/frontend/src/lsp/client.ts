@@ -9,9 +9,26 @@
 import { LSPClient, hoverTooltips, serverCompletion, signatureHelp } from "@codemirror/lsp-client";
 import { STUDIO_TOKEN } from "../config";
 import { isMockEnabled } from "../mockServer";
-import { LspTransport } from "./transport";
+import { LspTransport, type LspTransportStatus } from "./transport";
 
 let cached: LSPClient | null | undefined;
+
+/** LSP status for the stack-status popover. "disabled" = no client (mock / no launch token). */
+export type LspStatus = LspTransportStatus | "disabled";
+let lspStatus: LspStatus = "disabled";
+const lspStatusListeners = new Set<(status: LspStatus) => void>();
+
+function setLspStatus(status: LspStatus): void {
+  lspStatus = status;
+  for (const l of [...lspStatusListeners]) l(status);
+}
+
+/** Subscribe to LSP connection status; fires immediately with the current value. Returns unsubscribe. */
+export function onLspStatus(cb: (status: LspStatus) => void): () => void {
+  lspStatusListeners.add(cb);
+  cb(lspStatus);
+  return () => lspStatusListeners.delete(cb);
+}
 
 export function getLspClient(): LSPClient | null {
   if (cached !== undefined) return cached;
@@ -28,6 +45,7 @@ export function getLspClient(): LSPClient | null {
     // definition/references/rename keymaps are deliberately omitted (deferred to Phase 4).
     extensions: [serverCompletion(), hoverTooltips(), signatureHelp()],
   });
+  transport.onStatus(setLspStatus);
   // The sidecar bridge spawns a fresh, un-initialized language server per WS connection, so a
   // transparent reconnect must re-run the initialize handshake against it.
   transport.onReopen(() => {

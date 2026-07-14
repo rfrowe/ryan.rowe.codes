@@ -13,10 +13,20 @@ export interface TabDescriptor {
   title: string;
 }
 
+/** One row in the stack-status popover shown when hovering the connection dot. */
+export interface StackComponent {
+  label: string;
+  status: "ok" | "connecting" | "down" | "disabled";
+  /** Loopback endpoint, shown in a faded monospace font (e.g. "127.0.0.1:4319"). */
+  endpoint?: string;
+}
+
 interface TabBarProps {
   tabs: TabDescriptor[];
   activePath: string | null;
   status: SocketStatus;
+  /** Per-component stack health (sidecar, LSP, preview, MCP…) for the connection-dot popover. */
+  stackStatus: StackComponent[];
   /** Canonical paths of open posts that are drafts (unshipped work); drives the tab dot and
    *  gates "Delete draft…" in the right-click menu. */
   dirtyPaths: Set<string>;
@@ -32,6 +42,7 @@ export function TabBar({
   tabs,
   activePath,
   status,
+  stackStatus,
   dirtyPaths,
   onSelect,
   onClose,
@@ -174,12 +185,20 @@ export function TabBar({
       </div>
 
       <div className="tabbar__spacer" />
-      <span
-        className={`tabbar__conn tabbar__conn--${status}`}
-        role="status"
-        aria-label={`Sidecar ${status}`}
-        title={`sidecar: ${status}`}
-      />
+      <div className="tabbar__status" tabIndex={0} role="status" aria-label={`Stack status — sidecar ${status}`}>
+        <span className={`tabbar__conn tabbar__conn--${status}`} aria-hidden="true" />
+        <div className="tabbar__statuspop" role="tooltip">
+          <div className="statuspop__title">Stack</div>
+          {stackStatus.map((c) => (
+            <div className="statuspop__row" key={c.label}>
+              <span className={`statuspop__dot statuspop__dot--${c.status}`} aria-hidden="true" />
+              <span className="statuspop__label">{c.label}</span>
+              <span className="statuspop__state">{c.status}</span>
+              {c.endpoint && <span className="statuspop__endpoint">{c.endpoint}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
 
       {menu && (
         <div

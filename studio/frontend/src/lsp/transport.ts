@@ -19,11 +19,16 @@ function lspWsUrl(): string {
   return STUDIO_TOKEN ? `${base}?token=${encodeURIComponent(STUDIO_TOKEN)}` : base;
 }
 
+/** Connection state of the LSP transport, surfaced to the stack-status popover. */
+export type LspTransportStatus = "connecting" | "open" | "closed";
+
 export class LspTransport implements Transport {
   private ws: WebSocket | null = null;
   private readonly handlers = new Set<(value: string) => void>();
   /** Fired on every reopen *after* the first, so the client can re-`initialize` a fresh server. */
   private readonly reopenHandlers = new Set<() => void>();
+  private readonly statusHandlers = new Set<(status: LspTransportStatus) => void>();
+  private status: LspTransportStatus = "connecting";
   private queued: string[] = [];
   private opened = false;
   private disposed = false;
@@ -32,6 +37,7 @@ export class LspTransport implements Transport {
 
   connect(): void {
     if (this.disposed) return;
+    this.setStatus("connecting");
     let ws: WebSocket;
     try {
       ws = new WebSocket(lspWsUrl());
@@ -44,6 +50,7 @@ export class LspTransport implements Transport {
       this.backoff = INITIAL_BACKOFF_MS;
       for (const msg of this.queued) ws.send(msg);
       this.queued = [];
+      this.setStatus("open");
       if (this.opened) for (const h of [...this.reopenHandlers]) h();
       this.opened = true;
     };
@@ -53,12 +60,25 @@ export class LspTransport implements Transport {
     };
     ws.onclose = (ev: CloseEvent) => {
       if (this.ws === ws) this.ws = null;
+      this.setStatus("closed");
       // 4000 = the sidecar superseded this socket with a newer tab's connection; going dormant (no
       // reconnect) is what prevents two tabs from ping-ponging the single LSP session.
       if (ev.code === SUPERSEDED_CODE) return;
       this.scheduleReconnect();
     };
     ws.onerror = () => ws.close();
+  }
+
+  /** Subscribe to connection-state changes; fires immediately with the current status. */
+  onStatus(handler: (status: LspTransportStatus) => void): void {
+    this.statusHandlers.add(handler);
+    handler(this.status);
+  }
+
+  private setStatus(status: LspTransportStatus): void {
+    if (this.status === status) return;
+    this.status = status;
+    for (const h of [...this.statusHandlers]) h(status);
   }
 
   // ---- Transport ----

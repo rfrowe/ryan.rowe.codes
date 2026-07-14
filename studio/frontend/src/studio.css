@@ -508,6 +508,83 @@ body {
   box-shadow: 0 0 0 3px rgba(240, 115, 106, 0.14);
 }
 
+/* Connection dot + its stack-status popover (hover / focus) at the far right of the tab bar. */
+.tabbar__status {
+  position: relative;
+  align-self: center;
+  display: flex;
+  outline: none;
+}
+.tabbar__status .tabbar__conn {
+  margin-right: 14px;
+  cursor: default;
+}
+.tabbar__statuspop {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 8px;
+  margin-top: 8px;
+  z-index: 60;
+  min-width: 250px;
+  padding: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+.tabbar__status:hover .tabbar__statuspop,
+.tabbar__status:focus-visible .tabbar__statuspop,
+.tabbar__status:focus-within .tabbar__statuspop {
+  display: block;
+}
+.statuspop__title {
+  padding: 2px 8px 6px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+}
+.statuspop__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.statuspop__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--fg-faint);
+}
+.statuspop__dot--ok {
+  background: var(--ok);
+}
+.statuspop__dot--connecting {
+  background: var(--warn);
+}
+.statuspop__dot--down {
+  background: var(--danger);
+}
+.statuspop__dot--disabled {
+  background: var(--fg-faint);
+}
+.statuspop__label {
+  color: var(--fg);
+}
+.statuspop__state {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.statuspop__endpoint {
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
 /* ---- editor ---- */
 .editor {
   position: relative;
