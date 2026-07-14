@@ -12,7 +12,7 @@ import { createStore, type ActiveChangeInfo } from "./store";
 
 const REPO = "/repo";
 const BLOG = `${REPO}/src/content/blog`;
-const WT = `${REPO}/.claude/worktrees/blog`;
+const WT = `${REPO}/.worktrees/blog`;
 
 // Worktrees are keyed by the date-qualified stem, so same-slug/different-date posts don't collide.
 const SKYLINE_CANON = `${BLOG}/2026-07-10_aligning-a-skyline.mdx`;
@@ -196,7 +196,7 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
   return { git, lines: () => calls.map((c) => `${c.bin} ${c.line}`) };
 }
 
-function newStore(seed: Record<string, string> = {}, cfg: GitConfig = {}) {
+function newStore(seed: Record<string, string> = {}, cfg: GitConfig = {}, sessionBranch = "main") {
   const fs = makeFs(seed);
   const { git, lines } = makeGit(fs, cfg);
   // Records which worktrees stopPreview stopped, plus a snapshot of the git commands at that
@@ -210,6 +210,7 @@ function newStore(seed: Record<string, string> = {}, cfg: GitConfig = {}) {
     fs,
     git,
     repoRoot: REPO,
+    sessionBranch,
     defaultBranch: "main",
     prepareWorktree: async () => {},
     movePath: async (from, to) => movePrefix(fs, from, to),
@@ -240,13 +241,13 @@ function newStore(seed: Record<string, string> = {}, cfg: GitConfig = {}) {
 }
 
 describe("store.openPost (existing post)", () => {
-  it("ensures a worktree off origin/default, loads the file, and announces the switch", async () => {
+  it("ensures a worktree off the session branch, loads the file, and announces the switch", async () => {
     const { store, lines, messages, activations } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
     const active = await store.openPost(SKYLINE_CANON);
 
     expect(active).toEqual({ path: SKYLINE_CANON, text: SKYLINE, rev: { n: 1, hash: sha256Hex(SKYLINE) } });
-    // A fresh worktree is added off origin/main on branch blog/<stem>.
-    expect(lines()).toContain("git worktree add /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline -b blog/2026-07-10_aligning-a-skyline origin/main");
+    // A fresh worktree is added off the local session branch (main) on branch blog/<stem>.
+    expect(lines()).toContain("git worktree add /repo/.worktrees/blog/2026-07-10_aligning-a-skyline -b blog/2026-07-10_aligning-a-skyline main");
 
     expect(messages.some((m) => m.type === "file.changed" && m.origin === "external" && m.path === SKYLINE_CANON)).toBe(true);
     expect(messages.some((m) => m.type === "active" && m.path === SKYLINE_CANON && m.title === "Aligning a Skyline")).toBe(true);
@@ -288,7 +289,7 @@ describe("store.openPost (existing post)", () => {
     await expect(store.openPost(`${REPO}/etc/passwd`)).rejects.toThrow(/blog content root/);
   });
 
-  it("throws a clear error when the post is not present in its worktree (not on origin/default)", async () => {
+  it("throws a clear error when the post is not present in its worktree (not on the session branch)", async () => {
     const { store } = newStore(); // nothing seeded → the worktree fork lacks the file
     await expect(store.openPost(SKYLINE_CANON)).rejects.toThrow(/not found in its worktree/);
   });
@@ -320,7 +321,7 @@ describe("ensureWorktree self-heals a leftover (husk) directory", () => {
     expect(lines()).toContain(`git worktree add ${WTP} ${BRANCH}`);
   });
 
-  it("removes the whole dir and re-forks from origin when there is no branch to adopt", async () => {
+  it("removes the whole dir and re-forks from the session branch when there is no branch to adopt", async () => {
     const { store, lines, removedPaths } = newStore(
       { [WTP]: "dir", [`${WTP}/.astro`]: "cache" },
       // No branch means nothing was ever checked out here; `originFiles` stands in for the fork.
@@ -329,7 +330,7 @@ describe("ensureWorktree self-heals a leftover (husk) directory", () => {
     await store.openPost(SKYLINE_CANON);
 
     expect(removedPaths()).toContain(WTP);
-    expect(lines()).toContain(`git worktree add ${WTP} -b ${BRANCH} origin/main`);
+    expect(lines()).toContain(`git worktree add ${WTP} -b ${BRANCH} main`);
   });
 });
 
@@ -370,6 +371,29 @@ describe("store.createPost", () => {
     if (!result.ok) expect(result.error).toMatch(/invalid frontmatter/);
     expect(fs.store.size).toBe(0);
     expect(lines().some((l) => l.startsWith("git worktree add"))).toBe(false);
+  });
+
+  it("namespaces the branch and worktree under the sanitized session branch when non-primary", async () => {
+    // Session branch feat/x differs from the default (main), so posts fork off the local feat/x tip
+    // and live under a feat-x-prefixed branch and worktree, keeping a non-primary studio's drafts
+    // from colliding with the primary session's blog/<stem> namespace.
+    const { store, fs } = newStore({}, {}, "feat/x");
+    const result = await store.createPost(INPUT);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const WT_X = `${REPO}/.worktrees/feat-x/blog`;
+    expect(store.getActive()?.branch).toBe("feat-x/blog/2026-07-10_aligning-a-skyline");
+    expect(fs.store.get(`${WT_X}/2026-07-10_aligning-a-skyline/src/content/blog/2026-07-10_aligning-a-skyline.mdx`)).toBeDefined();
+  });
+
+  it("forks a non-primary post's worktree off the local session branch under the prefixed name", async () => {
+    const { store, lines } = newStore({}, {}, "feat/x");
+    await store.createPost(INPUT);
+    expect(lines()).toContain(
+      "git worktree add /repo/.worktrees/feat-x/blog/2026-07-10_aligning-a-skyline " +
+        "-b feat-x/blog/2026-07-10_aligning-a-skyline feat/x",
+    );
   });
 });
 
@@ -529,15 +553,15 @@ describe("store.renamePost", () => {
     });
     const activeAt = rename.findIndex((m) => m.type === "active" && m.path === newCanon);
     expect(renamedAt).toBeLessThan(activeAt);
-    expect(lines()).toContain("git -C /repo/.claude/worktrees/blog/2022-03-11_hello branch -m blog/2022-03-11_goodbye");
+    expect(lines()).toContain("git -C /repo/.worktrees/blog/2022-03-11_hello branch -m blog/2022-03-11_goodbye");
     // A tracked post is renamed via `git mv`, so git's index records a rename (not a delete+add).
     expect(lines()).toContain(
-      "git -C /repo/.claude/worktrees/blog/2022-03-11_hello mv " +
-        "/repo/.claude/worktrees/blog/2022-03-11_hello/src/content/blog/2022-03-11_hello.mdx " +
-        "/repo/.claude/worktrees/blog/2022-03-11_hello/src/content/blog/2022-03-11_goodbye.mdx",
+      "git -C /repo/.worktrees/blog/2022-03-11_hello mv " +
+        "/repo/.worktrees/blog/2022-03-11_hello/src/content/blog/2022-03-11_hello.mdx " +
+        "/repo/.worktrees/blog/2022-03-11_hello/src/content/blog/2022-03-11_goodbye.mdx",
     );
     expect(lines()).toContain(
-      "git worktree move /repo/.claude/worktrees/blog/2022-03-11_hello /repo/.claude/worktrees/blog/2022-03-11_goodbye",
+      "git worktree move /repo/.worktrees/blog/2022-03-11_hello /repo/.worktrees/blog/2022-03-11_goodbye",
     );
     // The file moved and its frontmatter slug now matches the new slug.
     expect(fs.store.get(newWtFile)).toContain("slug: goodbye");
@@ -608,8 +632,8 @@ describe("store worktree keying (same slug, different dates)", () => {
     });
 
     // Two distinct worktrees and branches, despite the shared slug.
-    expect(lines()).toContain("git worktree add /repo/.claude/worktrees/blog/2026-07-10_hello -b blog/2026-07-10_hello origin/main");
-    expect(lines()).toContain("git worktree add /repo/.claude/worktrees/blog/2022-03-11_hello -b blog/2022-03-11_hello origin/main");
+    expect(lines()).toContain("git worktree add /repo/.worktrees/blog/2026-07-10_hello -b blog/2026-07-10_hello main");
+    expect(lines()).toContain("git worktree add /repo/.worktrees/blog/2022-03-11_hello -b blog/2022-03-11_hello main");
 
     // Editing one post's worktree file leaves the other's on-disk bytes untouched (no cross-write).
     const reopened = await store.openPost(NEW_CANON);
@@ -711,7 +735,7 @@ describe("store.postLossPreview", () => {
     // The tracked-delta diff is issued with rename detection (-M), scoped to the whole blog
     // content dir rather than just this post's pathspec: the broadening is what lets git pair
     // the old path's deletion with the new path's addition into a rename.
-    expect(lines()).toContain("git -c core.quotePath=false diff -M origin/main -- src/content/blog");
+    expect(lines()).toContain("git -c core.quotePath=false diff -M main -- src/content/blog");
   });
 
   it("revert diff is also scoped to the whole blog dir with -M", async () => {
@@ -840,8 +864,8 @@ describe("ensureWorktree adopts an existing draft branch (open path)", () => {
 
     expect(active.text).toBe(SKYLINE);
     expect(lines()).toContain(`git worktree add --track -b ${BRANCH} ${WTP} origin/${BRANCH}`);
-    // Neither a fresh fork off the default nor a plain local adopt.
-    expect(lines().some((l) => l.includes(`-b ${BRANCH} origin/main`))).toBe(false);
+    // Neither a fresh fork off the session branch nor a plain local adopt.
+    expect(lines().some((l) => l.includes(`-b ${BRANCH} main`))).toBe(false);
     expect(lines()).not.toContain(`git worktree add ${WTP} ${BRANCH}`);
   });
 
@@ -971,9 +995,9 @@ describe("store.completeRename (resolve a desync from the frontmatter)", () => {
     const newCanon = `${BLOG}/2026-08-01_skyline.mdx`;
     expect(result.path).toBe(newCanon);
     // The date change flows through the same branch/worktree machinery (keyed on the new stem).
-    expect(lines()).toContain("git -C /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline branch -m blog/2026-08-01_skyline");
+    expect(lines()).toContain("git -C /repo/.worktrees/blog/2026-07-10_aligning-a-skyline branch -m blog/2026-08-01_skyline");
     expect(lines()).toContain(
-      "git worktree move /repo/.claude/worktrees/blog/2026-07-10_aligning-a-skyline /repo/.claude/worktrees/blog/2026-08-01_skyline",
+      "git worktree move /repo/.worktrees/blog/2026-07-10_aligning-a-skyline /repo/.worktrees/blog/2026-08-01_skyline",
     );
     // Frontmatter is the source of truth: it's left verbatim, and the post is now synced.
     const newWtFile = `${WT}/2026-08-01_skyline/src/content/blog/2026-08-01_skyline.mdx`;

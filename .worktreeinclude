@@ -1,0 +1,10 @@
+# Gitignored files to copy into new git worktrees (the .worktreeinclude convention). gitignore
+# syntax; a file is copied only when it matches a pattern and is gitignored, so tracked files are
+# never duplicated. node_modules is omitted on purpose: it is large and regenerable (the studio
+# symlinks it into post worktrees, and a standalone dev worktree runs `npm ci`).
+
+# Local environment overrides (see .gitignore), carried in when present.
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

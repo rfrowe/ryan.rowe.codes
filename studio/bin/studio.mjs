@@ -1,11 +1,12 @@
 // Studio orchestrator (`npm run studio`). Dependency-free (node: builtins only): this is the
 // first thing that runs, before any devDependency is guaranteed usable, so it can't lean on one.
 //
-// Boots two long-lived processes in order, health-gating each before the next:
-//   sidecar (4318 MCP / 4319 web, health at /health) then studio SPA (5199).
-// The sidecar owns the Astro dev server (one daemon at a time, in the active post's worktree, on
-// 4321), so the orchestrator does not start or supervise Astro. Then it opens the browser at
-// the SPA, pointed at the post to author. Owns teardown: on SIGINT/SIGTERM/exit, or if any child
+// Picks a free port for each face (preferring the well-known defaults, falling back so a second
+// studio can run beside a first), then boots two long-lived processes in order, health-gating each
+// before the next: the sidecar (MCP + web, health at /health) then the studio SPA. The sidecar owns
+// the Astro dev server (one daemon at a time, in the active post's worktree), so the orchestrator
+// does not start or supervise Astro; it just passes the chosen ports down. Then it opens the browser
+// at the SPA, pointed at the post to author. Owns teardown: on SIGINT/SIGTERM/exit, or if any child
 // dies unexpectedly, every child (and its process tree) is killed.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -17,11 +18,12 @@ import { fileURLToPath } from "node:url";
 
 const NODE_MIN_MAJOR = 24;
 
-const SIDECAR_MCP_PORT = 4318;
-const SIDECAR_WEB_PORT = 4319;
-const SPA_PORT = 5199;
-// Astro's port. The sidecar binds it, not the orchestrator; surfaced only for the "ready" log.
-const ASTRO_PORT = 4321;
+// Preferred ports: used as-is when free (a lone studio is unchanged), else an OS-assigned free port
+// takes over so simultaneous studios don't collide.
+const DEFAULT_MCP_PORT = 4318;
+const DEFAULT_WEB_PORT = 4319;
+const DEFAULT_SPA_PORT = 5199;
+const DEFAULT_ASTRO_PORT = 4321;
 
 const HEALTH_TIMEOUT_MS = 30_000;
 const HEALTH_POLL_INTERVAL_MS = 300;
@@ -36,6 +38,53 @@ const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
 // Populated as children are spawned; consulted by shutdown() and the synchronous 'exit' handler.
 const children = [];
 let shuttingDown = false;
+
+// ---- terminal presentation (ANSI + OSC 8 hyperlinks; a no-op when stdout isn't a TTY or NO_COLOR is set) ----
+const COLOR = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const style = (open, close) => (s) => (COLOR ? `\x1b[${open}m${s}\x1b[${close}m` : s);
+const bold = style(1, 22);
+const dim = style(2, 22);
+const cyan = style(36, 39);
+const green = style(32, 39);
+
+/** A clickable link in terminals that support OSC 8; plain text (the URL) everywhere else. */
+function hyperlink(url, text = url) {
+  return COLOR ? `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\` : text;
+}
+
+const TAG = dim("[studio]");
+function note(message) {
+  console.log(`${TAG} ${message}`);
+}
+
+/** The branch the studio launched on, for display (mirrors the sidecar's resolution). */
+function sessionBranchForDisplay() {
+  const override = process.env.STUDIO_PRIMARY_BRANCH?.trim();
+  if (override) return override;
+  const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" });
+  const name = head.status === 0 ? head.stdout.trim() : "";
+  if (name && name !== "HEAD") return name;
+  const sha = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" });
+  return sha.status === 0 && sha.stdout.trim() ? sha.stdout.trim() : "(detached)";
+}
+
+/** The "everything is up" summary: the links to open plus the post and branch in play. */
+function readyBanner({ ports, post, branch }) {
+  const label = (text) => dim(text.padEnd(9));
+  return [
+    "",
+    `  ${bold(cyan("◆ blog authoring studio"))}`,
+    "",
+    `  ${label("Studio")}${cyan(hyperlink(`http://localhost:${ports.spa}/`))}`,
+    `  ${label("Preview")}${cyan(hyperlink(`http://localhost:${ports.astro}/`))}`,
+    `  ${label("Sidecar")}${dim(`localhost:${ports.web}  ·  MCP :${ports.mcp}`)}`,
+    `  ${label("Branch")}${branch}`,
+    `  ${label("Post")}${post ? post.rel : dim("none — create one in the studio")}`,
+    "",
+    `  ${dim("Press Ctrl+C to stop.")}`,
+    "",
+  ].join("\n");
+}
 
 function checkNodeVersion() {
   const major = Number(process.versions.node.split(".")[0]);
@@ -61,26 +110,47 @@ function parseArgs(argv) {
   return { post };
 }
 
-// Resolves whether a port is free by briefly binding to it. Rejects (port busy or otherwise
-// unbindable) rather than throwing, so callers can gather every busy port before failing.
-function checkPortFree(port) {
-  return new Promise((resolve, reject) => {
+// Resolves true if `port` is free on `host` (briefly binds it), false if busy or unbindable. The host
+// must match the service's own bind host, or a busy port on a different loopback family (e.g. Astro
+// on localhost/::1 vs a 127.0.0.1 probe) reads as free and two studios collide.
+function isPortFree(port, host) {
+  return new Promise((resolve) => {
     const probe = createServer();
-    probe.once("error", reject);
-    probe.once("listening", () => probe.close(() => resolve()));
-    probe.listen(port, "127.0.0.1");
+    probe.once("error", () => resolve(false));
+    probe.once("listening", () => probe.close(() => resolve(true)));
+    probe.listen(port, host);
   });
 }
 
-async function assertPortsFree(ports) {
-  const results = await Promise.allSettled(ports.map(checkPortFree));
-  const busy = ports.filter((_, i) => results[i].status === "rejected");
-  if (busy.length > 0) {
-    for (const port of busy) {
-      console.error(`[studio] port ${port} in use — is another studio already running?`);
-    }
-    process.exit(1);
+// An OS-assigned free port on `host`: bind :0, read the assigned port, release it.
+function ephemeralPort(host) {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, host, () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+// Claim `preferred` when it's free and not already claimed this launch, else an ephemeral free port.
+// `host` is the service's bind host so the check is meaningful. `taken` stops two faces from being
+// handed the same port. A small race between picking and the child binding is tolerable here (local
+// dev); the loop re-checks each candidate.
+async function pickPort(preferred, taken, host) {
+  if (!taken.has(preferred) && (await isPortFree(preferred, host))) {
+    taken.add(preferred);
+    return preferred;
   }
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const port = await ephemeralPort(host);
+    if (!taken.has(port) && (await isPortFree(port, host))) {
+      taken.add(port);
+      return port;
+    }
+  }
+  throw new Error(`could not find a free port near ${preferred}`);
 }
 
 // Matches the content collection's own glob (`**/*.mdx` under src/content/blog), so this covers
@@ -143,20 +213,22 @@ async function waitForHttp(url, { label, timeoutMs, intervalMs }) {
   );
 }
 
-// Line-buffers a child stream so labeled output doesn't interleave mid-line with siblings.
+// Line-buffers a child stream so labeled output doesn't interleave mid-line with siblings. The
+// dimmed prefix keeps the child's own logs visually subordinate to the orchestrator's.
 function pipeLines(source, target, label) {
+  const prefix = dim(`[${label}]`);
   let buffer = "";
   source.setEncoding("utf8");
   source.on("data", (chunk) => {
     buffer += chunk;
     let newlineIndex;
     while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-      target.write(`[${label}] ${buffer.slice(0, newlineIndex)}\n`);
+      target.write(`${prefix} ${buffer.slice(0, newlineIndex)}\n`);
       buffer = buffer.slice(newlineIndex + 1);
     }
   });
   source.on("end", () => {
-    if (buffer.length > 0) target.write(`[${label}] ${buffer}\n`);
+    if (buffer.length > 0) target.write(`${prefix} ${buffer}\n`);
   });
 }
 
@@ -223,7 +295,7 @@ process.on("SIGTERM", () => shutdown(0, "SIGTERM"));
 // Spawns one child, wires up labeled logging + crash detection, then blocks until it answers
 // healthUrl with 200 (or throws, which the caller turns into a full teardown).
 async function startAndHealthGate({ name, command, args, env, healthUrl }) {
-  console.log(`[studio] starting ${name}...`);
+  note(`starting ${name}…`);
   const child = spawn(command, args, {
     cwd: REPO_ROOT,
     env,
@@ -250,7 +322,7 @@ async function startAndHealthGate({ name, command, args, env, healthUrl }) {
     timeoutMs: HEALTH_TIMEOUT_MS,
     intervalMs: HEALTH_POLL_INTERVAL_MS,
   });
-  console.log(`[studio] ${name} is healthy (${healthUrl})`);
+  note(`${green("✓")} ${name} ready ${dim(`(${healthUrl})`)}`);
   return child;
 }
 
@@ -275,13 +347,20 @@ function openBrowser(url) {
 
 async function main() {
   checkNodeVersion();
-  // Astro's port (4321) is bound by the sidecar (which also clears stray worktree daemons), so it
-  // is intentionally not asserted here; only the orchestrator-owned ports are.
-  await assertPortsFree([SIDECAR_MCP_PORT, SIDECAR_WEB_PORT, SPA_PORT]);
+
+  // A free port per face (Astro included, so the sidecar's daemon doesn't collide with another
+  // studio's). Preferring the defaults keeps a lone studio on the well-known ports. Each port is
+  // probed on the host its service binds: the sidecar and SPA on 127.0.0.1, Astro on localhost.
+  const taken = new Set();
+  const ports = {
+    mcp: await pickPort(DEFAULT_MCP_PORT, taken, "127.0.0.1"),
+    web: await pickPort(DEFAULT_WEB_PORT, taken, "127.0.0.1"),
+    spa: await pickPort(DEFAULT_SPA_PORT, taken, "127.0.0.1"),
+    astro: await pickPort(DEFAULT_ASTRO_PORT, taken, "localhost"),
+  };
 
   const { post: postArg } = parseArgs(process.argv.slice(2));
   const post = resolvePostPath(postArg);
-  console.log(`[studio] active post: ${post ? post.rel : "(none — create one in the studio)"}`);
 
   const token = randomBytes(32).toString("hex");
 
@@ -289,30 +368,42 @@ async function main() {
     name: "sidecar",
     command: NPM_COMMAND,
     args: ["run", "studio:sidecar"],
-    // The sidecar is the actual post chooser (reads STUDIO_POST / --post); forward the resolved
-    // post so `npm run studio -- --post <path>` opens that post, not the newest.
-    env: post
-      ? { ...process.env, STUDIO_TOKEN: token, STUDIO_POST: post.rel }
-      : { ...process.env, STUDIO_TOKEN: token },
-    healthUrl: `http://127.0.0.1:${SIDECAR_WEB_PORT}/health`,
+    // The sidecar reads its ports and the target post from the environment. It's the actual post
+    // chooser (STUDIO_POST / --post), so forward the resolved post to open it, not the newest.
+    env: {
+      ...process.env,
+      STUDIO_TOKEN: token,
+      STUDIO_MCP_PORT: String(ports.mcp),
+      STUDIO_WEB_PORT: String(ports.web),
+      STUDIO_ASTRO_PORT: String(ports.astro),
+      STUDIO_SPA_PORT: String(ports.spa),
+      ...(post ? { STUDIO_POST: post.rel } : {}),
+    },
+    healthUrl: `http://127.0.0.1:${ports.web}/health`,
   });
 
   await startAndHealthGate({
     name: "spa",
     command: NPM_COMMAND,
     args: ["run", "studio:ui"],
-    env: { ...process.env, VITE_STUDIO_TOKEN: token },
-    healthUrl: `http://127.0.0.1:${SPA_PORT}/`,
+    // Vite reads its own port from STUDIO_SPA_PORT; the SPA reads the sidecar's web port (and token)
+    // from the VITE_ vars baked in at dev-server start.
+    env: {
+      ...process.env,
+      VITE_STUDIO_TOKEN: token,
+      STUDIO_SPA_PORT: String(ports.spa),
+      VITE_STUDIO_SIDECAR_PORT: String(ports.web),
+      VITE_STUDIO_ASTRO_PORT: String(ports.astro),
+    },
+    healthUrl: `http://127.0.0.1:${ports.spa}/`,
   });
 
   const spaUrl = post
-    ? `http://localhost:${SPA_PORT}/?post=${encodeURIComponent(post.rel)}`
-    : `http://localhost:${SPA_PORT}/`;
+    ? `http://localhost:${ports.spa}/?post=${encodeURIComponent(post.rel)}`
+    : `http://localhost:${ports.spa}/`;
   openBrowser(spaUrl);
 
-  console.log(`[studio] ready: ${spaUrl}`);
-  console.log(`[studio] astro preview (sidecar-managed): http://localhost:${ASTRO_PORT}/`);
-  console.log(`[studio] press Ctrl+C to stop`);
+  console.log(readyBanner({ ports, post, branch: sessionBranchForDisplay() }));
 }
 
 main().catch((err) => {

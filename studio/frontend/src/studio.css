@@ -617,6 +617,26 @@ body {
   font-family: var(--mono);
   font-size: 11px;
 }
+/* The studio's branch ref, right-aligned on the STACK title row and kept subtle; the full ref +
+   worktree path are on its hover title. */
+.statuspop__title--stack {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.statuspop__titleref {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--fg-faint);
+}
 
 /* ---- editor ---- */
 .editor {

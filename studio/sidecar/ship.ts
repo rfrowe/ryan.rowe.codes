@@ -1,8 +1,8 @@
 // Ship-as-PR flow. Studio-run, never the agent. Each open post already lives in its own git
-// worktree on branch `blog/<slug>` (forked from origin/<default>), so there's no checkout dance:
-// stage the post precisely (never `git add -A`), commit with the pinned identity, push, open a PR.
-// Opens the PR only, never merges, and only behind an explicit human confirm. Every git/gh call
-// runs with cwd = the active post's worktree.
+// worktree on its isolation branch (forked from the local session/"primary" branch), so there's no
+// checkout dance: stage the post precisely (never `git add -A`), commit with the pinned identity,
+// push, open a PR against the session branch. Opens the PR only, never merges, and only behind an
+// explicit human confirm. Every git/gh call runs with cwd = the active post's worktree.
 
 import type { GitRunner } from "../shared/seams";
 import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
@@ -22,6 +22,11 @@ const NETWORK_TIMEOUT_MS = 120_000;
 
 export interface ShipDeps {
   git: GitRunner;
+  /**
+   * The "primary" branch the studio was launched on. Ship targets it (`gh pr create --base`) and
+   * measures the post branch against `origin/<sessionBranch>`; it must exist on origin to ship.
+   */
+  sessionBranch: string;
   /** The active post's worktree (branch/paths); ship runs entirely inside it. */
   getActiveWorktree: () => ActiveWorktree | null;
   /** Frontmatter/filename name-sync. Ship refuses a desynced post (its live URL wouldn't match
@@ -30,7 +35,7 @@ export interface ShipDeps {
 }
 
 export function createShipService(deps: ShipDeps): ShipService {
-  const { git, getActiveWorktree, getActiveNameSync } = deps;
+  const { git, sessionBranch, getActiveWorktree, getActiveNameSync } = deps;
 
   /** Read the diff for the ship review UI, from the active post's worktree. */
   async function diff(scope: "post" | "all"): Promise<{ status: string; diff: string }> {
@@ -123,17 +128,21 @@ export function createShipService(deps: ShipDeps): ShipService {
         return { ok: false, error: `no changes under ${BLOG_CONTENT_DIR} to ship` };
       }
 
-      // The repo's real default base branch, not an assumption.
-      const baseRes = await git.gh(
-        ["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
-        { cwd, timeoutMs: NETWORK_TIMEOUT_MS },
+      // Ship targets the session/"primary" branch, not the repo default. It must exist on origin
+      // (`gh pr create --base` resolves the base on the remote), so refuse early (offline-safe: reads
+      // the remote-tracking ref, never fetches) with an actionable message instead of a raw gh error.
+      const base = sessionBranch;
+      const baseOnOrigin = await git.git(
+        ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`],
+        { cwd },
       );
-      if (baseRes.code !== 0) {
-        return fail("gh repo view (resolve default base branch)", baseRes.stderr, baseRes.code);
-      }
-      const base = baseRes.stdout.trim();
-      if (!base) {
-        return { ok: false, error: "could not resolve default base branch (empty result from gh repo view)" };
+      if (baseOnOrigin.code !== 0) {
+        return {
+          ok: false,
+          error:
+            `refusing to ship: the primary branch "${base}" isn't on origin yet, so a PR can't target it. ` +
+            `Push it first (git push -u origin ${base}) or run the studio on the default branch.`,
+        };
       }
 
       // Scoped add: explicit blog paths only, never `git add -A` / `git add .`.

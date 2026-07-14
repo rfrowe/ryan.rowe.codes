@@ -33,7 +33,6 @@ import type {
 } from "../shared/protocol";
 
 const HOST = "127.0.0.1";
-const ALLOWED_ORIGINS = new Set(["http://localhost:5199", "http://127.0.0.1:5199"]);
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // generous for a single MDX post
 
 export interface StudioServer {
@@ -44,15 +43,21 @@ export interface StudioServer {
 export interface ServerOptions {
   token: string;
   webPort: number;
+  /** The SPA's dev-server port; its loopback origins are the CSRF Origin allowlist. */
+  spaPort: number;
   /**
    * Attach a `/lsp` WebSocket to the MDX language-server bridge. Omitted when the LSP feature is
    * unavailable, in which case `/lsp` upgrades are refused and the editor uses its built-in sources.
    */
   lspConnect?: (ws: WebSocket) => void;
+  /** The studio's branch/worktree for the status popover; sent to each client on connect. */
+  getStudioBranch?: () => Promise<{ ref: string; worktree: string }>;
 }
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
-  const { token, webPort, lspConnect } = opts;
+  const { token, webPort, spaPort, lspConnect } = opts;
+  // Only the SPA's own loopback origins may call the sidecar (loopback CSRF guard).
+  const allowedOrigins = new Set([`http://localhost:${spaPort}`, `http://127.0.0.1:${spaPort}`]);
   // The sidecar always injects the concretes; the frozen DI seams omit the studio-only
   // multi-doc/worktree and MCP-status accessors, so recover them here for the post and mcp paths.
   const store = services.store as StudioStore;
@@ -94,7 +99,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
   function originOk(req: IncomingMessage): boolean {
     const origin = req.headers.origin;
     if (origin === undefined) return true;
-    return ALLOWED_ORIGINS.has(origin);
+    return allowedOrigins.has(origin);
   }
 
   // ---- REST ----
@@ -236,6 +241,15 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     ws.send(JSON.stringify({ type: "post.namesync", ...store.getActiveNameSync() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mcp.status", servers: agentHost.getMcpStatus() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mode.status", mode: agentHost.getPermissionMode() } satisfies ServerMessage));
+    // The studio's branch/worktree is resolved via git (async), so it's sent once it's ready rather
+    // than blocking the rest of the snapshot; ordering doesn't matter to the client. A failed git
+    // lookup just omits it from the status popover, so swallow the rejection.
+    opts
+      .getStudioBranch?.()
+      .then((info) => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "studio.branch", ...info } satisfies ServerMessage));
+      })
+      .catch(() => {});
 
     ws.on("message", (data) => {
       let message: ClientMessage;
