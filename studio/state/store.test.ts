@@ -77,8 +77,15 @@ interface GitConfig {
   /** Override for the unscoped (`scope: "all"`) status call, when it must differ from `statusPorcelain`
    *  — e.g. to exercise revert's scope auto-detection (more changes under "all" than "post"). */
   statusPorcelainAll?: string;
-  /** `git rev-list --count origin/<base>..HEAD` output (unmerged commits); default "0". */
+  /** `git rev-list --count <base>..HEAD` output (unmerged commits); default "0". */
   revListCount?: string;
+  /** Per-range override for `git rev-list --count <range>`, keyed by the exact range string (e.g.
+   *  `"origin/blog/<stem>..HEAD"`); falls back to `revListCount` for any unlisted range. Lets a test
+   *  give a post's own remote a different count than the session branch's. */
+  revListCountByRange?: Record<string, string>;
+  /** `git merge-base <ref> HEAD` output; defaults to `<ref>` itself (see the fake's `merge-base`
+   *  handler). Override to simulate the primary branch having advanced past the fork point. */
+  mergeBase?: string;
   /** `git diff -M [<ref>]` output (revert's unstaged diff vs HEAD, or delete's tracked delta from the
    *  base); empty = nothing. */
   diffBase?: string;
@@ -196,7 +203,15 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         const scoped = args.includes("src/content/blog");
         return { ...ok, stdout: (scoped ? cfg.statusPorcelain : cfg.statusPorcelainAll ?? cfg.statusPorcelain) ?? "" };
       }
-      if (args[0] === "rev-list") return { ...ok, stdout: cfg.revListCount ?? "0" };
+      if (args[0] === "rev-list") {
+        const range = args[args.length - 1];
+        return { ...ok, stdout: cfg.revListCountByRange?.[range] ?? cfg.revListCount ?? "0" };
+      }
+      if (args[0] === "merge-base") {
+        // The fake has no real commit graph, so it treats the ref itself as its own merge-base with
+        // HEAD by default; a test can override this to simulate the primary branch having moved on.
+        return { ...ok, stdout: `${cfg.mergeBase ?? args[1]}\n` };
+      }
       if (args.includes("diff")) {
         // Some diffs are prefixed with `-c core.quotePath=false`, so match on membership.
         if (args.includes("--no-index")) return { ...ok, stdout: cfg.noIndexDiff ?? "" };
@@ -491,6 +506,25 @@ describe("store multi-tab: open / switch / close", () => {
     expect(lines()).toContain(`git worktree remove --force ${wt}`);
     expect(lines()).toContain("git branch -D blog/2026-07-10_aligning-a-skyline");
     expect(stopPreviewFor).toContain(wt);
+  });
+
+  it("also tears down a post that's unmerged into the session branch but already matches its own pushed remote", async () => {
+    // Nothing uncommitted, and HEAD already matches origin/blog/<stem> (e.g. just adopted, or just
+    // saved via "Save to remote"), even though that branch isn't merged into origin/main yet. Closing
+    // still loses nothing recoverable, so it tears down exactly like the clean case above.
+    const { store, fs, lines } = newStore(
+      { [SKYLINE_WT_FILE]: SKYLINE },
+      {
+        remoteBranchExists: true,
+        revListCountByRange: { "origin/blog/2026-07-10_aligning-a-skyline..HEAD": "0", "origin/main..HEAD": "1" },
+      },
+    );
+    await store.openPost(SKYLINE_CANON);
+    const wt = `${WT}/2026-07-10_aligning-a-skyline`;
+    await store.closePost(SKYLINE_CANON);
+    expect(fs.store.has(`${wt}/.git`)).toBe(false);
+    expect(lines()).toContain(`git worktree remove --force ${wt}`);
+    expect(lines()).toContain("git branch -D blog/2026-07-10_aligning-a-skyline");
   });
 });
 
@@ -843,6 +877,20 @@ describe("store.postLossPreview", () => {
     expect(await store.postLossPreview(SKYLINE_CANON, "revert")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "post" });
   });
 
+  it("reports clean for a draft adopted from its own pushed remote, even though it's unmerged into the session branch", async () => {
+    // Adopted via ⌘P (origin/blog/<stem> exists, HEAD sits exactly on it), unmerged into origin/main:
+    // deleting still loses nothing, since the commit is already recoverable from its own remote.
+    const { store } = newStore(
+      { [SKYLINE_WT_FILE]: SKYLINE },
+      {
+        remoteBranchExists: true,
+        revListCountByRange: { "origin/blog/2026-07-10_aligning-a-skyline..HEAD": "0", "origin/main..HEAD": "1" },
+      },
+    );
+    await store.openPost(SKYLINE_CANON);
+    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "all" });
+  });
+
   it("delete's preview covers the whole worktree (not just the blog dir) with -M, so a staged rename pairs instead of 'new file' and an outside change surfaces too", async () => {
     const RENAME_AND_OUTSIDE_DIFF = [
       "diff --git a/src/content/blog/2022-03-11_hello.mdx b/src/content/blog/2022-03-11_hello2.mdx",
@@ -954,6 +1002,21 @@ describe("store.scanDirtyPosts (enumerates worktrees on disk, not just open tabs
     const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { revListCount: "2\n" });
     await store.openPost(SKYLINE_CANON);
     expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [] });
+  });
+
+  it("excludes a draft that's ahead of the session branch but already matches its own pushed remote", async () => {
+    // Same fork-point-vs-remote distinction as postLossPreview's delete case: ahead of origin/main
+    // (unmerged), but exactly at origin/blog/<stem> (its own remote, just adopted). Nothing would be
+    // lost, so it must not carry the tab dot or offer "Delete draft"/"Save to remote".
+    const { store } = newStore(
+      { [SKYLINE_WT_FILE]: SKYLINE },
+      {
+        remoteBranchExists: true,
+        revListCountByRange: { "origin/blog/2026-07-10_aligning-a-skyline..HEAD": "0", "origin/main..HEAD": "1" },
+      },
+    );
+    await store.openPost(SKYLINE_CANON);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
   });
 
   it("finds a dirty worktree that was never opened this session", async () => {

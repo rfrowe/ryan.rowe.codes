@@ -38,7 +38,7 @@ interface TabBarProps {
   /** The studio's own branch/worktree, shown as a chip + in the popover; null until the sidecar reports it. */
   studio: { ref: string; worktree: string } | null;
   /** Canonical paths of open posts that are drafts (unshipped work); drives the tab dot and
-   *  gates "Delete draft…" in the right-click menu. */
+   *  gates "Save to remote…" and "Delete draft…" in the right-click menu. */
   dirtyPaths: Set<string>;
   /** Canonical paths with uncommitted edits (⊆ dirtyPaths); gates "Revert to clean…", which has
    *  nothing to discard on a clean (or clean-but-ahead) post. */
@@ -254,6 +254,8 @@ export function TabBar({
             type="button"
             className="tabmenu__item"
             role="menuitem"
+            disabled={!dirtyPaths.has(menu.path)}
+            title={dirtyPaths.has(menu.path) ? undefined : "Nothing to save — already up to date on origin"}
             onClick={() => {
               onSaveDraft(menu.path);
               setMenu(null);

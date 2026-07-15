@@ -104,6 +104,10 @@ export async function computeWorkingTreeDiff(
  * preview, which must also surface commits `ref` doesn't have yet (deleting the branch loses those
  * too, not just uncommitted edits). `ref` is nullable for when it can't be resolved offline; the
  * status/untracked-file portion still stands, just without the base-relative tracked diff.
+ *
+ * Diffs from `ref`'s merge-base with HEAD, not `ref` directly: `ref` keeps moving (e.g. the primary
+ * branch advancing after this branch forked from it), and a direct diff would surface that drift as
+ * if this branch had introduced it, even with nothing of its own to show.
  */
 export async function computeDiffAgainstRef(
   git: GitRunner,
@@ -117,8 +121,18 @@ export async function computeDiffAgainstRef(
     { cwd },
   );
   const statusLines = status.stdout.split("\n").filter((l) => l.trim().length > 0);
-  const tracked = ref ? await git.git(["-c", "core.quotePath=false", "diff", "-M", ref, ...pathspec], { cwd }) : null;
+  const base = ref ? await resolveMergeBase(git, cwd, ref) : null;
+  const tracked = base ? await git.git(["-c", "core.quotePath=false", "diff", "-M", base, ...pathspec], { cwd }) : null;
   const untracked = await synthesizeUntrackedDiffs(git, cwd, untrackedPaths(status.stdout));
   const diff = [tracked?.stdout ?? "", ...untracked].filter((s) => s.trim().length > 0).join("\n");
   return { status: status.stdout, diff, changedFiles: statusLines.length };
+}
+
+// A failed merge-base (or one that somehow prints nothing) is treated the same as an unresolvable
+// ref, not as license to fall back to diffing `ref` directly and reintroducing the drift this guards
+// against.
+async function resolveMergeBase(git: GitRunner, cwd: string, ref: string): Promise<string | null> {
+  const res = await git.git(["merge-base", ref, "HEAD"], { cwd });
+  const sha = res.stdout.trim();
+  return res.code === 0 && sha.length > 0 ? sha : null;
 }

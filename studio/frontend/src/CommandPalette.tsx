@@ -209,7 +209,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
                 </span>
               ) : (
                 dirty.has(entry.path) && (
-                  <span className="palette__badge" title="Draft — has unshipped changes (uncommitted or unmerged)">
+                  <span className="palette__badge" title="Draft — has changes not yet saved to its remote">
                     Draft
                   </span>
                 )
