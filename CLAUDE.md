@@ -40,7 +40,7 @@ Notes:
 ### Content & routing
 - Blog content is an Astro **content collection** (`src/content.config.ts`): a Zod schema validates every `.mdx` file under `src/content/blog/`, loaded via `glob({ pattern: "**/*.mdx", base: "./src/content/blog" })`.
 - **File conventions:** a simple post is `YYYY-MM-DD_slug.mdx`; a post with co-located interactive components is a folder `YYYY-MM-DD_slug/post.mdx` plus sibling `.tsx` files imported into the MDX by relative path (e.g. the cube renderer in `algorithmic-art`).
-- **Frontmatter contract** (the collection's Zod schema, so keep these keys): `title`, `slug`, `created_at` (ISO 8601), `headline`. `created_at` (formatted `YYYY-MM-DD` via `formatPostDate` in `src/lib/blog.ts`) + `slug` together drive the URL `/blog/<date>/<slug>`; `headline` feeds the animated typist on the home page.
+- **Frontmatter contract** (the collection's Zod schema, so keep these keys): `title`, `slug`, `created_at` (ISO 8601), `headline`. `created_at` (its author-local `YYYY-MM-DD` day, derived by `parsePostDate` in `src/lib/blog.ts`) + `slug` together drive the URL `/blog/<date>/<slug>`; `headline` feeds the animated typist on the home page.
 - **Routing is file-based** (`src/pages/`). `src/pages/blog/[date]/[slug].astro` is a dynamic route whose `getStaticPaths()` maps `getCollection("blog")` to one page per post, keyed on `{ date, slug }`. `src/pages/index.astro` lists posts via `getCollection("blog")` directly (no query layer).
 
 ### MDX pipeline (`astro.config.mjs`)
