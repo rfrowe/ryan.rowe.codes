@@ -285,7 +285,12 @@ class EmbeddedAgentHost implements StudioAgentHost {
           "unrelated lines.",
       );
     }
-    lines.push("</studio-context>");
+    lines.push(
+      "The author can keep editing the post while you work, so the file may no longer match what " +
+        "you last read. If an Edit fails because its old_string no longer matches, re-read the file " +
+        "and retry against the current contents rather than giving up.",
+      "</studio-context>",
+    );
     return lines.join("\n");
   }
 

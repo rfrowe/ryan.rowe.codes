@@ -1,9 +1,10 @@
 // CodeMirror 6 editor over the MDX source. Byte-faithful (no reformat), debounced
-// autosave through the REST client, soft-lock (readOnly) for the whole agent turn,
-// and a ⌘K prompt popover anchored at the caret.
+// autosave through the REST client, and a ⌘K prompt popover anchored at the caret. Stays
+// editable through an agent turn; a remote write is rebased onto the live buffer (see
+// remoteMerge.ts) rather than locking the buffer for the turn's duration.
 
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from "react";
-import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state";
+import { Annotation, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { tokyoNightInit } from "@uiw/codemirror-theme-tokyo-night";
@@ -13,6 +14,7 @@ import { putDoc } from "./api";
 import { frontmatterCompletionSource } from "./editor/frontmatterCompletion";
 import { recipeSnippetSource } from "./editor/recipeSnippets";
 import { mdx } from "./editor/mdx";
+import { rebaseRemoteChange } from "./editor/remoteMerge";
 import { filePathToUri, getLspClient } from "./lsp/client";
 import { docResolvingCompletionSource } from "./lsp/completion";
 
@@ -32,9 +34,9 @@ interface EditorProps {
   /** Text used to seed the buffer at mount only. */
   initialText: string;
   rev: DocRev;
-  /** Applied to the buffer whenever `version` increments (agent/reconciled writes). */
-  remoteUpdate: { text: string; version: number } | null;
-  readOnly: boolean;
+  /** Applied to the buffer whenever `version` increments; see the remote-update effect for how
+   *  each `kind` is handled. */
+  remoteUpdate: { text: string; version: number; kind: "agent" | "reload" } | null;
   /** An agent turn is in flight; block the ⌘K popover from starting a second one. */
   promptInFlight?: boolean;
   /**
@@ -136,8 +138,10 @@ interface PopoverState {
 export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(props, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const editableRef = useRef(new Compartment());
   const revRef = useRef<DocRev>(props.rev);
+  // The last text this editor knows to be on disk (a save ack, or an applied remote write); the
+  // base a remote update's diff is computed against so it can be rebased onto local edits.
+  const lastSyncedTextRef = useRef<string>(props.initialText);
   const appliedVersionRef = useRef<number>(props.remoteUpdate?.version ?? 0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -183,6 +187,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     if (res.ok) {
       revRef.current = res.rev;
       cb.current.onRev(cb.current.path, res.rev);
+      lastSyncedTextRef.current = text;
       // If no keystrokes landed during the await, the buffer now matches disk.
       if (view.state.doc.toString() === text) dirtyRef.current = false;
       return "saved";
@@ -200,11 +205,11 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     return "error";
   }
 
-  // Debounced autosave / transient-retry tick. Holds off while the agent owns the write
-  // (turn locked) or a conflict banner is up; those gates resume it via the effects below.
+  // Debounced autosave / transient-retry tick. Holds off while a conflict banner is up (autosave
+  // would clobber the external change); that gate resumes it via the effect below.
   async function save(): Promise<void> {
     clearSaveTimers();
-    if (cb.current.readOnly || cb.current.suspendSave) return;
+    if (cb.current.suspendSave) return;
     if (!dirtyRef.current) return; // nothing diverged since the last ack
     const outcome = await putCurrent();
     if (outcome === "saved") {
@@ -384,10 +389,6 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
           },
         ]),
       ),
-      editableRef.current.of([
-        EditorState.readOnly.of(cb.current.readOnly),
-        EditorView.editable.of(!cb.current.readOnly),
-      ]),
       EditorView.updateListener.of((update) => {
         const isRemote = update.transactions.some((t) => t.annotation(remoteAnnotation));
         if (update.docChanged && !isRemote) {
@@ -418,50 +419,50 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     revRef.current = props.rev;
   }, [props.rev]);
 
-  // Reconfigure editability on soft-lock changes.
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
-    view.dispatch({
-      effects: editableRef.current.reconfigure([
-        EditorState.readOnly.of(props.readOnly),
-        EditorView.editable.of(!props.readOnly),
-      ]),
-    });
-    if (props.readOnly) {
-      // Turn started: cancel any pending autosave/retry so a stray debounced save can't
-      // fire mid-turn and race the agent's apply_edit.
-      clearSaveTimers();
-    } else if (dirtyRef.current) {
-      // Turn ended with local edits still outstanding: flush them now.
-      scheduleSave();
-    }
-  }, [props.readOnly]);
-
-  // Apply remote (agent / reconciled-external) writes to the buffer without re-triggering autosave.
+  // Apply a remote write to the buffer without re-triggering autosave. "reload" covers the
+  // author's explicit banner choice and any store-mediated rewrite that means to win outright
+  // (revert, revertUrl, relayout) — a hard replace. "agent" is a live turn's own write, rebased
+  // onto whatever the author has kept typing since `lastSyncedTextRef` so it lands without
+  // discarding those edits.
   useEffect(() => {
     const view = viewRef.current;
     const update = props.remoteUpdate;
     if (!view || !update) return;
     if (update.version === appliedVersionRef.current) return;
     appliedVersionRef.current = update.version;
-    if (update.text === view.state.doc.toString()) {
+    const liveText = view.state.doc.toString();
+    if (update.text === liveText) {
       revRef.current = props.rev;
+      lastSyncedTextRef.current = update.text;
       dirtyRef.current = false;
       return;
     }
-    const prevHead = view.state.selection.main.head;
-    const nextHead = Math.min(prevHead, update.text.length);
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: update.text },
-      selection: { anchor: nextHead },
-      annotations: remoteAnnotation.of(true),
-    });
+    const stillDirty = update.kind === "agent" && dirtyRef.current;
+    if (update.kind === "reload") {
+      // A full-document replace: every position falls inside the replaced range, so CodeMirror's
+      // default selection-mapping collapses the caret to 0. Clamp the old head instead.
+      const nextHead = Math.min(view.state.selection.main.head, update.text.length);
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: update.text },
+        selection: { anchor: nextHead },
+        annotations: remoteAnnotation.of(true),
+      });
+    } else {
+      // Leave `selection` unset: the rebase only touches specific spans, so CodeMirror's default
+      // mapping of the existing selection through `changes` keeps the caret sensible.
+      view.dispatch({
+        changes: rebaseRemoteChange(lastSyncedTextRef.current, update.text, liveText),
+        annotations: remoteAnnotation.of(true),
+      });
+    }
     revRef.current = props.rev;
-    // Buffer now matches disk at this rev; drop the stale/error notices and dirty flag.
-    dirtyRef.current = false;
+    lastSyncedTextRef.current = update.text;
+    dirtyRef.current = stillDirty;
     setStaleRebased(false);
     setSaveError(false);
+    // The author's still-unsaved edits just got carried onto the new base; get them to disk
+    // rather than waiting on whatever's left of the debounce.
+    if (stillDirty) scheduleSave();
   }, [props.remoteUpdate, props.rev]);
 
   // React to the conflict suspension. NB: declared after the remote-update effect so that,
