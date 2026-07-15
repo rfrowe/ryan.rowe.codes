@@ -351,12 +351,15 @@ async function main() {
   // A free port per face (Astro included, so the sidecar's daemon doesn't collide with another
   // studio's). Preferring the defaults keeps a lone studio on the well-known ports. Each port is
   // probed on the host its service binds: the sidecar and SPA on 127.0.0.1, Astro on localhost.
+  // STUDIO_BIND_HOST (set by the Docker image) widens every face's bind address so a reverse proxy
+  // in another container can reach them; local dev leaves it unset and keeps the loopback defaults.
+  const bindHost = process.env.STUDIO_BIND_HOST;
   const taken = new Set();
   const ports = {
-    mcp: await pickPort(DEFAULT_MCP_PORT, taken, "127.0.0.1"),
-    web: await pickPort(DEFAULT_WEB_PORT, taken, "127.0.0.1"),
-    spa: await pickPort(DEFAULT_SPA_PORT, taken, "127.0.0.1"),
-    astro: await pickPort(DEFAULT_ASTRO_PORT, taken, "localhost"),
+    mcp: await pickPort(DEFAULT_MCP_PORT, taken, bindHost ?? "127.0.0.1"),
+    web: await pickPort(DEFAULT_WEB_PORT, taken, bindHost ?? "127.0.0.1"),
+    spa: await pickPort(DEFAULT_SPA_PORT, taken, bindHost ?? "127.0.0.1"),
+    astro: await pickPort(DEFAULT_ASTRO_PORT, taken, bindHost ?? "localhost"),
   };
 
   const { post: postArg } = parseArgs(process.argv.slice(2));
@@ -387,13 +390,18 @@ async function main() {
     command: NPM_COMMAND,
     args: ["run", "studio:ui"],
     // Vite reads its own port from STUDIO_SPA_PORT; the SPA reads the sidecar's web port (and token)
-    // from the VITE_ vars baked in at dev-server start.
+    // from the VITE_ vars baked in at dev-server start. Vite only surfaces VITE_-prefixed vars to
+    // browser code, so STUDIO_HOST_SIDECAR/STUDIO_HOST_ASTRO/STUDIO_PROTOCOL (unlike STUDIO_BIND_HOST,
+    // which every child reads directly from the raw environment) need explicit re-mapping here.
     env: {
       ...process.env,
       VITE_STUDIO_TOKEN: token,
       STUDIO_SPA_PORT: String(ports.spa),
       VITE_STUDIO_SIDECAR_PORT: String(ports.web),
       VITE_STUDIO_ASTRO_PORT: String(ports.astro),
+      ...(process.env.STUDIO_HOST_SIDECAR ? { VITE_STUDIO_HOST_SIDECAR: process.env.STUDIO_HOST_SIDECAR } : {}),
+      ...(process.env.STUDIO_HOST_ASTRO ? { VITE_STUDIO_HOST_ASTRO: process.env.STUDIO_HOST_ASTRO } : {}),
+      ...(process.env.STUDIO_PROTOCOL ? { VITE_STUDIO_PROTOCOL: process.env.STUDIO_PROTOCOL } : {}),
     },
     healthUrl: `http://127.0.0.1:${ports.spa}/`,
   });
@@ -401,7 +409,8 @@ async function main() {
   const spaUrl = post
     ? `http://localhost:${ports.spa}/?post=${encodeURIComponent(post.rel)}`
     : `http://localhost:${ports.spa}/`;
-  openBrowser(spaUrl);
+  // Containers have no browser to open (and no display to fail toward); the Docker image sets this.
+  if (!process.env.STUDIO_NO_OPEN_BROWSER) openBrowser(spaUrl);
 
   console.log(readyBanner({ ports, post, branch: sessionBranchForDisplay() }));
 }
