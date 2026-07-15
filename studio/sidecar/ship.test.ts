@@ -64,9 +64,10 @@ function happy(bin: "git" | "gh", args: readonly string[]): Partial<RunResult> {
   if (a.startsWith("diff --name-only")) return { stdout: `${BLOG_PATH}\n` }; // scope assertion
   if (a.startsWith("diff --no-index")) return { code: 1, stdout: "" };
   if (a.startsWith("diff -M --staged")) return { stdout: "" };
+  if (a.startsWith("merge-base")) return { stdout: "deadbeef\n" };
   if (a.startsWith("diff")) return { stdout: `diff --git a/${BLOG_PATH} b/${BLOG_PATH}\n` };
   if (a.startsWith("log -1")) return { stdout: "Ryan Rowe <ryan@rowe.codes>\n" };
-  return { code: 0 }; // add / commit / push
+  return { code: 0 }; // add / commit / push / rev-parse --verify (base on origin)
 }
 
 function withOverride(base: Handler, override: Handler): Handler {
@@ -309,9 +310,44 @@ describe("createShipService.diff", () => {
     expect(res.diff).toContain("diff --git");
     expect(calls.every((c) => c.cwd === WT_PATH)).toBe(true);
     const seq = lines();
-    expect(seq).toContain("git -c core.quotePath=false status --short --untracked-files=all -- src/content/blog");
-    expect(seq).toContain("git diff -M -- src/content/blog");
-    expect(seq).toContain("git diff -M --staged -- src/content/blog");
+    expect(seq).toContain("git -c core.quotePath=false status --porcelain --untracked-files=all -- src/content/blog");
+    // The session branch is on origin (the ship gate, mocked as succeeding by default), so the
+    // preview measures against origin/main, matching what `gh pr create --base main` will diff.
+    expect(seq).toContain("git merge-base origin/main HEAD");
+    expect(seq).toContain("git -c core.quotePath=false diff -M deadbeef -- src/content/blog");
+  });
+
+  it("previews against the PR base, not HEAD, so an adopted draft's prior commits still show up", async () => {
+    // Mirrors adopting a remote draft: HEAD already carries a big prior commit that origin/main
+    // doesn't have, plus a fresh one-line uncommitted edit made after adoption. A HEAD-relative diff
+    // would only ever see the one line; ship's preview must show both, since the PR will contain both.
+    const handler = withOverride(happy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("status --porcelain")) return { stdout: ` M ${BLOG_PATH}\n` };
+      if (bin === "git" && a.startsWith("merge-base")) return { stdout: "forkpoint\n" };
+      if (bin === "git" && a.startsWith("diff -M forkpoint"))
+        return { stdout: `diff --git a/${BLOG_PATH} b/${BLOG_PATH}\n+adopted draft's prior commit\n+one-line edit\n` };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.diff("post");
+    expect(res.diff).toContain("adopted draft's prior commit");
+    expect(res.diff).toContain("one-line edit");
+    // Never diffs directly against the moving base branch; always its merge-base with HEAD.
+    expect(lines()).toContain("git merge-base origin/main HEAD");
+    expect(lines().some((l) => l.startsWith("git -c core.quotePath=false diff -M origin/main"))).toBe(false);
+  });
+
+  it("previews against origin/<sessionBranch> once it's pushed there, not the local branch", async () => {
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("rev-parse --verify") ? { code: 0 } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "feat/x", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    await svc.diff("post");
+    expect(lines()).toContain("git rev-parse --verify --quiet refs/remotes/origin/feat/x");
+    expect(lines()).toContain("git merge-base origin/feat/x HEAD");
   });
 
   it("returns empty output when there is no active post", async () => {
@@ -342,7 +378,7 @@ describe("createShipService.diff", () => {
     const NEW_POST = "src/content/blog/2026-07-11_brand-new.mdx";
     const handler = withOverride(happy, (bin, args) => {
       const a = subcommand(args);
-      if (bin === "git" && a.startsWith("status --short")) return { stdout: `?? ${NEW_POST}\n` };
+      if (bin === "git" && a.startsWith("status --porcelain")) return { stdout: `?? ${NEW_POST}\n` };
       if (bin === "git" && a.startsWith("diff --no-index")) {
         return { code: 1, stdout: `diff --git a/dev/null b/${NEW_POST}\n@@ -0,0 +1 @@\n+brand new untracked body\n` };
       }
