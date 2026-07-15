@@ -1,5 +1,9 @@
 // Watches the active post's on-disk file (inside its worktree) and keeps the store in sync.
 //
+// It watches both of a post's layout locations (`<stem>.mdx` and the `<stem>/` folder holding
+// `<stem>/post.mdx`), so when the agent flips a post from one layout to the other (to co-locate a
+// component) the move is caught and the store's doc is repointed to the new file via `store.relayout`.
+//
 // The store records the hash of every byte sequence it writes (its SelfWriteGuard: editor
 // autosaves), so when chokidar reports a change we can tell the store's own writes apart from
 // writes it didn't make. The agent edits its worktree with native tools rather than mutating
@@ -11,6 +15,8 @@
 // A server-side copy of the pure docSyncMachine is driven alongside so lifecycle events
 // (prompt dispatch through agent-turn end) flip its `locked` flag, which is exactly the signal
 // used to classify agent-vs-external disk changes.
+
+import path from "node:path";
 
 import { watch, type FSWatcher } from "chokidar";
 
@@ -49,6 +55,29 @@ export interface DocSyncDeps {
   onEffect?: (effect: SyncEffect) => void;
 }
 
+/** True when `postFile` is a folder post's `<stem>/post.mdx` (vs a simple `<stem>.mdx`). */
+function isFolderLayout(postFile: string): boolean {
+  return postFile.endsWith(`${path.sep}post.mdx`) || postFile.endsWith("/post.mdx");
+}
+
+/**
+ * The pair of on-disk locations a post's watcher must cover so a flip between file and folder layout
+ * (the agent adding or removing a co-located component) is caught: the simple-post file `<stem>.mdx`, and the
+ * folder `<stem>/` that would hold `<stem>/post.mdx` plus its assets. The folder is watched as a
+ * directory because it, and the `post.mdx` inside it, may not exist yet; chokidar still reports files
+ * created under a watched directory. Both current layouts of the same stem yield the same pair.
+ */
+function watchTargetsFor(postFile: string): [string, string] {
+  const stemDir = isFolderLayout(postFile) ? path.dirname(postFile) : postFile.replace(/\.mdx$/, "");
+  return [`${stemDir}.mdx`, stemDir];
+}
+
+/** The other layout's `post.mdx`/`<stem>.mdx` path for the same stem (file or folder). */
+function alternateLayout(postFile: string): string {
+  const [fileLayout, stemDir] = watchTargetsFor(postFile);
+  return postFile === fileLayout ? path.join(stemDir, "post.mdx") : fileLayout;
+}
+
 export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSync {
   const active = store.getActiveDoc();
   const initialPath = deps.filePath ?? store.getActiveWatchPath();
@@ -77,13 +106,18 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   }
 
   function makeWatcher(target: string): FSWatcher {
-    const w = watch(target, {
+    // Watch both layout locations for the post's stem, so a flip between file and folder layout is
+    // caught whichever side (old file unlinked / new file added) lands first.
+    const w = watch(watchTargetsFor(target), {
       ignoreInitial: true,
       // Coalesce editor "save" bursts so we read a settled file, not a half-written one.
       awaitWriteFinish: { stabilityThreshold: 75, pollInterval: 20 },
     });
     w.on("change", onFsEvent);
     w.on("add", onFsEvent);
+    // The current-layout file being unlinked is the direct signal of a flip's delete step; handle()
+    // reacts by probing the alternate layout for the moved post.
+    w.on("unlink", onFsEvent);
     return w;
   }
 
@@ -95,13 +129,35 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   }
 
   async function handle(): Promise<void> {
+    // Resolve the post's current on-disk file. Normally `filePath`; a flip between file and folder
+    // layout (the agent adding/removing a co-located component) moves the post to its alternate layout.
+    let current = filePath;
     let text: string;
     try {
       text = await fs.readFile(filePath);
     } catch {
-      // File vanished mid-edit (atomic rename in progress); the next event settles it.
+      const alt = alternateLayout(filePath);
+      try {
+        text = await fs.readFile(alt);
+      } catch {
+        // Neither layout present (atomic rename in flight); the next event settles it.
+        return;
+      }
+      current = alt;
+    }
+
+    if (current !== filePath) {
+      // Layout flipped. Repoint the store's doc to the new file (same post/stem/worktree); the SPA
+      // follows via post.renamed + a buffer re-seed. Under a locked turn it's the agent's write.
+      const origin: "agent" | "external" = syncState.locked ? "agent" : "external";
+      const migrated = await store.relayout(filePath, current, origin);
+      if (migrated) {
+        filePath = current;
+        drive({ type: "disk.changed", origin, rev: migrated.rev });
+      }
       return;
     }
+
     const hash = sha256Hex(text);
 
     // Reconcile against the post that owns the watched file, not "the active doc". A tab switch can
@@ -153,6 +209,7 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     const previous = watcher;
     previous.off("change", onFsEvent);
     previous.off("add", onFsEvent);
+    previous.off("unlink", onFsEvent);
     void previous.close();
     filePath = nextPath;
     syncState = initialSyncState(current?.rev ?? syncState.baseRev);
@@ -170,6 +227,7 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     async close() {
       watcher.off("change", onFsEvent);
       watcher.off("add", onFsEvent);
+      watcher.off("unlink", onFsEvent);
       await watcher.close();
     },
   };

@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint .",
+    "prestudio": "npm install",
     "studio": "node studio/bin/studio.mjs",
     "studio:sidecar": "tsx studio/sidecar/main.ts",
     "studio:ui": "vite --config studio/frontend/vite.config.ts",

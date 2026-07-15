@@ -382,6 +382,15 @@ export interface StudioStore extends Store {
    * turn's post even after a mid-turn tab switch.
    */
   reloadByWatchPath(worktreeFilePath: string, text: string, origin: "external" | "agent"): Promise<ActiveDoc | null>;
+  /**
+   * Adopt an in-worktree layout flip for the open post backing `oldWorktreeFilePath`: the agent
+   * restructured a simple `<stem>.mdx` post into a folder `<stem>/post.mdx` (or back) to co-locate a
+   * component. Same post (stem, branch, and worktree all unchanged), new file location, so re-key the
+   * doc to `newWorktreeFilePath`, adopt its text, and emit `post.renamed` then a buffer re-seed so the
+   * tab (with its transcript/session) follows. Null when no open post backs the old path, nothing
+   * flipped, or the new file isn't readable.
+   */
+  relayout(oldWorktreeFilePath: string, newWorktreeFilePath: string, origin: "external" | "agent"): Promise<ActiveDoc | null>;
   /** Register a callback fired whenever the active post switches; returns an unsubscribe fn. */
   onActiveChange(listener: (info: ActiveChangeInfo) => void): () => void;
   /**
@@ -1343,6 +1352,47 @@ export function createStore(deps: StoreDeps): StudioStore {
     },
 
     reloadByWatchPath: reloadByWatchPathImpl,
+
+    relayout(oldWorktreeFilePath, newWorktreeFilePath, origin) {
+      return mutex.runExclusive(async (): Promise<ActiveDoc | null> => {
+        const doc = docByWatchPath(oldWorktreeFilePath);
+        if (!doc) return null;
+        let text: string;
+        try {
+          text = await fs.readFile(newWorktreeFilePath);
+        } catch {
+          // The alternate layout vanished mid-flip; the watcher retries on its next event.
+          return null;
+        }
+        // The worktree is unchanged, so the new file's repo-relative path is its offset within it.
+        const newRel = path.relative(doc.worktreePath, newWorktreeFilePath);
+        const newCanonical = path.join(repoRoot, newRel);
+        // Not actually a flip, or the target path is already an open tab: nothing to migrate.
+        if (newCanonical === doc.canonicalPath || open.has(newCanonical)) return null;
+
+        const oldCanonical = doc.canonicalPath;
+        const wasActive = activePath === oldCanonical;
+        open.delete(oldCanonical);
+        doc.canonicalPath = newCanonical;
+        doc.relPath = newRel;
+        doc.worktreeFilePath = newWorktreeFilePath;
+        doc.text = text;
+        doc.rev = { n: doc.rev.n + 1, hash: sha256Hex(text) };
+        doc.title = frontmatterTitle(text) ?? doc.title;
+        open.set(newCanonical, doc);
+        if (wasActive) activePath = newCanonical;
+
+        // Migrate the tab (transcript/session/permissions) onto the new path before the tabs +
+        // file.changed that re-seed its buffer, exactly like renameInternal. No worktree moved, so
+        // nothing retargets: astro already serves this worktree and the watch set covers both layouts.
+        publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title, branch: doc.branch });
+        publishTabs();
+        if (wasActive) publish({ type: "active", path: newCanonical, title: doc.title, branch: doc.branch });
+        publish({ type: "file.changed", path: newCanonical, text: doc.text, rev: doc.rev, origin });
+        if (wasActive) refreshPreview();
+        return { path: newCanonical, text: doc.text, rev: doc.rev };
+      });
+    },
 
     getEditorContext() {
       return editorContext;

@@ -676,6 +676,97 @@ describe("store.reloadByWatchPath / getDocByWatchPath (watcher targets the file'
   });
 });
 
+describe("store.relayout (agent flips a post between file and folder layout)", () => {
+  // The folder-layout paths for the skyline post's stem: same worktree, `<stem>/post.mdx` instead of
+  // `<stem>.mdx`.
+  const SKYLINE_FOLDER_CANON = `${BLOG}/2026-07-10_aligning-a-skyline/post.mdx`;
+  const SKYLINE_FOLDER_WT_FILE = `${WT}/2026-07-10_aligning-a-skyline/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx`;
+
+  it("repoints the active doc to the new folder file and migrates the tab (post.renamed + re-seed)", async () => {
+    const { store, fs, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_CANON);
+
+    // The agent moved the post into a folder to co-locate a component: the new file is on disk, the
+    // old one is gone.
+    const folderText = SKYLINE.replace("Body text.", "import Widget from './Widget';\n\nBody text.");
+    fs.store.set(SKYLINE_FOLDER_WT_FILE, folderText);
+    fs.store.delete(SKYLINE_WT_FILE);
+
+    const migrated = await store.relayout(SKYLINE_WT_FILE, SKYLINE_FOLDER_WT_FILE, "agent");
+    expect(migrated?.path).toBe(SKYLINE_FOLDER_CANON);
+    expect(migrated?.text).toBe(folderText);
+
+    // The doc is re-keyed: the old path is closed, the new path is the active post's watch target.
+    expect(store.getDocByWatchPath(SKYLINE_WT_FILE)).toBeNull();
+    expect(store.getDocByWatchPath(SKYLINE_FOLDER_WT_FILE)).toMatchObject({ path: SKYLINE_FOLDER_CANON });
+    expect(store.getActive()?.path).toBe(SKYLINE_FOLDER_CANON);
+    expect(store.getActiveWatchPath()).toBe(SKYLINE_FOLDER_WT_FILE);
+
+    // The SPA is told to migrate the tab first, then re-seeded with the folder-post buffer.
+    expect(messages.filter((m) => m.type === "post.renamed").at(-1)).toMatchObject({
+      oldPath: SKYLINE_CANON,
+      newPath: SKYLINE_FOLDER_CANON,
+    });
+    expect(messages.filter((m) => m.type === "file.changed").at(-1)).toMatchObject({
+      path: SKYLINE_FOLDER_CANON,
+      text: folderText,
+      origin: "agent",
+    });
+  });
+
+  it("flips back from folder to file layout", async () => {
+    const { store, fs } = newStore({ [SKYLINE_FOLDER_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_FOLDER_CANON);
+    expect(store.getActive()?.path).toBe(SKYLINE_FOLDER_CANON);
+
+    const fileText = SKYLINE.replace("Body text.", "No component now.");
+    fs.store.set(SKYLINE_WT_FILE, fileText);
+    fs.store.delete(SKYLINE_FOLDER_WT_FILE);
+
+    const migrated = await store.relayout(SKYLINE_FOLDER_WT_FILE, SKYLINE_WT_FILE, "agent");
+    expect(migrated?.path).toBe(SKYLINE_CANON);
+    expect(store.getActive()?.path).toBe(SKYLINE_CANON);
+    expect(store.getActiveWatchPath()).toBe(SKYLINE_WT_FILE);
+  });
+
+  it("migrates a background (non-active) post without stealing focus", async () => {
+    const { store, fs, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE, [HELLO_WT_FILE]: HELLO });
+    await store.openPost(SKYLINE_CANON);
+    await store.openPost(HELLO_CANON); // active = hello; skyline flips in the background
+
+    const folderText = SKYLINE.replace("Body text.", "With a widget.");
+    fs.store.set(SKYLINE_FOLDER_WT_FILE, folderText);
+    fs.store.delete(SKYLINE_WT_FILE);
+    const migrated = await store.relayout(SKYLINE_WT_FILE, SKYLINE_FOLDER_WT_FILE, "agent");
+
+    expect(migrated?.path).toBe(SKYLINE_FOLDER_CANON);
+    // Focus stays on hello; no `active` broadcast for the background flip.
+    expect(store.getActive()?.path).toBe(HELLO_CANON);
+    expect(messages.filter((m) => m.type === "active").at(-1)).toMatchObject({ path: HELLO_CANON });
+  });
+
+  it("returns null when no open post backs the old path, or the new file is unreadable", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_CANON);
+    // No post open at the old path.
+    await expect(store.relayout(`${WT}/nope/x.mdx`, `${WT}/nope/y/post.mdx`, "agent")).resolves.toBeNull();
+    // The post is open, but the new file was never written to disk.
+    await expect(store.relayout(SKYLINE_WT_FILE, SKYLINE_FOLDER_WT_FILE, "agent")).resolves.toBeNull();
+  });
+
+  it("refuses to migrate onto a path another tab already holds", async () => {
+    // Both layouts of the stem are open at once (a degenerate state). Relaying the file-layout post
+    // onto the folder path must not clobber the tab already there.
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE, [SKYLINE_FOLDER_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_CANON);
+    await store.openPost(SKYLINE_FOLDER_CANON);
+
+    await expect(store.relayout(SKYLINE_WT_FILE, SKYLINE_FOLDER_WT_FILE, "agent")).resolves.toBeNull();
+    // The file-layout post is left untouched at its own path.
+    expect(store.getDocByWatchPath(SKYLINE_WT_FILE)).toMatchObject({ path: SKYLINE_CANON });
+  });
+});
+
 describe("store.postLossPreview", () => {
   it("reports uncommitted files + commits ahead of base for a delete, with a full loss diff", async () => {
     const { store } = newStore(
