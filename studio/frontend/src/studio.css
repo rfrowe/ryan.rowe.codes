@@ -2249,8 +2249,7 @@ body {
 .palette__badge--stale {
   background: var(--warn);
 }
-/* Outline chip (distinct from the filled Draft badge): marks a remote-only draft branch whose
-   reopen adopts a tracking worktree from origin. */
+/* Outline status chip: local/remote/published are informational, so they stay understated. */
 .palette__chip {
   flex: 0 0 auto;
   font-family: var(--mono);
@@ -2263,6 +2262,12 @@ body {
   color: var(--fg-faint);
   background: transparent;
   border: 1px solid var(--border-strong);
+}
+/* Dirty means action is needed (save draft or ship), so it's filled like the Stale badge. */
+.palette__chip--dirty {
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 0;
 }
 .palette__foot {
   padding: 8px 12px;

@@ -3,47 +3,59 @@
 // the New Post dialog seeded with the search term. Type to filter, ↑/↓ to move, Enter, Esc.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getDirtyPosts, getDrafts, getPosts } from "./api";
+import { getBranchStatuses, getDirtyPosts, getPosts } from "./api";
 import { slugFromPath } from "./slug";
 import type { TabDescriptor } from "./TabBar";
-import type { DraftSummary } from "../../shared/protocol";
+import type { BranchStatus } from "../../shared/protocol";
 
 interface PaletteEntry {
   path: string;
   title: string;
   open: boolean;
-  /** Set when this row is a draft branch with no live worktree (adoptable). `remote`-only draft
-   *  reopens by adopting a tracking worktree from origin (shown with a chip). */
-  draft?: "local" | "remote" | "both";
-  /** The draft branch is already merged into the default branch, so reopening forks a fresh one
-   *  over it instead of adopting its (shipped) content. Shown as a "Stale" badge, not "draft". */
-  stale?: boolean;
+  /** A worktree already exists for this post on disk. */
+  local: boolean;
+  /** This post's branch has been pushed to origin (via ship or save draft). */
+  remote: boolean;
+  /** Has changes not yet persisted by save-draft or ship. */
+  dirty: boolean;
+  /** Present in the studio's root worktree (already live). */
+  published: boolean;
+  /** Its branch is already merged into the default branch, so reopening forks a fresh one over it
+   *  instead of adopting its (shipped) content. */
+  stale: boolean;
 }
 
 /** A navigable palette row: an existing post to open, or the create-new-post command. */
 type PaletteRow = { kind: "post"; entry: PaletteEntry } | { kind: "create"; title: string };
 
+function emptyEntry(path: string, title = ""): PaletteEntry {
+  return { path, title, open: false, local: false, remote: false, dirty: false, published: false, stale: false };
+}
+
 /**
- * Open tabs first (deduped), then other main-tree posts, then adoptable draft branches, except a
- * draft matching an already-published, not-currently-open post layers its `draft`/`stale` fields
- * onto that post's existing entry (in its original position) instead of being dropped: a re-edit of
- * a published post still needs its remote/stale chip, not to read as an ordinary post with nothing
- * pending. An open tab's own state always wins, since a live worktree already reflects the draft.
+ * Every row keyed by canonical path, with each source (open tabs, main-tree posts, branch statuses,
+ * the dirty scan) layering its own fields onto whatever's already there instead of one source
+ * winning outright, so a post known to more than one source accumulates chips from all of them.
  */
 export function mergePaletteEntries(
   openTabs: readonly TabDescriptor[],
-  posts: readonly PaletteEntry[] | null,
-  drafts: readonly DraftSummary[],
+  posts: readonly { path: string; title: string }[] | null,
+  branches: readonly BranchStatus[],
+  dirty: ReadonlySet<string>,
 ): PaletteEntry[] {
   const byPath = new Map<string, PaletteEntry>();
-  for (const t of openTabs) byPath.set(t.path, { path: t.path, title: t.title, open: true });
+  for (const t of openTabs) byPath.set(t.path, { ...emptyEntry(t.path, t.title), open: true });
   for (const p of posts ?? []) {
-    if (!byPath.has(p.path)) byPath.set(p.path, p);
+    const existing = byPath.get(p.path);
+    byPath.set(p.path, { ...(existing ?? emptyEntry(p.path)), title: existing?.open ? existing.title : p.title, published: true });
   }
-  for (const d of drafts) {
-    const existing = byPath.get(d.path);
-    if (existing?.open) continue;
-    byPath.set(d.path, { ...(existing ?? { path: d.path, title: "", open: false }), draft: d.origin, stale: d.stale });
+  for (const b of branches) {
+    const existing = byPath.get(b.path) ?? emptyEntry(b.path);
+    byPath.set(b.path, { ...existing, local: b.local, remote: b.remote, stale: b.stale });
+  }
+  for (const p of dirty) {
+    const existing = byPath.get(p);
+    if (existing) byPath.set(p, { ...existing, dirty: true });
   }
   return [...byPath.values()];
 }
@@ -72,10 +84,10 @@ function fuzzyMatch(text: string, q: string): boolean {
 
 export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
-  const [posts, setPosts] = useState<PaletteEntry[] | null>(null);
-  // Draft branches with no live worktree (adoptable), merged in below the main-tree posts.
-  const [drafts, setDrafts] = useState<DraftSummary[]>([]);
-  // Open posts with unshipped changes; drives the "Draft" badge. Best-effort probe on open.
+  const [posts, setPosts] = useState<{ path: string; title: string }[] | null>(null);
+  // Every blog/* branch's local/remote/stale status, merged in as chips below.
+  const [branches, setBranches] = useState<BranchStatus[]>([]);
+  // Posts with unshipped changes, driving the "dirty" chip. Best-effort probe on open.
   const [dirty, setDirty] = useState<Set<string>>(() => new Set());
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -91,7 +103,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
         if (live) setDirty(new Set(res.dirty));
       })
       .catch(() => {
-        /* best-effort: leave the badge set empty */
+        /* best-effort: leave the chip set empty */
       });
     return () => {
       live = false;
@@ -103,7 +115,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     let live = true;
     getPosts()
       .then((res) => {
-        if (live) setPosts(res.posts.map((p) => ({ path: p.path, title: p.title, open: false })));
+        if (live) setPosts(res.posts.map((p) => ({ path: p.path, title: p.title })));
       })
       .catch(() => {
         if (live) setPosts([]);
@@ -113,22 +125,22 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     };
   }, []);
 
-  // Pull adoptable draft branches so drafts started elsewhere are reopenable here; best-effort.
+  // Pull every blog/* branch's status so a draft (open, published, or neither) shows its chips.
   useEffect(() => {
     let live = true;
-    getDrafts()
+    getBranchStatuses()
       .then((res) => {
-        if (live) setDrafts(res.drafts);
+        if (live) setBranches(res.branches);
       })
       .catch(() => {
-        /* best-effort: no draft rows */
+        /* best-effort: no branch chips */
       });
     return () => {
       live = false;
     };
   }, []);
 
-  const entries = useMemo(() => mergePaletteEntries(openTabs, posts, drafts), [openTabs, posts, drafts]);
+  const entries = useMemo(() => mergePaletteEntries(openTabs, posts, branches, dirty), [openTabs, posts, branches, dirty]);
 
   const filtered = useMemo(
     () => entries.filter((e) => fuzzyMatch(`${e.title} ${slugFromPath(e.path)}`, query.trim())),
@@ -210,27 +222,36 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
               onClick={() => choose(row)}
             >
               <span className="palette__title">{entry.title || slugFromPath(entry.path)}</span>
-              {entry.stale ? (
+              {entry.stale && (
                 <span
                   className="palette__badge palette__badge--stale"
                   title="Stale — already merged; reopening forks a fresh branch instead of adopting this one"
                 >
                   Stale
                 </span>
-              ) : (
-                dirty.has(entry.path) && (
-                  <span className="palette__badge" title="Draft — has changes not yet saved to its remote">
-                    Draft
-                  </span>
-                )
               )}
-              {entry.draft === "remote" && (
-                <span className="palette__chip" title="On origin only — reopening adopts a tracking worktree from origin">
+              {entry.local && (
+                <span className="palette__chip" title="Has a worktree on disk, on this machine">
+                  local
+                </span>
+              )}
+              {entry.remote && (
+                <span className="palette__chip" title="Pushed to origin, via ship or save draft">
                   remote
                 </span>
               )}
+              {entry.dirty && (
+                <span className="palette__chip palette__chip--dirty" title="Has changes not yet persisted by save draft or ship">
+                  dirty
+                </span>
+              )}
+              {entry.published && (
+                <span className="palette__chip" title="Present in the studio's root worktree">
+                  published
+                </span>
+              )}
               <span className="palette__meta">
-                {entry.open ? (entry.path === activePath ? "active" : "open") : entry.stale ? "stale" : entry.draft ? "draft" : "post"} ·{" "}
+                {entry.open && (entry.path === activePath ? "active · " : "open · ")}
                 {slugFromPath(entry.path)}
               </span>
             </li>

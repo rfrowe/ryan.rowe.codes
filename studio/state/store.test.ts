@@ -109,9 +109,9 @@ interface GitConfig {
   localCherryMerged?: boolean;
   /** Override of `cherryMerged` for just the remote ref's `git cherry` call. */
   remoteCherryMerged?: boolean;
-  /** Stems returned by `for-each-ref refs/heads/blog` (local blog branches), for listDrafts. */
+  /** Stems returned by `for-each-ref refs/heads/blog` (local blog branches), for listBranchStatuses. */
   localBranches?: string[];
-  /** Stems returned by `for-each-ref refs/remotes/origin/blog` (remote blog branches), for listDrafts. */
+  /** Stems returned by `for-each-ref refs/remotes/origin/blog` (remote blog branches), for listBranchStatuses. */
   remoteBranches?: string[];
   /** `<ref>:<rel>` specs `git cat-file -e` reports as present (draft layout detection); default none. */
   catFilePaths?: string[];
@@ -1178,38 +1178,69 @@ describe("ensureWorktree adopts an existing draft branch (open path)", () => {
   });
 });
 
-describe("store.listDrafts (branches without a live worktree)", () => {
-  it("enumerates local + remote blog branches, flagging origin and the post layout", async () => {
-    const { store } = newStore(
+describe("store.listBranchStatuses (every blog/* branch's local/remote/stale status)", () => {
+  it("enumerates local + remote blog branches, flagging local and remote independently", async () => {
+    const { store, fs } = newStore(
       {},
       {
         localBranches: ["2026-05-01_local-only", "2026-05-02_both"],
         remoteBranches: ["2026-05-02_both", "2026-05-03_remote-only"],
-        catFilePaths: [
-          "blog/2026-05-01_local-only:src/content/blog/2026-05-01_local-only.mdx",
-          "blog/2026-05-02_both:src/content/blog/2026-05-02_both.mdx",
-          // A folder-post draft on origin only.
-          "origin/blog/2026-05-03_remote-only:src/content/blog/2026-05-03_remote-only/post.mdx",
-        ],
+        // A folder-post draft on origin only (no worktree, so this resolves via git history).
+        catFilePaths: ["origin/blog/2026-05-03_remote-only:src/content/blog/2026-05-03_remote-only/post.mdx"],
       },
     );
-    expect(await store.listDrafts()).toEqual([
-      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", origin: "local", stale: false },
-      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", origin: "both", stale: false },
-      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", origin: "remote", stale: false },
+    fs.store.set(`${WT}/2026-05-01_local-only/.git`, "gitdir");
+    fs.store.set(`${WT}/2026-05-01_local-only/src/content/blog/2026-05-01_local-only.mdx`, doc("Local Only", "local-only", "2026-05-01"));
+    fs.store.set(`${WT}/2026-05-02_both/.git`, "gitdir");
+    fs.store.set(`${WT}/2026-05-02_both/src/content/blog/2026-05-02_both.mdx`, doc("Both", "both", "2026-05-02"));
+    expect(await store.listBranchStatuses()).toEqual([
+      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", local: true, remote: false, stale: false },
+      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", local: true, remote: true, stale: false },
+      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", local: false, remote: true, stale: false },
     ]);
   });
 
-  it("excludes a stem that already has a live worktree on disk", async () => {
+  it("includes a stem with a live worktree on disk, resolving the post from disk rather than git history — the crashed-sidecar/closed-tab recovery case", async () => {
     const { store, fs } = newStore({}, { localBranches: ["2026-05-01_kept"] });
-    fs.store.set(`${WT}/2026-05-01_kept/.git`, "gitdir"); // a kept worktree → not a draft-w/o-worktree
-    expect(await store.listDrafts()).toEqual([]);
+    fs.store.set(`${WT}/2026-05-01_kept/.git`, "gitdir");
+    fs.store.set(`${WT}/2026-05-01_kept/src/content/blog/2026-05-01_kept.mdx`, doc("Kept", "kept", "2026-05-01"));
+    // No catFilePaths entry: nothing is committed to the branch yet, only autosaved to disk.
+    expect(await store.listBranchStatuses()).toEqual([
+      { path: `${BLOG}/2026-05-01_kept.mdx`, stem: "2026-05-01_kept", local: true, remote: false, stale: false },
+    ]);
   });
 
-  it("skips a branch that carries no post file under the blog dir", async () => {
+  it("falls back to git history when a registered worktree's post file is missing on disk (a stale worktree registration)", async () => {
+    const { store, fs } = newStore(
+      {},
+      {
+        localBranches: ["2026-05-06_orphaned"],
+        catFilePaths: ["blog/2026-05-06_orphaned:src/content/blog/2026-05-06_orphaned.mdx"],
+      },
+    );
+    // Registered as a worktree (e.g. via `git worktree list`) but its directory was removed
+    // out-of-band, so no post file exists on disk under it.
+    fs.store.set(`${WT}/2026-05-06_orphaned/.git`, "gitdir");
+    expect(await store.listBranchStatuses()).toEqual([
+      { path: `${BLOG}/2026-05-06_orphaned.mdx`, stem: "2026-05-06_orphaned", local: true, remote: false, stale: false },
+    ]);
+  });
+
+  it("includes a stem that's already an open tab too, so the palette can still show its local/remote chips while editing", async () => {
+    const { store } = newStore(
+      { [`${WT}/2022-03-11_hello/.git`]: "gitdir", [HELLO_WT_FILE]: HELLO },
+      { localBranches: ["2022-03-11_hello"], remoteBranches: ["2022-03-11_hello"] },
+    );
+    await store.openPost(HELLO_CANON);
+    expect(await store.listBranchStatuses()).toEqual([
+      { path: HELLO_CANON, stem: "2022-03-11_hello", local: true, remote: true, stale: false },
+    ]);
+  });
+
+  it("skips a branch that carries no post file, on disk or in git history", async () => {
     // A blog/* branch with nothing under src/content/blog matching the stem: can't resolve a path.
     const { store } = newStore({}, { localBranches: ["2026-05-04_empty"], catFilePaths: [] });
-    expect(await store.listDrafts()).toEqual([]);
+    expect(await store.listBranchStatuses()).toEqual([]);
   });
 
   it("flags a branch already merged into main as stale, via the same check ensureWorktree uses", async () => {
@@ -1221,8 +1252,10 @@ describe("store.listDrafts (branches without a live worktree)", () => {
         cherryMerged: true,
       },
     );
-    expect(await store.listDrafts()).toEqual([
-      { path: `${BLOG}/2026-05-05_shipped.mdx`, stem: "2026-05-05_shipped", origin: "local", stale: true },
+    // No worktree seeded: a fully-shipped branch with only its ref left behind, dead weight rather
+    // than something still checked out locally.
+    expect(await store.listBranchStatuses()).toEqual([
+      { path: `${BLOG}/2026-05-05_shipped.mdx`, stem: "2026-05-05_shipped", local: false, remote: false, stale: true },
     ]);
   });
 });

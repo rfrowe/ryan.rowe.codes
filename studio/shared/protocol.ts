@@ -151,19 +151,22 @@ export interface DirtyPostsResponse {
   uncommitted: string[];
 }
 
-// A `blog/<stem>` draft branch with no live worktree (invisible to the open-tabs/main-tree listings).
-// path is the canonical path to reopen it at; stem is its date-qualified identity; origin says where
-// the branch lives (reopening a remote-only draft adopts a tracking worktree from origin); stale
-// means the branch is already merged into the default branch, so reopening forks a fresh one over
-// it instead of adopting its (shipped) content.
-export interface DraftSummary {
+// A `blog/<stem>` branch's status, covering every stem regardless of whether it's open or
+// published (including one left by a sidecar that died or a tab that was closed), otherwise
+// invisible to both the open-tabs set and the main-tree /posts listing. path is the canonical path
+// to reopen it at; stem is its date-qualified identity; local means a worktree already exists for
+// it on disk; remote means it's been pushed to origin (via ship or save-draft); stale means the
+// branch is already merged into the default branch, so reopening forks a fresh one over it instead
+// of adopting its (shipped) content.
+export interface BranchStatus {
   path: string;
   stem: string;
-  origin: "local" | "remote" | "both";
+  local: boolean;
+  remote: boolean;
   stale: boolean;
 }
-export interface DraftsResponse {
-  drafts: DraftSummary[];
+export interface BranchesResponse {
+  branches: BranchStatus[];
 }
 
 export interface ShipRequest {
