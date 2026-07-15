@@ -5,8 +5,8 @@
 set -euo pipefail
 
 if [ ! -d "$REPO_DIR/.git" ]; then
-  echo "[entrypoint] cloning $GIT_REPO_URL into $REPO_DIR"
-  git clone --recursive "$GIT_REPO_URL" "$REPO_DIR"
+  echo "[entrypoint] cloning $GIT_REPO_URL ($GIT_BRANCH) into $REPO_DIR"
+  git clone --recursive --branch "$GIT_BRANCH" "$GIT_REPO_URL" "$REPO_DIR"
 else
   echo "[entrypoint] fetching latest $GIT_BRANCH"
   git -C "$REPO_DIR" fetch origin
@@ -26,4 +26,7 @@ fi
 cd "$REPO_DIR"
 npm ci
 
-exec npm run studio
+# Exec the underlying script directly rather than `npm run studio`: npm doesn't reliably forward
+# SIGTERM to the child it wraps, which would stop the orchestrator's own graceful shutdown (and its
+# cascade to the sidecar/SPA/Astro daemon) from ever running before `docker stop` gives up and kills it.
+exec node studio/bin/studio.mjs
