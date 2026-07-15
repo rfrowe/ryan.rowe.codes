@@ -38,8 +38,19 @@ function Lines({ lines, className }: { lines: DiffLine[]; className?: string }) 
   );
 }
 
-export function ToolDetailView({ toolName, input }: { toolName: string; input: unknown }) {
-  const detail = toolDetail(toolName, input);
+export function ToolDetailView({
+  toolName,
+  input,
+  cwd,
+  answers,
+}: {
+  toolName: string;
+  input: unknown;
+  cwd?: string;
+  /** The human's picks for an AskUserQuestion call, by question text; absent while pending or skipped. */
+  answers?: Record<string, string>;
+}) {
+  const detail = toolDetail(toolName, input, cwd);
 
   if (detail.kind === "diff") {
     const empty = detail.sections.every((s) => s.lines.length === 0);
@@ -81,6 +92,33 @@ export function ToolDetailView({ toolName, input }: { toolName: string; input: u
           </span>
           {detail.command}
         </pre>
+      </div>
+    );
+  }
+
+  if (detail.kind === "ask") {
+    return (
+      <div className="tdetail tdetail--ask">
+        {detail.questions.map((q, i) => (
+          <div key={i} className="tdetail__ask">
+            <div className="tdetail__ask-head">
+              <span className="tdetail__ask-chip">{q.header}</span>
+              <span className="tdetail__ask-question">{q.question}</span>
+            </div>
+            <div className="tdetail__ask-answer">
+              {answers?.[q.question] ? (
+                <>
+                  <span className="tdetail__ask-answer-arrow" aria-hidden="true">
+                    →
+                  </span>
+                  <span className="tdetail__ask-answer-value">{answers[q.question]}</span>
+                </>
+              ) : (
+                <span className="tdetail__empty">Not answered.</span>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     );
   }

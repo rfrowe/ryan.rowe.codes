@@ -47,7 +47,10 @@ export type ClientMessage =
   // Set the permission mode (takes effect next turn); the sidecar echoes it back as mode.status.
   | { type: "mode.set"; mode: PermissionMode }
   // Answer an in-flight permission.request: allow once, allow and remember (widen permissions), or deny.
-  | { type: "permission.response"; requestId: string; decision: PermissionDecision };
+  | { type: "permission.response"; requestId: string; decision: PermissionDecision }
+  // Answer an in-flight AskUserQuestion permission.request with the human's picks, keyed by each
+  // question's exact text (a multi-select's value is its chosen labels, comma-separated).
+  | { type: "question.answer"; requestId: string; answers: Record<string, string> };
 
 // ---- WebSocket: server to client ----
 export type ServerMessage =
@@ -87,8 +90,9 @@ export type ServerMessage =
   // synced:true when there is no active post.
   | { type: "post.namesync"; synced: boolean; expectedStem?: string; currentStem?: string; canComplete?: boolean; reason?: string }
   // The active post changed (open/create/switch/rename); file.changed and preview.url follow. branch is
-  // the post's isolation branch (`blog/<date>_<slug>`), shown read-only.
-  | { type: "active"; path: string; title: string; branch: string }
+  // the post's isolation branch (`blog/<date>_<slug>`), shown read-only. worktreePath is the absolute
+  // dir tool-call paths get shown relative to, so the transcript doesn't repeat it on every file path.
+  | { type: "active"; path: string; title: string; branch: string; worktreePath: string }
   // Authoritative open-tab set (so agent-initiated creates update the bar too).
   | { type: "tabs"; open: { path: string; title: string }[] }
   | { type: "mcp.status"; servers: { name: string; status: string; enabled: boolean }[] }
@@ -100,8 +104,10 @@ export type ServerMessage =
   // have (or has no origin ref). `worktree` is the absolute repo root the studio launched from.
   | { type: "studio.branch"; ref: string; worktree: string }
   // The agent wants to run a tool the current mode won't auto-approve. promptId routes the card to the
-  // owning tab; title/description/reason are the SDK's prompt text.
-  | { type: "permission.request"; promptId: string; requestId: string; toolName: string; input: unknown; title?: string; description?: string; reason?: string }
+  // owning tab; title/description/reason are the SDK's prompt text. toolUseId matches the tool.start
+  // for the same call, if any, so the client can attach the human's answer back onto that transcript
+  // entry once resolved (used for AskUserQuestion).
+  | { type: "permission.request"; promptId: string; requestId: string; toolName: string; input: unknown; title?: string; description?: string; reason?: string; toolUseId?: string }
   | { type: "error"; promptId?: string; message: string };
 
 // ---- REST DTOs ----

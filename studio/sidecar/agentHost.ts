@@ -51,6 +51,12 @@ export interface StudioAgentHost extends AgentHost {
   /** Resolve an in-flight `permission.request` with the human's decision. */
   resolvePermission(requestId: string, decision: PermissionDecision): void;
   /**
+   * Resolve an in-flight AskUserQuestion `permission.request` with the human's picks. Merged into
+   * the tool's original input as `answers` and allowed through, so the model reads back the studio's
+   * own "answered" tool result rather than the SDK's "did not answer" default.
+   */
+  answerQuestion(requestId: string, answers: Record<string, string>): void;
+  /**
    * Re-key a post's session when the post is renamed, so the resumable conversation follows the post
    * instead of being orphaned under the vanished path. No-op if the old key has no session or the
    * new key is taken.
@@ -86,7 +92,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
   /** Dirs beyond the worktree edits may target without asking (grown via "always allow"). */
   private readonly grantedDirs: Set<string>;
   /** In-flight prompts: requestId to the resolver awaited inside `canUseTool`. */
-  private readonly pendingPermissions = new Map<string, (decision: PermissionDecision | "abort") => void>();
+  private readonly pendingPermissions = new Map<string, (resolution: PendingResolution) => void>();
   private current: { promptId: string; abort: AbortController } | null = null;
 
   constructor(deps: AgentHostDeps) {
@@ -185,10 +191,18 @@ class EmbeddedAgentHost implements StudioAgentHost {
   }
 
   resolvePermission(requestId: string, decision: PermissionDecision): void {
+    this.resolvePending(requestId, { kind: "decision", decision });
+  }
+
+  answerQuestion(requestId: string, answers: Record<string, string>): void {
+    this.resolvePending(requestId, { kind: "answer", answers });
+  }
+
+  private resolvePending(requestId: string, resolution: PendingResolution): void {
     const resolve = this.pendingPermissions.get(requestId);
     if (!resolve) return;
     this.pendingPermissions.delete(requestId);
-    resolve(decision);
+    resolve(resolution);
   }
 
   renameSessionKey(oldPath: string, newPath: string): void {
@@ -203,14 +217,16 @@ class EmbeddedAgentHost implements StudioAgentHost {
 
   /** Abort every still-pending prompt: the turn ended, so none can be answered. */
   private abortPendingPermissions(): void {
-    for (const resolve of this.pendingPermissions.values()) resolve("abort");
+    for (const resolve of this.pendingPermissions.values()) resolve({ kind: "abort" });
     this.pendingPermissions.clear();
   }
 
   /**
    * The `canUseTool` handler: emit a `permission.request` and await the human's decision (or an abort
    * if the turn is cancelled). "always" widens the session with the SDK's suggestions and, for an
-   * out-of-worktree edit, grants that file's dir so the jail hook stops asking.
+   * out-of-worktree edit, grants that file's dir so the jail hook stops asking. An AskUserQuestion
+   * answer merges into the original input (echoed back so the model reads its own picks), rather than
+   * mapping to a plain decision.
    */
   private makeCanUseTool(): NonNullable<Options["canUseTool"]> {
     return async (toolName, input, opts) => {
@@ -224,16 +240,27 @@ class EmbeddedAgentHost implements StudioAgentHost {
         title: opts.title,
         description: opts.description,
         reason: opts.decisionReason,
+        toolUseId: opts.toolUseID,
       });
-      const decision = await new Promise<PermissionDecision | "abort">((resolve) => {
+      const resolution = await new Promise<PendingResolution>((resolve) => {
         this.pendingPermissions.set(requestId, resolve);
-        if (opts.signal.aborted) this.resolvePermission(requestId, "deny");
-        else opts.signal.addEventListener("abort", () => resolve("abort"), { once: true });
+        if (opts.signal.aborted) this.resolvePending(requestId, { kind: "decision", decision: "deny" });
+        else opts.signal.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
       });
       this.pendingPermissions.delete(requestId);
-      if (decision === "abort") return { behavior: "deny", message: "The turn was cancelled before this was approved." };
-      if (decision === "always") this.grantDirFor(toolName, input);
-      return decisionToPermissionResult(decision, opts.suggestions);
+      if (resolution.kind === "abort") {
+        return { behavior: "deny", message: "The turn was cancelled before this was approved." };
+      }
+      if (resolution.kind === "answer") {
+        // Only AskUserQuestion's own answers can be merged in this way; a client bug or stale
+        // requestId answering a different pending tool call must not bypass its own decision path.
+        if (toolName !== "AskUserQuestion") {
+          return { behavior: "deny", message: "This tool call cannot be answered like a question." };
+        }
+        return { behavior: "allow", updatedInput: { ...input, answers: resolution.answers } };
+      }
+      if (resolution.decision === "always") this.grantDirFor(toolName, input);
+      return decisionToPermissionResult(resolution.decision, opts.suggestions);
     };
   }
 
@@ -536,6 +563,12 @@ function errorMessage(err: unknown): string {
 }
 
 // ---- permission decision mapping ----
+
+/** How a pending `canUseTool` call was settled: a plain decision, an AskUserQuestion answer, or abort. */
+type PendingResolution =
+  | { kind: "decision"; decision: PermissionDecision }
+  | { kind: "answer"; answers: Record<string, string> }
+  | { kind: "abort" };
 
 type CanUseToolFn = NonNullable<Options["canUseTool"]>;
 type PermissionSuggestions = Parameters<CanUseToolFn>[2]["suggestions"];

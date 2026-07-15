@@ -357,7 +357,7 @@ export interface StudioStore extends Store {
   /** Persist exact text to the post at `canonicalPath` (autosave); returns new rev or stale-rev. */
   writeByPath(canonicalPath: string, text: string, baseRev: DocRev): Promise<WriteResult>;
   /** The active post as { path, title, branch } (path = canonical) for the tab bar / snapshot; null if none. */
-  getActive(): { path: string; title: string; branch: string } | null;
+  getActive(): { path: string; title: string; branch: string; worktreePath: string } | null;
   /**
    * The active post's frontmatter/filename name-sync status: `synced:false` with the expected/current
    * stems when they differ. The ship flow reads it to refuse a desynced post.
@@ -681,7 +681,7 @@ export function createStore(deps: StoreDeps): StudioStore {
   function publishActivation(doc: OpenDoc): void {
     activePath = doc.canonicalPath;
     publishTabs();
-    publish({ type: "active", path: doc.canonicalPath, title: doc.title, branch: doc.branch });
+    publish({ type: "active", path: doc.canonicalPath, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath });
     publish({ type: "file.changed", path: doc.canonicalPath, text: doc.text, rev: doc.rev, origin: "external" });
     refreshPreview();
     const info: ActiveChangeInfo = {
@@ -881,7 +881,7 @@ export function createStore(deps: StoreDeps): StudioStore {
 
     getActive() {
       const doc = activeDoc();
-      return doc ? { path: doc.canonicalPath, title: doc.title, branch: doc.branch } : null;
+      return doc ? { path: doc.canonicalPath, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath } : null;
     },
 
     getActiveNameSync() {
@@ -1374,7 +1374,9 @@ export function createStore(deps: StoreDeps): StudioStore {
         // nothing retargets: astro already serves this worktree and the watch set covers both layouts.
         publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title, branch: doc.branch });
         publishTabs();
-        if (wasActive) publish({ type: "active", path: newCanonical, title: doc.title, branch: doc.branch });
+        if (wasActive) {
+          publish({ type: "active", path: newCanonical, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath });
+        }
         publish({ type: "file.changed", path: newCanonical, text: doc.text, rev: doc.rev, origin });
         if (wasActive) refreshPreview();
         return { path: newCanonical, text: doc.text, rev: doc.rev };

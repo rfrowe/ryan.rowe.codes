@@ -27,7 +27,21 @@ export type ToolDetail =
   | { kind: "diff"; filePath: string; sections: DiffSection[] }
   | { kind: "write"; filePath: string; content: string }
   | { kind: "command"; command: string; description?: string }
+  | { kind: "ask"; questions: AskQuestionItem[] }
   | { kind: "fields"; fields: DetailField[] };
+
+export interface AskOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+
+export interface AskQuestionItem {
+  question: string;
+  header: string;
+  options: AskOption[];
+  multiSelect: boolean;
+}
 
 /** Longest-common-subsequence line diff (O(n·m), fine for the small snippets an Edit carries). */
 export function diffLines(oldText: string, newText: string): DiffLine[] {
@@ -84,14 +98,22 @@ function pick(obj: Record<string, unknown>, keys: string[]): string {
 
 const FILE_KEYS = ["file_path", "filePath", "path", "notebook_path"];
 
+/** Strip a matching `cwd` prefix from an absolute path, so the worktree dir doesn't repeat on every call. */
+function relativize(absPath: string, cwd?: string): string {
+  if (!cwd || absPath.length === 0) return absPath;
+  const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  return absPath.startsWith(prefix) ? absPath.slice(prefix.length) : absPath;
+}
+
 /**
  * Map a tool call to its detail view. Keys off the shape of `input` (old/new strings, an edits
  * array, content, a command) so it works for the SDK's native file tools (Edit/Write/MultiEdit/
- * NotebookEdit/Bash) regardless of exact naming; unknown tools fall through to a field list.
+ * NotebookEdit/Bash) regardless of exact naming; unknown tools fall through to a field list. `cwd`
+ * (the active post's worktree root) relativizes any absolute file path, in or out of that field list.
  */
-export function toolDetail(toolName: string, input: unknown): ToolDetail {
+export function toolDetail(toolName: string, input: unknown, cwd?: string): ToolDetail {
   const obj = asRecord(input);
-  const filePath = pick(obj, FILE_KEYS);
+  const filePath = relativize(pick(obj, FILE_KEYS), cwd);
 
   // MultiEdit: an ordered array of {old_string, new_string} edits against one file.
   const edits = obj.edits;
@@ -124,24 +146,88 @@ export function toolDetail(toolName: string, input: unknown): ToolDetail {
     return { kind: "command", command: obj.command, description: str(obj.description) || undefined };
   }
 
+  // AskUserQuestion: the questions themselves, so the transcript can show what was asked (and, once
+  // resolved, what was answered) instead of the raw schema.
+  if (toolName === "AskUserQuestion") {
+    const questions = parseAskQuestions(input);
+    if (questions) return { kind: "ask", questions };
+  }
+
   // Anything else (MCP tools, Grep/Glob/Read, …): a clean field list.
-  return { kind: "fields", fields: toFields(obj) };
+  return { kind: "fields", fields: toFields(obj, cwd) };
 }
 
-function toFields(obj: Record<string, unknown>): DetailField[] {
+/**
+ * Extract AskUserQuestion's `questions` array from its raw input, or null if the shape doesn't match
+ * the tool's schema (defensive against SDK drift: the caller falls back to the generic field list).
+ */
+export function parseAskQuestions(input: unknown): AskQuestionItem[] | null {
+  const questions = asRecord(input).questions;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const parsed: AskQuestionItem[] = [];
+  for (const raw of questions) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const q = raw as Record<string, unknown>;
+    if (typeof q.question !== "string" || typeof q.header !== "string" || !Array.isArray(q.options)) return null;
+    const options: AskOption[] = [];
+    for (const rawOpt of q.options) {
+      if (typeof rawOpt !== "object" || rawOpt === null) return null;
+      const o = rawOpt as Record<string, unknown>;
+      if (typeof o.label !== "string" || typeof o.description !== "string") return null;
+      options.push({ label: o.label, description: o.description, preview: typeof o.preview === "string" ? o.preview : undefined });
+    }
+    parsed.push({ question: q.question, header: q.header, options, multiSelect: q.multiSelect === true });
+  }
+  return parsed;
+}
+
+function toFields(obj: Record<string, unknown>, cwd?: string): DetailField[] {
   return Object.entries(obj).map(([key, v]) => {
     if (typeof v === "string") {
-      return { key, value: v, block: v.includes("\n") || v.length > 72 };
+      const value = FILE_KEYS.includes(key) ? relativize(v, cwd) : v;
+      return { key, value, block: value.includes("\n") || value.length > 72 };
     }
     if (v === null || typeof v === "number" || typeof v === "boolean") {
       return { key, value: String(v), block: false };
     }
-    let json: string;
-    try {
-      json = JSON.stringify(v, null, 2);
-    } catch {
-      json = String(v);
-    }
-    return { key, value: json, block: true };
+    const value = prettyValue(v, 0);
+    return { key, value, block: value.includes("\n") || value.length > 72 };
   });
+}
+
+/** Depth past which prettyValue gives up on indentation and falls back to flat JSON. */
+const PRETTY_VALUE_MAX_DEPTH = 8;
+
+/**
+ * Render a nested array/object as indented `key: value` / `- ` lines instead of braces-and-quotes
+ * JSON, so an MCP tool's structured arguments read like prose rather than a data dump.
+ */
+function prettyValue(v: unknown, indent: number): string {
+  if (v === null || v === undefined) return String(v);
+  if (typeof v !== "object") return String(v);
+  if (indent > PRETTY_VALUE_MAX_DEPTH) {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+  const pad = "  ".repeat(indent);
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "[]";
+    return v
+      .map((item) => {
+        const rendered = prettyValue(item, indent + 1);
+        return rendered.includes("\n") ? `${pad}-\n${rendered}` : `${pad}- ${rendered}`;
+      })
+      .join("\n");
+  }
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length === 0) return "{}";
+  return entries
+    .map(([k, val]) => {
+      const rendered = prettyValue(val, indent + 1);
+      return rendered.includes("\n") ? `${pad}${k}:\n${rendered}` : `${pad}${k}: ${rendered}`;
+    })
+    .join("\n");
 }

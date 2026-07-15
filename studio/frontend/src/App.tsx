@@ -46,6 +46,8 @@ interface TabState {
   title: string;
   /** The post's isolation branch (`blog/<date>_<slug>`), from `active`; null until first activated. */
   branch: string | null;
+  /** The post's worktree root (from `active`), so tool-call file paths drop that prefix; null until first activated. */
+  worktreePath: string | null;
   doc: DocState | null;
   /** Buffer patch for the editor; version increments on each agent/reconciled write. */
   remoteUpdate: { text: string; version: number; kind: "agent" | "reload" } | null;
@@ -84,7 +86,8 @@ type Action =
   | { type: "applyExternal"; path: string }
   | { type: "dismissExternal"; path: string }
   // Locally drop a permission card once answered (the response is sent over the socket separately).
-  | { type: "answerPermission"; path: string; requestId: string };
+  // toolUseId/answers, when given, record an AskUserQuestion's picks onto its transcript tool entry.
+  | { type: "answerPermission"; path: string; requestId: string; toolUseId?: string; answers?: Record<string, string> };
 
 let idSeq = 0;
 function nid(): string {
@@ -114,6 +117,7 @@ function makeTab(path: string, title: string, branch: string | null = null): Tab
     path,
     title,
     branch,
+    worktreePath: null,
     doc: null,
     remoteUpdate: null,
     preview: WAITING_PREVIEW,
@@ -322,8 +326,10 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       // Ensure a tab entry exists (in case `active` lands before `tabs`), then focus it.
       const exists = state.tabs.some((t) => t.path === msg.path);
       const tabs = exists
-        ? state.tabs.map((t) => (t.path === msg.path ? { ...t, title: msg.title, branch: msg.branch } : t))
-        : [...state.tabs, makeTab(msg.path, msg.title, msg.branch)];
+        ? state.tabs.map((t) =>
+            t.path === msg.path ? { ...t, title: msg.title, branch: msg.branch, worktreePath: msg.worktreePath } : t,
+          )
+        : [...state.tabs, { ...makeTab(msg.path, msg.title, msg.branch), worktreePath: msg.worktreePath }];
       return { ...state, tabs, activePath: msg.path };
     }
 
@@ -367,6 +373,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
                   title: msg.title,
                   description: msg.description,
                   reason: msg.reason,
+                  toolUseId: msg.toolUseId,
                 },
               ],
             },
@@ -436,6 +443,12 @@ function reducer(state: StudioState, action: Action): StudioState {
       return patchTab(state, action.path, (t) => ({
         ...t,
         permissions: t.permissions.filter((p) => p.requestId !== action.requestId),
+        chat:
+          action.toolUseId && action.answers
+            ? t.chat.map((it) =>
+                it.kind === "tool" && it.toolUseId === action.toolUseId ? { ...it, answers: action.answers } : it,
+              )
+            : t.chat,
       }));
   }
 }
@@ -859,6 +872,15 @@ export default function App() {
     if (sent && path) dispatch({ type: "answerPermission", path, requestId });
   }, []);
 
+  // Answer an in-flight AskUserQuestion prompt with the human's picks. toolUseId (carried on the
+  // pending card) lets the reducer record the answers onto that call's own transcript entry, so the
+  // history shows what was asked and answered rather than just the raw questions.
+  const onAnswerQuestion = useCallback((requestId: string, toolUseId: string | undefined, answers: Record<string, string>) => {
+    const path = activePathRef.current;
+    const sent = socketRef.current?.send({ type: "question.answer", requestId, answers }) ?? false;
+    if (sent && path) dispatch({ type: "answerPermission", path, requestId, toolUseId, answers });
+  }, []);
+
   const activeTab = useMemo(
     () => state.tabs.find((t) => t.path === state.activePath) ?? null,
     [state.tabs, state.activePath],
@@ -1034,6 +1056,8 @@ export default function App() {
             connected={connected}
             pendingPermissions={activeTab?.permissions ?? []}
             onPermission={onPermission}
+            onAnswerQuestion={onAnswerQuestion}
+            cwd={activeTab?.worktreePath ?? undefined}
             onSend={onChatSend}
             onCancel={onCancel}
           />

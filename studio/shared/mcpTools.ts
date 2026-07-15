@@ -15,7 +15,7 @@ export const STUDIO_TOOLS = {
   openPr: "open_pr",
 } as const;
 
-/** Fully-qualified tool name as the agent sees it, e.g. `mcp__studio__apply_edit`. */
+/** Fully-qualified tool name as the agent sees it, e.g. `mcp__studio__scaffold_post`. */
 export type StudioToolName = `mcp__${typeof STUDIO_MCP_SERVER_NAME}__${(typeof STUDIO_TOOLS)[keyof typeof STUDIO_TOOLS]}`;
 
 /** Wildcard for `allowedTools` auto-approval (acceptEdits does not cover MCP tools). */

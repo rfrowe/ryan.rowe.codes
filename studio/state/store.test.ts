@@ -412,7 +412,12 @@ describe("store multi-tab: open / switch / close", () => {
     await store.openPost(HELLO_CANON);
 
     expect(store.getOpenTabs().map((t) => t.path).sort()).toEqual([HELLO_CANON, SKYLINE_CANON].sort());
-    expect(store.getActive()).toEqual({ path: HELLO_CANON, title: "Hello", branch: "blog/2022-03-11_hello" });
+    expect(store.getActive()).toEqual({
+      path: HELLO_CANON,
+      title: "Hello",
+      branch: "blog/2022-03-11_hello",
+      worktreePath: `${WT}/2022-03-11_hello`,
+    });
 
     // Re-opening an already-open post focuses it without adding a second worktree.
     await store.openPost(SKYLINE_CANON);

@@ -29,6 +29,8 @@ export type ChatItem =
       isError?: boolean;
       exitCode?: number;
       resultPreview?: string;
+      /** The human's picks once an AskUserQuestion call is answered, by question text. */
+      answers?: Record<string, string>;
     }
   | { kind: "system"; id: string; text: string }
   | { kind: "error"; id: string; text: string };

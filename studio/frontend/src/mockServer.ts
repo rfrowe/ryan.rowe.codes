@@ -176,8 +176,11 @@ class MockBackend {
   private mode: PermissionMode = "auto";
   // Resolver for an in-flight demo permission prompt, awaiting the author's answer.
   private pendingPerm: ((decision: PermissionDecision) => void) | null = null;
-  // Demo the approve/deny card once per page session, then stop.
+  // Resolver for an in-flight demo AskUserQuestion prompt, awaiting the author's picks.
+  private pendingAsk: ((answers: Record<string, string>) => void) | null = null;
+  // Demo the approve/deny card, and the AskUserQuestion card, once per page session, then stop.
   private permDemoed = false;
+  private askDemoed = false;
   private readonly sockets = new Set<MockWebSocket>();
 
   constructor() {
@@ -234,7 +237,7 @@ class MockBackend {
     const doc = this.docs.get(this.activePath);
     if (!doc) return;
     const send = (m: ServerMessage) => (target ? target.deliver(m) : this.broadcast(m));
-    send({ type: "active", path: doc.path, title: doc.title, branch: doc.branch });
+    send({ type: "active", path: doc.path, title: doc.title, branch: doc.branch, worktreePath: REPO });
     send({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "external" });
     send({ type: "preview.url", preview: doc.preview });
     send(this.nameSyncMsg(doc));
@@ -321,10 +324,10 @@ class MockBackend {
   handle(socket: MockWebSocket, msg: ClientMessage): void {
     switch (msg.type) {
       case "prompt":
-        void this.runTurn(msg.promptId, msg.text);
+        void this.runTurn(msg.promptId);
         break;
       case "resolveDirective":
-        void this.runTurn(msg.promptId, `resolve directive: ${msg.instruction}`);
+        void this.runTurn(msg.promptId);
         break;
       case "cancel":
         this.broadcast({ type: "done", promptId: msg.promptId, stopReason: "cancelled" });
@@ -373,6 +376,12 @@ class MockBackend {
         break;
       case "permission.response":
         this.pendingPerm?.(msg.decision);
+        this.pendingPerm = null;
+        this.pendingAsk = null;
+        break;
+      case "question.answer":
+        this.pendingAsk?.(msg.answers);
+        this.pendingAsk = null;
         this.pendingPerm = null;
         break;
     }
@@ -587,8 +596,20 @@ class MockBackend {
     });
   }
 
+  // Emit an AskUserQuestion permission.request (carrying toolUseId, matching a tool.start already
+  // broadcast for the same call) and resolve with the SPA's picks, or null if the author skipped it
+  // (a plain permission.response instead of a question.answer).
+  private askQuestion(promptId: string, toolUseId: string, input: unknown): Promise<Record<string, string> | null> {
+    const requestId = `mock-ask-${Date.now().toString(36)}`;
+    return new Promise((resolve) => {
+      this.pendingPerm = () => resolve(null);
+      this.pendingAsk = (answers) => resolve(answers);
+      this.broadcast({ type: "permission.request", promptId, requestId, toolName: "AskUserQuestion", input, toolUseId });
+    });
+  }
+
   // Simulate a streamed agent turn that edits the active doc through the sanctioned path.
-  private async runTurn(promptId: string, text: string): Promise<void> {
+  private async runTurn(promptId: string): Promise<void> {
     const doc = this.docs.get(this.activePath);
     if (!doc) return;
     const say = (t: string) => this.broadcast({ type: "assistant.delta", promptId, text: t });
@@ -614,19 +635,75 @@ class MockBackend {
       }
     }
 
-    const toolUseId = `mock-tool-${Date.now().toString(36)}`;
-    this.broadcast({ type: "tool.start", promptId, toolUseId, name: "mcp__studio__apply_edit", input: { path: doc.path, note: text } });
-    await delay(300);
+    // Demo the AskUserQuestion card once per session: a real multi-question tool call (one single-
+    // select, one multi-select), with its own tool.start/tool.end so the transcript carries a
+    // Q&A-annotated history entry for it.
+    if (!this.askDemoed) {
+      this.askDemoed = true;
+      const askToolUseId = `mock-tool-ask-${Date.now().toString(36)}`;
+      const questionInput = {
+        questions: [
+          {
+            question: "Which heading level should the new section use?",
+            header: "Heading level",
+            options: [
+              { label: "H2", description: "Same level as the other top-level sections." },
+              { label: "H3", description: "Nested under the current section.", preview: "### Like this" },
+            ],
+            multiSelect: false,
+          },
+          {
+            question: "Which topics should the TL;DR mention?",
+            header: "TL;DR topics",
+            options: [
+              { label: "Rotation algorithm", description: "How the dominant verticals are detected." },
+              { label: "Before/after comparison", description: "That the post shows a corrected vs. raw frame." },
+              { label: "Tooling", description: "What libraries or scripts did the work." },
+            ],
+            multiSelect: true,
+          },
+        ],
+      };
+      this.broadcast({ type: "tool.start", promptId, toolUseId: askToolUseId, name: "AskUserQuestion", input: questionInput });
+      const answers = await this.askQuestion(promptId, askToolUseId, questionInput);
+      this.broadcast({
+        type: "tool.end",
+        promptId,
+        toolUseId: askToolUseId,
+        isError: false,
+        resultPreview: answers
+          ? `Your questions have been answered: ${Object.entries(answers)
+              .map(([q, a]) => `"${q}"="${a}"`)
+              .join(", ")}. You can now continue with these answers in mind.`
+          : "The user did not answer the questions.",
+      });
+      const picked = answers ? Object.values(answers).filter(Boolean).join("; ") : null;
+      say(picked ? `Using: ${picked} — ` : "No preferences given, so defaulting to H2 and a general TL;DR — ");
+      await delay(150);
+    }
 
+    // A real turn edits the post with the native Edit tool (the agent's system prompt tells it to;
+    // the studio has no MCP edit tool of its own), so the mock mirrors that shape here: old_string/
+    // new_string, diffed and rendered inline rather than as a flat field list.
+    const toolUseId = `mock-tool-${Date.now().toString(36)}`;
     // Insert a TL;DR after the frontmatter (posts have no H1: the layout renders the title from it).
     const fm = doc.text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)?.[0];
+    const insertion = "\n**TL;DR** — detect the dominant verticals, then rotate until they are truly plumb.\n";
+    this.broadcast({
+      type: "tool.start",
+      promptId,
+      toolUseId,
+      name: "Edit",
+      input: { file_path: doc.path, old_string: fm ?? "", new_string: fm ? fm + insertion : "" },
+    });
+    await delay(300);
+
     if (fm) {
       const insertAt = doc.text.indexOf(fm) + fm.length;
-      const insertion = "\n**TL;DR** — detect the dominant verticals, then rotate until they are truly plumb.\n";
       doc.text = doc.text.slice(0, insertAt) + insertion + doc.text.slice(insertAt);
       doc.rev = makeRev(doc.rev.n + 1, doc.text);
     }
-    this.broadcast({ type: "tool.end", promptId, toolUseId, isError: false, resultPreview: "ok — 1 edit applied" });
+    this.broadcast({ type: "tool.end", promptId, toolUseId, isError: false, resultPreview: "The file has been updated." });
     this.broadcast({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "agent" });
     await delay(120);
     this.broadcast({ type: "preview.url", preview: doc.preview });
