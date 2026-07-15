@@ -1174,11 +1174,84 @@ body {
 .ship__head h2 {
   margin: 0;
 }
-.ship__scope {
-  display: flex;
-  gap: 14px;
+/* ---- scope toggle (post-only vs. everything): ship, save-draft, revert ---- */
+.scope-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+.scope-toggle__option {
+  font: inherit;
   font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
   color: var(--fg-dim);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.scope-toggle__option:hover:not(:disabled):not(.scope-toggle__option--active) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.scope-toggle__option--active {
+  background: var(--accent-strong);
+  color: #fff;
+}
+.scope-toggle__option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.scope-toggle__option:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* ---- scope warning (nudge toward "all" when "post" would leave something behind) ---- */
+.scope-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  margin: 8px 0;
+  background: rgba(226, 179, 65, 0.14);
+  border: 1px solid rgba(226, 179, 65, 0.5);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg);
+}
+.scope-warning__icon {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+.scope-warning__text {
+  flex: 1 1 auto;
+}
+.scope-warning__action {
+  flex: 0 0 auto;
+  font: inherit;
+  font-weight: 600;
+  color: var(--warn);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 0.12s ease;
+}
+.scope-warning__action:hover {
+  text-decoration-color: var(--warn);
+}
+.scope-warning__action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  border-radius: 2px;
 }
 .ship__diff {
   margin: 12px 0;

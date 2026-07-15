@@ -57,7 +57,7 @@ export interface StudioTools {
 
 /** Studio-run git/gh flows to origin (ship-as-PR and persist-draft); never invoked by the agent directly. */
 export interface ShipService {
-  diff(scope: "post" | "all", path?: string): Promise<{ status: string; diff: string }>;
+  diff(scope: "post" | "all", path?: string): Promise<{ status: string; diff: string; outsideCount: number }>;
   openPr(input: OpenPrInput): Promise<OpenPrResult>;
   /** Commit the post with the pinned identity and push its branch to origin, without opening a PR. */
   saveDraft(input: SaveDraftRequest): Promise<SaveDraftResponse>;

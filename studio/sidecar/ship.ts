@@ -9,9 +9,7 @@ import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
 import type { SaveDraftRequest, SaveDraftResponse } from "../shared/protocol";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
-
-// Ship only ever stages paths under this dir (relative to the worktree root).
-const BLOG_CONTENT_DIR = "src/content/blog";
+import { BLOG_CONTENT_DIR, computeWorkingTreeDiff, countOutsideBlog, parseStatusPaths, underBlog } from "./diffService";
 
 // Pinned commit identity (CLAUDE.md), independent of local git config.
 const PINNED_NAME = "Ryan Rowe";
@@ -42,32 +40,17 @@ export function createShipService(deps: ShipDeps): ShipService {
   const { git, sessionBranch, getActiveWorktree, getWorktreeFor, getActiveNameSync } = deps;
 
   /** Read the diff for the ship / save-draft review UI. Defaults to the active post's worktree; a
-   *  `path` targets a specific open post (the save-draft panel can review a non-focused tab). */
-  async function diff(scope: "post" | "all", path?: string): Promise<{ status: string; diff: string }> {
+   *  `path` targets a specific open post (the save-draft panel can review a non-focused tab).
+   *  `outsideCount` is independent of `scope`: it's what a "post"-scoped review would leave behind,
+   *  powering the nudge toward "all" without ever forcing it. */
+  async function diff(scope: "post" | "all", path?: string): Promise<{ status: string; diff: string; outsideCount: number }> {
     const wt = path ? getWorktreeFor(path) : getActiveWorktree();
-    if (!wt) return { status: "", diff: "" };
-    const cwd = wt.worktreePath;
-    const pathspec = scope === "post" ? ["--", BLOG_CONTENT_DIR] : [];
-    // `--untracked-files=all` lists new files individually so each can be diffed below;
-    // `core.quotePath=false` keeps non-ASCII paths UTF-8, not octal.
-    const status = await git.git(
-      ["-c", "core.quotePath=false", "status", "--short", "--untracked-files=all", ...pathspec],
-      { cwd },
-    );
-    const unstaged = await git.git(["diff", ...pathspec], { cwd });
-    const staged = await git.git(["diff", "--staged", ...pathspec], { cwd });
-
-    const parts = [unstaged.stdout, staged.stdout];
-    // `git diff` omits untracked files, so a brand-new post would show an empty diff yet still
-    // get committed. Synthesize an add-diff for each untracked file in scope so the reviewer sees it.
-    for (const path of untrackedPaths(status.stdout)) {
-      if (scope === "post" && !underBlog(path)) continue;
-      const added = await git.git(["diff", "--no-index", "--", "/dev/null", path], { cwd });
-      // `--no-index` always exits non-zero vs /dev/null; the diff is on stdout regardless.
-      if (added.stdout.trim().length > 0) parts.push(added.stdout);
-    }
-    const combined = parts.filter((s) => s.trim().length > 0).join("\n");
-    return { status: status.stdout, diff: combined };
+    if (!wt) return { status: "", diff: "", outsideCount: 0 };
+    const [{ status, diff }, outsideCount] = await Promise.all([
+      computeWorkingTreeDiff(git, wt.worktreePath, scope, { includeUntracked: true }),
+      countOutsideBlog(git, wt.worktreePath),
+    ]);
+    return { status, diff, outsideCount };
   }
 
   async function openPr(input: OpenPrInput): Promise<OpenPrResult> {
@@ -281,17 +264,19 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Stage precisely: only paths under the blog tree, never `git add -A`. Changes outside the blog
-      // tree (unlike ship's scope "all") are left alone; a draft push carries only the post.
+      // Stage precisely, never `git add -A`. `scope: "post"` mirrors ship: only paths under the blog
+      // tree. `scope: "all"` carries the whole worktree, safe here in a way it isn't for ship, since
+      // a draft pushes only its own throwaway branch and never opens a PR against the primary branch.
       const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd });
       if (statusRes.code !== 0) {
         return fail("git status", statusRes.stderr, statusRes.code);
       }
-      const blogPaths = parseStatusPaths(statusRes.stdout).filter(underBlog);
+      const changed = parseStatusPaths(statusRes.stdout);
+      const stagePaths = input.scope === "all" ? changed : changed.filter(underBlog);
 
       let committed = false;
-      if (blogPaths.length > 0) {
-        const addRes = await git.git(["add", "--", ...blogPaths], { cwd });
+      if (stagePaths.length > 0) {
+        const addRes = await git.git(["add", "--", ...stagePaths], { cwd });
         if (addRes.code !== 0) {
           return fail("git add", addRes.stderr, addRes.code);
         }
@@ -362,39 +347,6 @@ export function createShipService(deps: ShipDeps): ShipService {
 }
 
 // ---- helpers ----
-
-function underBlog(p: string): boolean {
-  return p === BLOG_CONTENT_DIR || p.startsWith(`${BLOG_CONTENT_DIR}/`);
-}
-
-/** Parse `git status --porcelain` (v1) into the set of changed paths. */
-function parseStatusPaths(porcelain: string): string[] {
-  const paths: string[] = [];
-  for (const line of porcelain.split("\n")) {
-    if (line.trim().length === 0) continue;
-    // Two status columns, a space, then the path.
-    let p = line.slice(3);
-    // Renames/copies render as "orig -> new"; the new path is what gets staged.
-    const arrow = p.indexOf(" -> ");
-    if (arrow !== -1) p = p.slice(arrow + 4);
-    // With `core.quotePath=false` only control-char paths stay quoted; unwrap those.
-    if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-    paths.push(p);
-  }
-  return paths;
-}
-
-/** Untracked (`??`) entries of a `git status --short` output. */
-function untrackedPaths(statusShort: string): string[] {
-  const paths: string[] = [];
-  for (const line of statusShort.split("\n")) {
-    if (!line.startsWith("??")) continue;
-    let p = line.slice(3);
-    if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-    if (p.length > 0) paths.push(p);
-  }
-  return paths;
-}
 
 function detail(stderr: string, code: number): string {
   return stderr.trim() || `exit ${code}`;

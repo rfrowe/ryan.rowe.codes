@@ -1,12 +1,14 @@
-// Save-draft-to-remote panel: review the post's diff, fill a commit message, and push the post's
-// branch to origin without opening a PR. Mirrors the ship panel (shares DiffView + the /diff
-// endpoint), but is post-scoped and non-destructive: it preserves work so the draft can be resumed
+// Save-draft-to-remote panel: review the worktree's diff, fill a commit message, and push the post's
+// branch to origin without opening a PR. Mirrors the ship panel (shares DiffView, the /diff endpoint,
+// and the scope toggle), but is non-destructive: it preserves work so the draft can be resumed
 // elsewhere. The sidecar (never the agent) runs git. Surfaces the pushed branch, or the error.
 
 import { useEffect, useRef, useState } from "react";
 import type { SaveDraftResponse } from "../../shared/protocol";
 import { getDiff, saveDraft } from "./api";
 import { DiffView } from "./DiffView";
+import { ScopeSelector } from "./ScopeSelector";
+import { ScopeWarning } from "./ScopeWarning";
 import { slugFromPath } from "./slug";
 
 interface SaveDraftPanelProps {
@@ -23,9 +25,11 @@ type Phase = "editing" | "saving" | "result";
 
 export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelProps) {
   const label = title || slugFromPath(path);
+  const [scope, setScope] = useState<"post" | "all">("post");
   const [status, setStatus] = useState<string>("");
   const [diff, setDiff] = useState<string | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
+  const [outsideCount, setOutsideCount] = useState(0);
 
   const [subject, setSubject] = useState(`Save draft: ${label}`);
   const [body, setBody] = useState("");
@@ -40,7 +44,9 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
 
   useEffect(() => {
     let live = true;
-    getDiff("post", path)
+    setDiff(null);
+    setDiffError(null);
+    getDiff(scope, path)
       .then((res) => {
         if (!live) return;
         // The sidecar replies { error } when the diff fails, and asJson doesn't throw on a 500;
@@ -52,6 +58,7 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
         }
         setStatus(res.status);
         setDiff(res.diff);
+        setOutsideCount(res.outsideCount);
       })
       .catch((e: unknown) => {
         if (live) setDiffError(e instanceof Error ? e.message : "failed to load diff");
@@ -59,7 +66,7 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
     return () => {
       live = false;
     };
-  }, [path]);
+  }, [path, scope]);
 
   const canSave = subject.trim().length > 0;
 
@@ -67,7 +74,7 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
     setPhase("saving");
     let res: SaveDraftResponse;
     try {
-      res = await saveDraft({ path, subject: subject.trim(), body, confirm: true });
+      res = await saveDraft({ path, subject: subject.trim(), body, scope, confirm: true });
     } catch (e: unknown) {
       res = { ok: false, error: e instanceof Error ? e.message : "save request failed" };
     }
@@ -80,7 +87,12 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
     <div className="ship">
       <header className="ship__head">
         <h2>Save draft to remote</h2>
+        <ScopeSelector scope={scope} onChange={setScope} />
       </header>
+
+      {scope === "post" && outsideCount > 0 && (
+        <ScopeWarning count={outsideCount} onSwitchToAll={() => setScope("all")} />
+      )}
 
       <section className="ship__diff">
         <div className="ship__diff-status">{status || "working tree"}</div>

@@ -150,8 +150,8 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         // Optional `path` targets a specific open post (save-draft can review a non-focused tab);
         // omitted, the diff follows the active post (ship).
         const path = url.searchParams.get("path") ?? undefined;
-        const { status, diff } = await services.ship.diff(scope, path);
-        return sendJson(res, 200, { status, diff } satisfies DiffResponse);
+        const { status, diff, outsideCount } = await services.ship.diff(scope, path);
+        return sendJson(res, 200, { status, diff, outsideCount } satisfies DiffResponse);
       }
 
       case "GET /sessions": {
@@ -199,6 +199,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
           path: body.path,
           subject: body.subject,
           body: body.body,
+          scope: body.scope,
           confirm: body.confirm,
         });
         return sendJson(res, 200, result satisfies SaveDraftResponse);
@@ -434,6 +435,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
                     changedFiles: preview.changedFiles,
                     ahead: preview.ahead,
                     diff: preview.diff,
+                    scope: preview.scope,
                   } satisfies ServerMessage),
                 );
               }
@@ -451,10 +453,10 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       // Revert a post's uncommitted edits to HEAD. Gated: nothing to discard is a no-op success;
       // otherwise reply post.confirm (carrying the diff to be lost) unless confirmed.
       case "post.revert": {
-        const { requestId, path, confirm } = message;
+        const { requestId, path, scope, confirm } = message;
         void (async () => {
           try {
-            const preview = await store.postLossPreview(path, "revert");
+            const preview = await store.postLossPreview(path, "revert", scope);
             if (preview.diff.trim().length === 0) {
               sendPostResult(ws, requestId, { ok: true, path });
               return;
@@ -470,12 +472,15 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
                     changedFiles: preview.changedFiles,
                     ahead: preview.ahead,
                     diff: preview.diff,
+                    scope: preview.scope,
                   } satisfies ServerMessage),
                 );
               }
               return;
             }
-            const res = await store.revertPost(path);
+            // Use the scope this preview actually resolved to (the request's own choice, or the
+            // sidecar's auto-pick), not the request's raw (possibly unset) field.
+            const res = await store.revertPost(path, preview.scope);
             sendPostResult(ws, requestId, res.ok ? { ok: true, path } : { ok: false, error: res.error });
           } catch (err) {
             sendPostResult(ws, requestId, { ok: false, error: errorText(err) });

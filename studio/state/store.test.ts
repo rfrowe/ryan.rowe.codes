@@ -70,16 +70,20 @@ interface Recorded {
 
 /** Configurable responses for the loss-preview / revert git commands (defaults model a clean tree). */
 interface GitConfig {
-  /** `git status --porcelain` output (uncommitted files); empty = clean. */
+  /** `git status --porcelain`/`--short` output (uncommitted files, same v1 format either way); empty = clean.
+   *  Used for a `scope: "post"`-pathspec'd call; an unscoped (`scope: "all"`) call uses
+   *  `statusPorcelainAll` instead, defaulting to this same value when unset. */
   statusPorcelain?: string;
+  /** Override for the unscoped (`scope: "all"`) status call, when it must differ from `statusPorcelain`
+   *  — e.g. to exercise revert's scope auto-detection (more changes under "all" than "post"). */
+  statusPorcelainAll?: string;
   /** `git rev-list --count origin/<base>..HEAD` output (unmerged commits); default "0". */
   revListCount?: string;
-  /** `git diff HEAD --name-only` output (revert-tracked file names); empty = none. */
-  diffHeadNames?: string;
-  /** `git diff HEAD` output (the diff revert discards); empty = nothing. */
-  diffHead?: string;
-  /** `git diff origin/<base>` output (delete's tracked delta from the base); empty = nothing. */
+  /** `git diff -M [<ref>]` output (revert's unstaged diff vs HEAD, or delete's tracked delta from the
+   *  base); empty = nothing. */
   diffBase?: string;
+  /** `git diff -M --staged` output (revert's staged diff vs HEAD); empty = nothing. */
+  diffStaged?: string;
   /** `git diff --no-index -- /dev/null <path>` output (an untracked file's synthesized add-diff). */
   noIndexDiff?: string;
   /** Content `git checkout HEAD -- <path>` writes back to the file (simulates restoring to HEAD). */
@@ -165,16 +169,16 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         movePrefix(fs, from, to);
         return ok;
       }
-      if (args[0] === "status" || (args.includes("status") && args.includes("--porcelain"))) {
-        return { ...ok, stdout: cfg.statusPorcelain ?? "" };
+      if (args[0] === "status" || (args.includes("status") && (args.includes("--porcelain") || args.includes("--short")))) {
+        // A `scope: "post"` call carries the blog-dir pathspec; `scope: "all"` carries none.
+        const scoped = args.includes("src/content/blog");
+        return { ...ok, stdout: (scoped ? cfg.statusPorcelain : cfg.statusPorcelainAll ?? cfg.statusPorcelain) ?? "" };
       }
       if (args[0] === "rev-list") return { ...ok, stdout: cfg.revListCount ?? "0" };
       if (args.includes("diff")) {
         // Some diffs are prefixed with `-c core.quotePath=false`, so match on membership.
         if (args.includes("--no-index")) return { ...ok, stdout: cfg.noIndexDiff ?? "" };
-        if (args.includes("HEAD")) {
-          return { ...ok, stdout: args.includes("--name-only") ? (cfg.diffHeadNames ?? "") : (cfg.diffHead ?? "") };
-        }
+        if (args.includes("--staged")) return { ...ok, stdout: cfg.diffStaged ?? "" };
         return { ...ok, stdout: cfg.diffBase ?? "" };
       }
       if (args[0] === "checkout" && args[1] === "HEAD") {
@@ -781,63 +785,123 @@ describe("store.postLossPreview", () => {
     await store.openPost(SKYLINE_CANON);
     const preview = await store.postLossPreview(SKYLINE_CANON, "delete");
     // Diff = tracked delta from the base + a synthesized add-diff for the untracked file.
-    expect(preview).toEqual({ dirty: true, changedFiles: 2, ahead: 2, diff: "TRACKED_DELTA\nUNTRACKED_ADD" });
+    expect(preview).toEqual({ dirty: true, changedFiles: 2, ahead: 2, diff: "TRACKED_DELTA\nUNTRACKED_ADD", scope: "all" });
   });
 
   it("reports the HEAD diff (what restore discards) for a revert", async () => {
     const DIFF = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
     const { store } = newStore(
       { [SKYLINE_WT_FILE]: SKYLINE },
-      { diffHeadNames: "src/content/blog/2026-07-10_aligning-a-skyline.mdx\n", diffHead: DIFF },
+      { statusPorcelain: " M src/content/blog/2026-07-10_aligning-a-skyline.mdx\n", diffBase: DIFF },
     );
     await store.openPost(SKYLINE_CANON);
     const preview = await store.postLossPreview(SKYLINE_CANON, "revert");
-    expect(preview).toEqual({ dirty: true, changedFiles: 1, ahead: 0, diff: DIFF });
+    expect(preview).toEqual({ dirty: true, changedFiles: 1, ahead: 0, diff: DIFF, scope: "post" });
+  });
+
+  it("excludes an untracked file from a revert's count and diff (it has no HEAD state)", async () => {
+    const { store } = newStore(
+      { [SKYLINE_WT_FILE]: SKYLINE },
+      { statusPorcelain: "?? src/content/blog/never-committed.mdx\n" },
+    );
+    await store.openPost(SKYLINE_CANON);
+    const preview = await store.postLossPreview(SKYLINE_CANON, "revert");
+    expect(preview).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "post" });
   });
 
   it("reports clean for an untouched worktree (delete + revert)", async () => {
     const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
     await store.openPost(SKYLINE_CANON);
-    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "" });
-    expect(await store.postLossPreview(SKYLINE_CANON, "revert")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "" });
+    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "all" });
+    expect(await store.postLossPreview(SKYLINE_CANON, "revert")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "post" });
   });
 
-  it("delete diff is scoped to the whole blog dir with -M so a staged rename pairs instead of 'new file'", async () => {
-    const RENAME_DIFF = [
+  it("delete's preview covers the whole worktree (not just the blog dir) with -M, so a staged rename pairs instead of 'new file' and an outside change surfaces too", async () => {
+    const RENAME_AND_OUTSIDE_DIFF = [
       "diff --git a/src/content/blog/2022-03-11_hello.mdx b/src/content/blog/2022-03-11_hello2.mdx",
       "similarity index 100%",
       "rename from src/content/blog/2022-03-11_hello.mdx",
       "rename to src/content/blog/2022-03-11_hello2.mdx",
+      "diff --git a/astro.config.mjs b/astro.config.mjs",
+      "+added a remark plugin",
       "",
     ].join("\n");
     const { store, lines } = newStore(
       { [HELLO_WT_FILE]: HELLO },
       {
-        statusPorcelain: "R  src/content/blog/2022-03-11_hello.mdx -> src/content/blog/2022-03-11_hello2.mdx\n",
-        diffBase: RENAME_DIFF,
+        statusPorcelain:
+          "R  src/content/blog/2022-03-11_hello.mdx -> src/content/blog/2022-03-11_hello2.mdx\n M astro.config.mjs\n",
+        diffBase: RENAME_AND_OUTSIDE_DIFF,
       },
     );
     await store.openPost(HELLO_CANON);
     const preview = await store.postLossPreview(HELLO_CANON, "delete");
 
+    expect(preview.changedFiles).toBe(2); // the renamed post AND the file outside the blog dir
     expect(preview.diff).toContain("rename from src/content/blog/2022-03-11_hello.mdx");
     expect(preview.diff).toContain("rename to src/content/blog/2022-03-11_hello2.mdx");
     expect(preview.diff).not.toContain("new file mode");
-    // The tracked-delta diff is issued with rename detection (-M), scoped to the whole blog
-    // content dir rather than just this post's pathspec: the broadening is what lets git pair
-    // the old path's deletion with the new path's addition into a rename.
-    expect(lines()).toContain("git -c core.quotePath=false diff -M main -- src/content/blog");
+    expect(preview.diff).toContain("astro.config.mjs"); // outside the blog dir, but delete destroys it too
+    // -M for rename pairing, and no pathspec at all — deleting the worktree destroys everything in
+    // it, so the preview is never scoped to the blog dir (let alone just this post).
+    expect(lines()).toContain("git -c core.quotePath=false diff -M main");
   });
 
-  it("revert diff is also scoped to the whole blog dir with -M", async () => {
+  it("revert's preview is scoped to the blog dir with -M by default (scope \"post\")", async () => {
     const { store, lines } = newStore(
       { [HELLO_WT_FILE]: HELLO },
-      { diffHeadNames: "src/content/blog/2022-03-11_hello2.mdx\n", diffHead: "rename from x\nrename to y\n" },
+      { statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n", diffBase: "rename from x\nrename to y\n" },
     );
     await store.openPost(HELLO_CANON);
     await store.postLossPreview(HELLO_CANON, "revert");
-    expect(lines()).toContain("git diff -M HEAD --name-only -- src/content/blog");
-    expect(lines()).toContain("git diff -M HEAD -- src/content/blog");
+    expect(lines()).toContain("git -c core.quotePath=false status --short --untracked-files=all -- src/content/blog");
+    expect(lines()).toContain("git diff -M -- src/content/blog");
+    expect(lines()).toContain("git diff -M --staged -- src/content/blog");
+  });
+
+  it('scope "all" widens revert\'s preview to the whole worktree, surfacing a change outside the blog dir', async () => {
+    const { store, lines } = newStore(
+      { [HELLO_WT_FILE]: HELLO },
+      { statusPorcelain: " M astro.config.mjs\n", diffBase: "diff --git a/astro.config.mjs b/astro.config.mjs\n+added a remark plugin\n" },
+    );
+    await store.openPost(HELLO_CANON);
+    const preview = await store.postLossPreview(HELLO_CANON, "revert", "all");
+    expect(preview).toEqual({
+      dirty: true,
+      changedFiles: 1,
+      ahead: 0,
+      diff: "diff --git a/astro.config.mjs b/astro.config.mjs\n+added a remark plugin\n",
+      scope: "all",
+    });
+    expect(lines()).toContain("git -c core.quotePath=false status --short --untracked-files=all");
+    expect(lines()).toContain("git diff -M");
+  });
+
+  it('auto-picks "all" (no scope requested) when there\'s more to revert than just the post', async () => {
+    const { store } = newStore(
+      { [HELLO_WT_FILE]: HELLO },
+      {
+        // Post-scoped: only the post itself changed. Unscoped: the post plus an outside file.
+        statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n",
+        statusPorcelainAll: " M src/content/blog/2022-03-11_hello.mdx\n M astro.config.mjs\n",
+        diffBase: "diff --git a/astro.config.mjs b/astro.config.mjs\n+added a remark plugin\n",
+      },
+    );
+    await store.openPost(HELLO_CANON);
+    const preview = await store.postLossPreview(HELLO_CANON, "revert");
+    expect(preview.scope).toBe("all");
+    expect(preview.changedFiles).toBe(2);
+  });
+
+  it('auto-picks "post" (no scope requested) when nothing else is dirty', async () => {
+    const { store } = newStore(
+      { [HELLO_WT_FILE]: HELLO },
+      { statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n", diffBase: "diff --git a/x b/x\n+y\n" },
+    );
+    await store.openPost(HELLO_CANON);
+    const preview = await store.postLossPreview(HELLO_CANON, "revert");
+    expect(preview.scope).toBe("post");
+    expect(preview.changedFiles).toBe(1);
   });
 });
 
@@ -880,6 +944,15 @@ describe("store.scanDirtyPosts (enumerates worktrees on disk, not just open tabs
     // a canonical path, so it's skipped rather than guessed at.
     fs.store.set(`${WT}/mystery/.git`, "gitdir");
     expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
+  });
+
+  it("marks a post dirty and uncommitted when only a file outside the blog dir is uncommitted", async () => {
+    // The post's own .mdx is clean, but the worktree carries an edit elsewhere (e.g. an agent change
+    // to astro.config.mjs). Unscoped, like delete/revert-all: it must still surface, or the tab menu
+    // disables "Revert to clean" and hides "Delete draft" for a worktree that isn't actually clean.
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { statusPorcelain: " M astro.config.mjs\n" });
+    await store.openPost(SKYLINE_CANON);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [SKYLINE_CANON] });
   });
 });
 
@@ -935,7 +1008,7 @@ describe("store.revertPost", () => {
     await store.openPost(SKYLINE_CANON);
     const before = messages.length;
 
-    const res = await store.revertPost(SKYLINE_CANON);
+    const res = await store.revertPost(SKYLINE_CANON, "post");
     expect(res).toEqual({ ok: true, reverted: true });
     expect(lines()).toContain("git checkout HEAD -- src/content/blog/2026-07-10_aligning-a-skyline.mdx");
 
@@ -947,8 +1020,15 @@ describe("store.revertPost", () => {
     const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { checkoutTo: SKYLINE });
     await store.openPost(SKYLINE_CANON);
     const before = messages.length;
-    expect(await store.revertPost(SKYLINE_CANON)).toEqual({ ok: true, reverted: false });
+    expect(await store.revertPost(SKYLINE_CANON, "post")).toEqual({ ok: true, reverted: false });
     expect(messages.slice(before).some((m) => m.type === "file.changed")).toBe(false);
+  });
+
+  it('scope "all" checks out the whole worktree (`.`) instead of just the post', async () => {
+    const { store, lines } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
+    await store.openPost(SKYLINE_CANON);
+    await store.revertPost(SKYLINE_CANON, "all");
+    expect(lines()).toContain("git checkout HEAD -- .");
   });
 });
 

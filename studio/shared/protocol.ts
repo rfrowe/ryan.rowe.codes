@@ -35,10 +35,14 @@ export type ClientMessage =
   // Inverse of completeRename: rewrite the frontmatter (slug/created_at) so the derived URL matches
   // the filename stem. An ordinary edit, not a git op.
   | { type: "post.revertUrl"; requestId: string; path: string }
-  // Delete a draft (worktree + branch; never origin/main), or revert uncommitted edits to HEAD. Both
-  // gated: with confirm:false the sidecar replies post.confirm when content is at risk.
+  // Delete a draft (worktree + branch; never origin/main; always the whole worktree, so no scope), or
+  // revert uncommitted edits to HEAD (post-only, or the whole worktree for scope "all"). Both gated:
+  // with confirm:false the sidecar replies post.confirm when content is at risk. `scope` on a revert
+  // is the caller's preference; omitted (the first request for a post, before any dialog is open),
+  // the sidecar picks it ("all" if there's more than just the post, else "post") and echoes its
+  // choice back on post.confirm.
   | { type: "post.delete"; requestId: string; path: string; confirm: boolean }
-  | { type: "post.revert"; requestId: string; path: string; confirm: boolean }
+  | { type: "post.revert"; requestId: string; path: string; scope?: "post" | "all"; confirm: boolean }
   | { type: "mcp.setEnabled"; requestId: string; server: string; enabled: boolean }
   // Set the permission mode (takes effect next turn); the sidecar echoes it back as mode.status.
   | { type: "mode.set"; mode: PermissionMode }
@@ -59,8 +63,19 @@ export type ServerMessage =
   | { type: "post.result"; requestId: string; ok: boolean; path?: string; error?: string }
   // A confirm:false destructive op would lose work: what would be lost, so the SPA can confirm.
   // changedFiles counts uncommitted files; ahead counts commits not yet in origin/<default>; diff is
-  // the unified diff the op would discard.
-  | { type: "post.confirm"; requestId: string; op: "delete" | "revert"; path: string; changedFiles: number; ahead: number; diff: string }
+  // the unified diff the op would discard. scope is the effective scope this preview reflects: always
+  // "all" for delete (never partial); for revert, the caller's choice or the sidecar's own pick when
+  // the request omitted one.
+  | {
+      type: "post.confirm";
+      requestId: string;
+      op: "delete" | "revert";
+      path: string;
+      changedFiles: number;
+      ahead: number;
+      diff: string;
+      scope: "post" | "all";
+    }
   // A post was renamed (slug and/or date). Carries old-to-new so the client migrates the tab's
   // transcript, session, and pending permissions before the tabs/active/file.changed rebuild that
   // follows; without it the tab is rebuilt fresh and the conversation + SDK session are lost.
@@ -102,6 +117,9 @@ export type PutDocResponse =
 export interface DiffResponse {
   status: string;
   diff: string;
+  /** Changed paths (tracked or untracked) outside the blog dir, regardless of the requested scope:
+   *  what a "post"-scoped ship/save-draft would leave behind. Powers the nudge toward scope "all". */
+  outsideCount: number;
 }
 
 export interface SessionsResponse {
@@ -152,11 +170,13 @@ export type ShipResponse =
 // Persist a draft to origin without opening a PR: commit the post with the pinned identity and push
 // its `blog/<stem>` isolation branch, so the draft survives locally-detached (reopened as a remote
 // draft from ⌘P, or checked out in another editor). `path` selects the post (any open tab), defaulting
-// to the active one.
+// to the active one. `scope` mirrors ship's: "post" stages only the blog tree, "all" the whole
+// worktree, safe here in a way it isn't for ship, since a draft never opens a PR against main.
 export interface SaveDraftRequest {
   path?: string;
   subject: string;
   body: string;
+  scope: "post" | "all";
   confirm: boolean;
 }
 // `committed` is false when there was nothing uncommitted to stage (an already-committed branch just

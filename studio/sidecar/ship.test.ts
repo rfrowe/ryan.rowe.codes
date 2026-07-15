@@ -63,7 +63,7 @@ function happy(bin: "git" | "gh", args: readonly string[]): Partial<RunResult> {
   if (a.startsWith("status --short")) return { stdout: ` M ${BLOG_PATH}\n` };
   if (a.startsWith("diff --name-only")) return { stdout: `${BLOG_PATH}\n` }; // scope assertion
   if (a.startsWith("diff --no-index")) return { code: 1, stdout: "" };
-  if (a.startsWith("diff --staged")) return { stdout: "" };
+  if (a.startsWith("diff -M --staged")) return { stdout: "" };
   if (a.startsWith("diff")) return { stdout: `diff --git a/${BLOG_PATH} b/${BLOG_PATH}\n` };
   if (a.startsWith("log -1")) return { stdout: "Ryan Rowe <ryan@rowe.codes>\n" };
   return { code: 0 }; // add / commit / push
@@ -310,15 +310,15 @@ describe("createShipService.diff", () => {
     expect(calls.every((c) => c.cwd === WT_PATH)).toBe(true);
     const seq = lines();
     expect(seq).toContain("git -c core.quotePath=false status --short --untracked-files=all -- src/content/blog");
-    expect(seq).toContain("git diff -- src/content/blog");
-    expect(seq).toContain("git diff --staged -- src/content/blog");
+    expect(seq).toContain("git diff -M -- src/content/blog");
+    expect(seq).toContain("git diff -M --staged -- src/content/blog");
   });
 
   it("returns empty output when there is no active post", async () => {
     const { git, calls } = makeGit(happy);
     const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => null, getWorktreeFor: () => null, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.diff("post");
-    expect(res).toEqual({ status: "", diff: "" });
+    expect(res).toEqual({ status: "", diff: "", outsideCount: 0 });
     expect(calls).toHaveLength(0);
   });
 
@@ -392,7 +392,7 @@ describe("createShipService.saveDraft", () => {
       getActiveNameSync: () => ({ synced: true }),
     });
 
-    const res = await svc.saveDraft({ subject: "Save draft", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "Save draft", body: "", scope: "post", confirm: true });
     expect(res).toEqual({ ok: true, branch: "blog/aligning-a-skyline", committed: true, pushed: true, noop: false });
 
     const seq = lines();
@@ -411,6 +411,47 @@ describe("createShipService.saveDraft", () => {
     expect(idx("log -1")).toBeLessThan(idx("push"));
   });
 
+  it('scope "all" stages the whole worktree, not just the blog dir — unlike ship, a draft never opens a PR against the primary branch', async () => {
+    const OUTSIDE = "astro.config.mjs";
+    const handler = withOverride(saveHappy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("status --porcelain")) return { stdout: ` M ${BLOG_PATH}\n M ${OUTSIDE}\n` };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.saveDraft({ subject: "Save draft", body: "", scope: "all", confirm: true });
+    expect(res.ok).toBe(true);
+    expect(lines()).toContain(`git add -- ${BLOG_PATH} ${OUTSIDE}`);
+  });
+
+  it('scope "post" still ignores a change outside the blog dir', async () => {
+    const OUTSIDE = "astro.config.mjs";
+    const handler = withOverride(saveHappy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("status --porcelain")) return { stdout: ` M ${BLOG_PATH}\n M ${OUTSIDE}\n` };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.saveDraft({ subject: "Save draft", body: "", scope: "post", confirm: true });
+    expect(res.ok).toBe(true);
+    expect(lines()).toContain(`git add -- ${BLOG_PATH}`);
+    expect(lines().some((l) => l.startsWith("git add") && l.includes(OUTSIDE))).toBe(false);
+  });
+
   it("blocks on the confirm gate with no git side effects", async () => {
     const { git, calls } = makeGit(saveHappy);
     const svc = createShipService({
@@ -420,7 +461,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => WORKTREE,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: false });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: false });
     expect(res).toEqual({ ok: false, error: "confirmation required" });
     expect(calls).toHaveLength(0);
   });
@@ -434,7 +475,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => null,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/no post to save/);
     expect(calls).toHaveLength(0);
@@ -442,7 +483,7 @@ describe("createShipService.saveDraft", () => {
 
   it("saves a non-active tab by path via getWorktreeFor", async () => {
     const svc = saveSvc(saveHappy, { active: null });
-    const res = await svc.saveDraft({ path: `/repo/${BLOG_PATH}`, subject: "Save draft", body: "", confirm: true });
+    const res = await svc.saveDraft({ path: `/repo/${BLOG_PATH}`, subject: "Save draft", body: "", scope: "post", confirm: true });
     expect(res).toEqual({ ok: true, branch: "blog/aligning-a-skyline", committed: true, pushed: true, noop: false });
   });
 
@@ -458,7 +499,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => WORKTREE,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/expected the post's branch/);
     const seq = lines();
@@ -468,7 +509,7 @@ describe("createShipService.saveDraft", () => {
 
   it("does not gate on a frontmatter⇄filename desync (unlike ship)", async () => {
     const svc = saveSvc(saveHappy, { nameSync: { synced: false } });
-    const res = await svc.saveDraft({ subject: "Save draft", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "Save draft", body: "", scope: "post", confirm: true });
     expect(res.ok).toBe(true);
   });
 
@@ -487,7 +528,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => WORKTREE,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
     expect(res).toEqual({ ok: true, branch: "blog/aligning-a-skyline", committed: false, pushed: true, noop: false });
     const seq = lines();
     expect(seq.some((l) => l.startsWith("git add"))).toBe(false);
@@ -510,7 +551,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => WORKTREE,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
     expect(res).toEqual({ ok: true, branch: "blog/aligning-a-skyline", committed: false, pushed: false, noop: true });
     expect(lines().some((l) => l.includes("push"))).toBe(false);
   });
@@ -527,7 +568,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => WORKTREE,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/committed locally but were not pushed/);
   });
@@ -544,7 +585,7 @@ describe("createShipService.saveDraft", () => {
       getWorktreeFor: () => WORKTREE,
       getActiveNameSync: () => ({ synced: true }),
     });
-    const res = await svc.saveDraft({ subject: "x", body: "", confirm: true });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/identity assertion failed/);
     const seq = lines();
