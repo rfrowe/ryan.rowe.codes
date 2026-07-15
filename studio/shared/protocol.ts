@@ -65,8 +65,9 @@ export type ServerMessage =
   // Result of any post.* request (by requestId).
   | { type: "post.result"; requestId: string; ok: boolean; path?: string; error?: string }
   // A confirm:false destructive op would lose work: what would be lost, so the SPA can confirm.
-  // changedFiles counts uncommitted files; ahead counts commits not yet in origin/<default>; diff is
-  // the unified diff the op would discard. scope is the effective scope this preview reflects: always
+  // changedFiles counts uncommitted files; ahead counts commits not yet safe anywhere else (its own
+  // remote branch if pushed, else the primary branch); diff is the unified diff the op would discard.
+  // scope is the effective scope this preview reflects: always
   // "all" for delete (never partial); for revert, the caller's choice or the sidecar's own pick when
   // the request omitted one.
   | {
@@ -142,7 +143,7 @@ export interface PostsResponse {
 }
 
 // Post status across every worktree on disk (not just this session's open tabs). `dirty` = unshipped
-// work (uncommitted edits or commits not yet in origin/<default>), powering the ⌘P palette badge and
+// work (uncommitted edits, or commits not yet safe anywhere else), powering the ⌘P palette badge and
 // tab dot. `uncommitted` ⊆ `dirty` = posts with uncommitted edits, so the UI can gate "Revert to
 // clean" (which only discards uncommitted edits) off a clean-but-ahead post.
 export interface DirtyPostsResponse {

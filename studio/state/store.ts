@@ -493,16 +493,27 @@ export function createStore(deps: StoreDeps): StudioStore {
     return path.join(await worktreesRoot(), stem);
   }
 
+  /** Whether `origin/<branch>` exists as a remote-tracking ref. Offline-safe: reads refs on disk,
+   *  never fetches, so a deleted-upstream branch can still read as present until the next fetch. */
+  async function hasOriginRef(branch: string): Promise<boolean> {
+    return (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: repoRoot })).code === 0;
+  }
+
   /**
    * The ref a post branch's unshipped commits are measured against: `origin/<sessionBranch>` when that
    * remote-tracking ref exists (what ship targets), else the local session branch (the fork point).
-   * Offline-safe: reads refs on disk, never fetches.
    */
   async function aheadBase(): Promise<string> {
-    const hasRemote =
-      (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${sessionBranch}`], { cwd: repoRoot }))
-        .code === 0;
-    return hasRemote ? `origin/${sessionBranch}` : sessionBranch;
+    return (await hasOriginRef(sessionBranch)) ? `origin/${sessionBranch}` : sessionBranch;
+  }
+
+  /**
+   * The ref a post's own branch is safe against: its own `origin/<branch>` when pushed there, else
+   * {@link aheadBase}. A draft can sit unmerged on the primary branch indefinitely while still being
+   * fully persisted on its own remote, e.g. right after being adopted from ⌘P with nothing edited since.
+   */
+  async function lossBase(branch: string): Promise<string> {
+    return (await hasOriginRef(branch)) ? `origin/${branch}` : await aheadBase();
   }
 
   /** Canonicalize + root-jail a path to the blog content tree. Returns null if it escapes. */
@@ -1127,7 +1138,7 @@ export function createStore(deps: StoreDeps): StudioStore {
       let ahead = 0;
       let base: string | null = null;
       try {
-        base = await aheadBase();
+        base = await lossBase(doc.branch);
         const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd });
         if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
       } catch {
@@ -1146,17 +1157,21 @@ export function createStore(deps: StoreDeps): StudioStore {
       const dirty: string[] = [];
       const uncommitted: string[] = [];
       for (const wtPath of wtPaths) {
+        // The worktree's dir name is its post's stem, which also derives its branch (below) and, on
+        // a match, its canonical path.
+        const stem = path.basename(wtPath);
+
         // Uncommitted, unscoped like postLossPreview's delete/revert-all check: a change outside the
         // blog dir (e.g. an agent edit to astro.config.mjs) must still mark the post dirty, or the tab
         // menu disables "Revert to clean" and hides "Delete draft" for a worktree that isn't clean.
         const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: wtPath });
         const uncommittedNonEmpty = statusRes.stdout.trim().length > 0;
 
-        // Ahead of the base, with postLossPreview's offline-safe fallback: any error or nonzero exit
-        // means "can't tell", so report 0 rather than block on the network.
+        // Ahead of the post's own loss base, with postLossPreview's offline-safe fallback: any error
+        // or nonzero exit means "can't tell", so report 0 rather than block on the network.
         let ahead = 0;
         try {
-          const base = await aheadBase();
+          const base = await lossBase(await branchFor(stem));
           const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd: wtPath });
           if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
         } catch {
@@ -1165,8 +1180,7 @@ export function createStore(deps: StoreDeps): StudioStore {
 
         if (!uncommittedNonEmpty && ahead === 0) continue;
 
-        // Map the dirty worktree to its post's canonical path via the worktree's dir name (its stem).
-        const stem = path.basename(wtPath);
+        // Map the dirty worktree to its post's canonical path via its stem.
         let canonical: string | null = null;
         if (await fs.exists(path.join(wtPath, BLOG_CONTENT_DIR, `${stem}.mdx`))) {
           canonical = path.join(repoRoot, BLOG_CONTENT_DIR, `${stem}.mdx`);
