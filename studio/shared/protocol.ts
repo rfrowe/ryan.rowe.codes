@@ -153,11 +153,14 @@ export interface DirtyPostsResponse {
 
 // A `blog/<stem>` draft branch with no live worktree (invisible to the open-tabs/main-tree listings).
 // path is the canonical path to reopen it at; stem is its date-qualified identity; origin says where
-// the branch lives (reopening a remote-only draft adopts a tracking worktree from origin).
+// the branch lives (reopening a remote-only draft adopts a tracking worktree from origin); stale
+// means the branch is already merged into the default branch, so reopening forks a fresh one over
+// it instead of adopting its (shipped) content.
 export interface DraftSummary {
   path: string;
   stem: string;
   origin: "local" | "remote" | "both";
+  stale: boolean;
 }
 export interface DraftsResponse {
   drafts: DraftSummary[];

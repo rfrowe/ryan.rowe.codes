@@ -76,15 +76,35 @@ const CLOSED_POSTS: PostSummaryDTO[] = [
   },
 ];
 
-// Draft branches with no live worktree, for the ⌘P palette. One local, one remote-only.
+// Draft branches with no live worktree, for the ⌘P palette. One local, one remote-only, one stale
+// (already merged, so reopening would fork fresh rather than adopt it).
 const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
   {
-    summary: { path: postPath("2026-04-18", "a-half-written-idea"), stem: "2026-04-18_a-half-written-idea", origin: "local" },
+    summary: {
+      path: postPath("2026-04-18", "a-half-written-idea"),
+      stem: "2026-04-18_a-half-written-idea",
+      origin: "local",
+      stale: false,
+    },
     title: "A Half-Written Idea",
   },
   {
-    summary: { path: postPath("2026-02-02", "notes-from-a-plane"), stem: "2026-02-02_notes-from-a-plane", origin: "remote" },
+    summary: {
+      path: postPath("2026-02-02", "notes-from-a-plane"),
+      stem: "2026-02-02_notes-from-a-plane",
+      origin: "remote",
+      stale: false,
+    },
     title: "Notes From a Plane",
+  },
+  {
+    summary: {
+      path: postPath("2026-01-05", "a-shipped-experiment"),
+      stem: "2026-01-05_a-shipped-experiment",
+      origin: "both",
+      stale: true,
+    },
+    title: "A Shipped Experiment",
   },
 ];
 

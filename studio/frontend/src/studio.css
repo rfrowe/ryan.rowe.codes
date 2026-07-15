@@ -2245,6 +2245,10 @@ body {
   background: var(--accent);
   border: 0;
 }
+/* A draft branch already merged into main: dead weight, not work in progress. */
+.palette__badge--stale {
+  background: var(--warn);
+}
 /* Outline chip (distinct from the filled Draft badge): marks a remote-only draft branch whose
    reopen adopts a tracking worktree from origin. */
 .palette__chip {

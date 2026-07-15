@@ -101,6 +101,14 @@ interface GitConfig {
   branchExists?: boolean;
   /** `git rev-parse --verify --quiet refs/remotes/origin/<branch>` exits 0 (remote-tracking branch exists). */
   remoteBranchExists?: boolean;
+  /** `git cherry origin/<default> <ref>` reports no unmatched (`+`) commit: the draft branch's
+   *  content is already upstream (a real merge, or a squash of a single commit), detectable offline.
+   *  Applies to both the local and remote ref unless overridden below. */
+  cherryMerged?: boolean;
+  /** Override of `cherryMerged` for just the local ref's `git cherry` call. */
+  localCherryMerged?: boolean;
+  /** Override of `cherryMerged` for just the remote ref's `git cherry` call. */
+  remoteCherryMerged?: boolean;
   /** Stems returned by `for-each-ref refs/heads/blog` (local blog branches), for listDrafts. */
   localBranches?: string[];
   /** Stems returned by `for-each-ref refs/remotes/origin/blog` (remote blog branches), for listDrafts. */
@@ -133,6 +141,15 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return { ...ok, stdout: blocks.join("\n") };
       }
       if (args[0] === "worktree" && args[1] === "add") {
+        // `-b <branch>` fails against a real git if `<branch>` already has a local ref, unless a
+        // prior `branch -D` in this run cleared it: models the collision ensureWorktree must avoid.
+        if (args.includes("-b")) {
+          const branchArg = args[args.indexOf("-b") + 1];
+          const cleared = calls.some((c) => c.bin === "git" && c.line === `branch -D ${branchArg}`);
+          if (cfg.branchExists && !cleared) {
+            return { ...ok, code: 128, stderr: `fatal: a branch named '${branchArg}' already exists\n` };
+          }
+        }
         // Register the worktree's .git link. The path's position varies by add form, so find it
         // by prefix rather than a fixed index.
         const wtPath = args.find((a) => a.startsWith(`${WT}/`)) ?? args[2];
@@ -164,6 +181,11 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         return ok;
       }
       if (args[0] === "branch" && args[1] === "-D") return ok;
+      if (args[0] === "cherry") {
+        const ref = args[2];
+        const merged = (ref?.startsWith("refs/remotes/") ? cfg.remoteCherryMerged : cfg.localCherryMerged) ?? cfg.cherryMerged;
+        return { ...ok, stdout: merged ? "" : "+ deadbeef\n" };
+      }
       if (args[0] === "rev-parse" && args.includes("--verify")) {
         const ref = args[args.length - 1];
         if (ref.startsWith("refs/remotes/origin/")) return { ...ok, code: cfg.remoteBranchExists ? 0 : 1 };
@@ -1122,6 +1144,38 @@ describe("ensureWorktree adopts an existing draft branch (open path)", () => {
     expect(lines()).toContain(`git worktree add ${WTP} ${BRANCH}`);
     expect(lines().some((l) => l.includes("--track"))).toBe(false);
   });
+
+  it("forks fresh over a branch already merged into main instead of adopting its (stale) content", async () => {
+    // Local and remote both still hold the branch, but it's fully shipped. Squash-merged, so it's
+    // not an ancestor of main (git cherry catches it by patch content instead); this repo doesn't
+    // delete-on-merge, so a landed PR's branch lingers on origin as dead weight, not a live draft.
+    const { store, lines } = newStore(
+      {},
+      { branchExists: true, remoteBranchExists: true, cherryMerged: true, originFiles: { [SKYLINE_WT_FILE]: SKYLINE } },
+    );
+    const active = await store.openPost(SKYLINE_CANON);
+
+    expect(active.text).toBe(SKYLINE);
+    expect(lines()).toContain(`git branch -D ${BRANCH}`);
+    expect(lines()).toContain(`git worktree add ${WTP} -b ${BRANCH} main`);
+    expect(lines()).not.toContain(`git worktree add ${WTP} ${BRANCH}`);
+    expect(lines().some((l) => l.includes("--track"))).toBe(false);
+  });
+
+  it("clears a stale local ref before adopting a live remote draft under the same branch name", async () => {
+    // The local ref is old, already-shipped content (merged); origin has since moved the branch
+    // forward with new, unmerged commits under the same name. The stale local ref would collide
+    // with the `--track -b` create below if it weren't cleared first.
+    const { store, lines } = newStore(
+      {},
+      { branchExists: true, remoteBranchExists: true, localCherryMerged: true, originFiles: { [SKYLINE_WT_FILE]: SKYLINE } },
+    );
+    const active = await store.openPost(SKYLINE_CANON);
+
+    expect(active.text).toBe(SKYLINE);
+    expect(lines()).toContain(`git branch -D ${BRANCH}`);
+    expect(lines()).toContain(`git worktree add --track -b ${BRANCH} ${WTP} origin/${BRANCH}`);
+  });
 });
 
 describe("store.listDrafts (branches without a live worktree)", () => {
@@ -1140,9 +1194,9 @@ describe("store.listDrafts (branches without a live worktree)", () => {
       },
     );
     expect(await store.listDrafts()).toEqual([
-      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", origin: "local" },
-      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", origin: "both" },
-      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", origin: "remote" },
+      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", origin: "local", stale: false },
+      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", origin: "both", stale: false },
+      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", origin: "remote", stale: false },
     ]);
   });
 
@@ -1156,6 +1210,20 @@ describe("store.listDrafts (branches without a live worktree)", () => {
     // A blog/* branch with nothing under src/content/blog matching the stem: can't resolve a path.
     const { store } = newStore({}, { localBranches: ["2026-05-04_empty"], catFilePaths: [] });
     expect(await store.listDrafts()).toEqual([]);
+  });
+
+  it("flags a branch already merged into main as stale, via the same check ensureWorktree uses", async () => {
+    const { store } = newStore(
+      {},
+      {
+        localBranches: ["2026-05-05_shipped"],
+        catFilePaths: ["blog/2026-05-05_shipped:src/content/blog/2026-05-05_shipped.mdx"],
+        cherryMerged: true,
+      },
+    );
+    expect(await store.listDrafts()).toEqual([
+      { path: `${BLOG}/2026-05-05_shipped.mdx`, stem: "2026-05-05_shipped", origin: "local", stale: true },
+    ]);
   });
 });
 
@@ -1190,6 +1258,14 @@ describe("store.createPost / renamePost refuse a taken draft branch", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/draft already exists/);
     expect(lines().some((l) => l.includes("branch -m"))).toBe(false); // refused before any mutation
+  });
+
+  it("createPost does not refuse a same-named branch that's already merged (shipped, not a draft)", async () => {
+    const { store, lines } = newStore({}, { branchExists: true, cherryMerged: true });
+    const result = await store.createPost(INPUT);
+    expect(result.ok).toBe(true);
+    expect(lines()).toContain("git branch -D blog/2026-07-10_aligning-a-skyline");
+    expect(lines()).toContain(`git worktree add ${WT}/2026-07-10_aligning-a-skyline -b blog/2026-07-10_aligning-a-skyline main`);
   });
 });
 
