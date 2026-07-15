@@ -70,6 +70,16 @@ const SAVE_RETRY_MAX = 5;
 // Marks transactions the app applied programmatically, so they don't trigger autosave.
 const remoteAnnotation = Annotation.define<boolean>();
 
+// Mirrors mdx.ts's `esm` block-parser rule (same start-of-run condition) as a plain-text check, so
+// the toggle-comment override below can tell a real ESM import/export line apart from MDX prose or
+// a {…} expression without walking the syntax tree (parseMixed's TSX mount makes both resolve
+// through the same language data at that point, with no node-level way to distinguish them there).
+function isEsmLine(state: EditorState, pos: number): boolean {
+  let line = state.doc.lineAt(pos);
+  while (line.number > 1 && /\S/.test(state.doc.line(line.number - 1).text)) line = state.doc.line(line.number - 1);
+  return /^(import|export)\b/.test(line.text);
+}
+
 // Dark theme for the editor's tooltips (autocomplete dropdown, completion info, LSP hover and
 // signature help). The studio styles the surface via plain CSS, so CodeMirror thinks it's light and
 // renders low-contrast tooltips; `{ dark: true }` flips its tooltip base theme and these rules,
@@ -358,9 +368,19 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
       // is too dim for plain prose, so brighten the base text to Tokyo Night's #c0caf5.
       tokyoNightInit({ settings: { foreground: "#c0caf5" } }),
       md,
-      // MDX comments are {/* */}, not markdown's HTML <!-- -->; override the block-comment tokens
-      // so the toggle-comment keybinding wraps selections the MDX way.
-      Prec.highest(md.language.data.of({ commentTokens: { block: { open: "{/*", close: "*/}" } } })),
+      // MDX comments are {/* */}, not markdown's HTML <!-- -->, and prose/expressions have no
+      // meaningful // syntax, so force block-comment tokens for the toggle-comment keybinding
+      // everywhere except a real ESM import/export line (mdx.ts's `esm` block) — that's genuine JS
+      // mounted into TSX, so its own commentTokens (which include //) should stand. A plain
+      // md.language.data / tsxLanguage.data override can't make that distinction: an existing
+      // {/* */} comment is parsed as a mounted TSX node, so it resolves language data through
+      // tsxLanguage's own commentTokens (which also has a `line: "//"` CodeMirror always prefers
+      // over block) — same as an ESM line's mount, with no facet-level way to tell them apart.
+      Prec.highest(
+        EditorState.languageData.of((state, pos) =>
+          isEsmLine(state, pos) ? [] : [{ commentTokens: { block: { open: "{/*", close: "*/}" } } }],
+        ),
+      ),
       md.language.data.of({ autocomplete: frontmatterCompletionSource }),
       md.language.data.of({ autocomplete: recipeSnippetSource }),
       ...(lspClient

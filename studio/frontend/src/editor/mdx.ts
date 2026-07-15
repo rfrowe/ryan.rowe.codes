@@ -58,6 +58,44 @@ const expression: MarkdownConfig = {
   ],
 };
 
+// A {…} expression spanning a blank line (e.g. a multi-paragraph {/* comment */}) would otherwise
+// be cut short: markdown ends a paragraph at the blank line, and `expression` above only sees as far
+// as its own paragraph's content. When a `{` doesn't balance within its own leaf, scan forward across
+// blank lines to the matching `}`, mirroring jsxFlow's multi-line handling below.
+const expressionFlow: MarkdownConfig = {
+  defineNodes: [{ name: "MDXExpressionFlow", block: true }],
+  parseBlock: [
+    {
+      name: "MDXExpressionFlow",
+      before: "HTMLBlock",
+      parse(cx, line) {
+        if (line.indent >= 4 || line.next !== BRACE_OPEN) return false;
+        let depth = 0;
+        const balance = (text: string, start: number): number => {
+          for (let i = start; i < text.length; i++) {
+            const ch = text.charCodeAt(i);
+            if (ch === BRACE_OPEN) depth++;
+            else if (ch === BRACE_CLOSE && --depth === 0) return i;
+          }
+          return -1;
+        };
+        // Balances within its own paragraph: leave it to the inline `expression` rule, unchanged.
+        if (balance(line.text, line.pos) >= 0) return false;
+        const from = cx.lineStart + line.pos;
+        let end = -1;
+        // Bound the lookahead so an unbalanced `{` can't consume the rest of the document. Once this
+        // loop calls cx.nextLine(), the block context's cursor has moved for good — there's no way to
+        // "return false" and let another parser retry those lines, so an unbalanced `{` still commits
+        // as one span (falling back to cx.prevLineEnd()), mirroring jsxFlow's unterminated-tag case.
+        for (let scanned = 0; end < 0 && scanned < 200 && cx.nextLine(); scanned++) end = balance(line.text, 0);
+        cx.addElement(cx.elt("MDXExpressionFlow", from, end < 0 ? cx.prevLineEnd() : cx.lineStart + end + 1));
+        cx.nextLine();
+        return true;
+      },
+    },
+  ],
+};
+
 // A JSX opening tag that spans multiple lines (a prop per line, blank lines between) would be cut
 // by markdown's blank-line block break. When a `<Tag` doesn't close on its first line, consume
 // through to the `>` that ends the opening tag, honoring {…} expressions and strings so a `>`
@@ -108,12 +146,12 @@ const jsxFlow: MarkdownConfig = {
 };
 
 // Delegate the JS-ish ranges to the TSX grammar; markdown keeps everything else.
-const NEST_TO_TSX = new Set(["MDXESM", "MDXExpression", "MDXJsxFlow"]);
+const NEST_TO_TSX = new Set(["MDXESM", "MDXExpression", "MDXExpressionFlow", "MDXJsxFlow"]);
 const nestJs: MarkdownConfig = {
   wrap: parseMixed((node) => (NEST_TO_TSX.has(node.type.name) ? { parser: tsxLanguage.parser } : null)),
 };
 
 /** The markdown (GFM) language with MDX's ESM, expression, and JSX-tag constructs highlighted via TSX. */
 export function mdx(): LanguageSupport {
-  return markdown({ base: markdownLanguage, extensions: [esm, expression, jsxFlow, nestJs] });
+  return markdown({ base: markdownLanguage, extensions: [esm, expression, expressionFlow, jsxFlow, nestJs] });
 }
