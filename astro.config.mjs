@@ -16,6 +16,11 @@ const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 // alongside the root; in the main tree the two coincide, so it's a no-op there.
 const realNodeModules = realpathSync(path.join(projectRoot, "node_modules"));
 
+// Vite rejects requests whose Host header isn't a recognized loopback name unless told otherwise.
+// STUDIO_HOST_ASTRO carries the hostname a reverse proxy fronts this dev server as (studio's sidecar
+// launches `astro dev` with it set); local dev leaves it unset and keeps Vite's own default.
+const externalAstroHost = process.env.STUDIO_HOST_ASTRO?.split(":")[0];
+
 // Astro's dev server only auto-restarts for this literal file, plus whatever an integration
 // registers via addWatchFile (astro-expressive-code does that itself for ec.config.mjs). A local
 // remark/rehype plugin file has no integration to register it, so list any here.
@@ -49,6 +54,7 @@ export default defineConfig({
       fs: {
         allow: [projectRoot, realNodeModules],
       },
+      ...(externalAstroHost ? { allowedHosts: [externalAstroHost] } : {}),
     },
   },
 });

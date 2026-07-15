@@ -2,9 +2,11 @@
 // the request/response calls; the single WebSocket relays ClientMessage to services and streams
 // every ServerMessage (doc-sync and agent conversation) back out.
 //
-// Security: bound to 127.0.0.1; a per-launch bearer token on every request (Authorization for REST,
-// `?token=` for the WS since browsers can't set WS headers); the Host header must be loopback (DNS
-// rebinding) and any Origin must be on the allowlist (loopback CSRF).
+// Security: bound to 127.0.0.1 by default (STUDIO_BIND_HOST overrides this for containerized/
+// reverse-proxied deployments); a per-launch bearer token on every request (Authorization for REST,
+// `?token=` for the WS since browsers can't set WS headers); the Host header must match the bound
+// loopback name or STUDIO_HOST_SIDECAR (DNS rebinding), and any Origin must be on the allowlist
+// (CSRF).
 //
 // The agent host has no subscription of its own; it publishes through `store.publish`, so this
 // server subscribes only to `services.store` and both streams reach the browser via that fan-out.
@@ -34,8 +36,14 @@ import type {
   ShipResponse,
 } from "../shared/protocol";
 
-const HOST = "127.0.0.1";
+const HOST = process.env.STUDIO_BIND_HOST ?? "127.0.0.1";
+const PROTOCOL = process.env.STUDIO_PROTOCOL ?? "http";
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // generous for a single MDX post
+
+/** The hostname part of a `host[:port]` value, e.g. "sidecar.lan:443" -> "sidecar.lan". */
+function hostnameOf(hostAndPort: string): string {
+  return hostAndPort.split(":")[0];
+}
 
 export interface StudioServer {
   listen(): Promise<void>;
@@ -58,8 +66,13 @@ export interface ServerOptions {
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
   const { token, webPort, spaPort, lspConnect } = opts;
-  // Only the SPA's own loopback origins may call the sidecar (loopback CSRF guard).
-  const allowedOrigins = new Set([`http://localhost:${spaPort}`, `http://127.0.0.1:${spaPort}`]);
+  // Only the SPA's own origin may call the sidecar (CSRF guard). STUDIO_HOST_SPA defaults to the
+  // SPA's loopback address, so this is a no-op addition to the two literals below unless it's set.
+  const allowedOrigins = new Set([
+    `http://localhost:${spaPort}`,
+    `http://127.0.0.1:${spaPort}`,
+    `${PROTOCOL}://${process.env.STUDIO_HOST_SPA ?? `127.0.0.1:${spaPort}`}`,
+  ]);
   // The sidecar always injects the concretes; the frozen DI seams omit the studio-only
   // multi-doc/worktree and MCP-status accessors, so recover them here for the post and mcp paths.
   const store = services.store as StudioStore;
@@ -89,12 +102,19 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     return tokenOk(header.slice("Bearer ".length));
   }
 
-  /** Host header must resolve to loopback (defeats DNS rebinding). */
+  // STUDIO_HOST_SIDECAR defaults to the sidecar's own loopback address, so this is a no-op
+  // addition to the two literals below unless it's set (defeats DNS rebinding either way).
+  const allowedHostnames = new Set([
+    "127.0.0.1",
+    "localhost",
+    hostnameOf(process.env.STUDIO_HOST_SIDECAR ?? `127.0.0.1:${webPort}`),
+  ]);
+
+  /** Host header must match the sidecar's own loopback name or its configured public hostname. */
   function hostOk(req: IncomingMessage): boolean {
     const host = req.headers.host;
     if (!host) return false;
-    const name = host.split(":")[0];
-    return name === "127.0.0.1" || name === "localhost";
+    return allowedHostnames.has(hostnameOf(host));
   }
 
   /** When an Origin is present (browser), it must be on the allowlist; server-to-server has none. */

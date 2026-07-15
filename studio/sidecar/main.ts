@@ -42,6 +42,8 @@ const WEB_PORT = Number(process.env.STUDIO_WEB_PORT) || 4319;
 const MCP_PORT = Number(process.env.STUDIO_MCP_PORT) || 4318;
 const ASTRO_PORT = Number(process.env.STUDIO_ASTRO_PORT) || 4321;
 const SPA_PORT = Number(process.env.STUDIO_SPA_PORT) || 5199;
+// The scheme browsers use to reach the Astro preview; STUDIO_HOST_ASTRO carries the hostname.
+const PROTOCOL = process.env.STUDIO_PROTOCOL ?? "http";
 // How long to wait for a fresh Astro daemon to answer before declaring the preview unavailable.
 const ASTRO_HEALTH_TIMEOUT_MS = 30_000;
 
@@ -76,8 +78,9 @@ async function main(): Promise<void> {
     git,
     repoRoot: REPO_ROOT,
     sessionBranch,
-    // Preview URLs point at the sidecar-owned Astro daemon.
-    previewBase: `http://localhost:${ASTRO_PORT}`,
+    // Preview URLs point at the sidecar-owned Astro daemon. STUDIO_HOST_ASTRO defaults to its own
+    // loopback address, so this reconstructs the literal below unless it's set.
+    previewBase: `${PROTOCOL}://${process.env.STUDIO_HOST_ASTRO ?? `localhost:${ASTRO_PORT}`}`,
     // New post worktrees fork from the local session-branch tip; STUDIO_FORK_BASE overrides the base.
     forkBase: process.env.STUDIO_FORK_BASE || undefined,
     prepareWorktree,
@@ -281,8 +284,15 @@ function createAstroManager(worktreesRoot: string) {
           console.error(`[sidecar] astro binary missing in ${worktreePath}; preview unavailable`);
           return;
         }
-        // `astro dev --background` forks a daemon and exits 0 on a successful launch.
-        const launch = await runToExit(bin, ["dev", "--background", "--port", String(ASTRO_PORT)], worktreePath);
+        // `astro dev --background` forks a daemon and exits 0 on a successful launch. STUDIO_BIND_HOST
+        // (set by the Docker image) widens the bind address so a reverse proxy in another container
+        // can reach it; local dev leaves it unset and keeps Astro's own loopback default.
+        const bindHost = process.env.STUDIO_BIND_HOST;
+        const launch = await runToExit(
+          bin,
+          ["dev", "--background", "--port", String(ASTRO_PORT), ...(bindHost ? ["--host", bindHost] : [])],
+          worktreePath,
+        );
         if (launch.code !== 0) {
           current = null;
           console.error(

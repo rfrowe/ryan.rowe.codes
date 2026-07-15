@@ -1,0 +1,33 @@
+# Local sanity check for the studio image -- `docker compose up --build` -- independent of the
+# real Traefik-fronted deployment. No Traefik labels, no external network: just published ports on
+# localhost and two named volumes. A separate, Portainer-managed stack (outside this repo) builds
+# from the same docker/ context and mirrors this env contract, with its own Traefik labels/network/
+# volumes and real STUDIO_HOST_*/STUDIO_PROTOCOL values in place of the commented-out block below.
+services:
+  studio:
+    build:
+      context: ./docker
+    ports:
+      - "5199:5199" # SPA
+      - "4319:4319" # sidecar (REST + WS)
+      - "4321:4321" # Astro preview
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GH_TOKEN: ${GH_TOKEN}
+      GIT_REPO_URL: ${GIT_REPO_URL:-https://github.com/rfrowe/ryan.rowe.codes.git}
+      GIT_BRANCH: ${GIT_BRANCH:-main}
+      # STUDIO_HOST_SPA / STUDIO_HOST_SIDECAR / STUDIO_HOST_ASTRO / STUDIO_PROTOCOL intentionally
+      # unset here: each defaults to today's loopback value, so this compose file exercises the
+      # exact same URLs as local `npm run studio`. Uncomment to test the Traefik-facing path
+      # against real DNS names instead:
+      # STUDIO_HOST_SPA: studio.lan
+      # STUDIO_HOST_SIDECAR: sidecar.lan
+      # STUDIO_HOST_ASTRO: preview.lan
+      # STUDIO_PROTOCOL: https
+    volumes:
+      - studio-repo:/data/repo
+      - studio-home:/home/studio
+
+volumes:
+  studio-repo:
+  studio-home:
