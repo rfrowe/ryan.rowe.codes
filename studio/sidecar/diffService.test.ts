@@ -141,17 +141,38 @@ describe("computeWorkingTreeDiff", () => {
 });
 
 describe("computeDiffAgainstRef", () => {
-  it("diffs against the given ref with rename detection, counting untracked files (nothing survives a delete)", async () => {
+  it("diffs against the ref's merge-base with HEAD (not the ref directly), with rename detection and untracked counting", async () => {
     const { git, lines } = makeGit((args) => {
       const a = subcommand(args);
       if (a.startsWith("status")) return { stdout: " M src/content/blog/a.mdx\n?? astro.config.mjs\n" };
+      if (a.startsWith("merge-base")) return { stdout: "deadbeef\n" };
       if (args.includes("--no-index")) return { code: 1, stdout: "diff --git a/dev/null b/astro.config.mjs\n+plugin\n" };
       return { stdout: "diff --git a/a b/a\n+z\n" };
     });
     const res = await computeDiffAgainstRef(git, "/wt", "main", "all");
     expect(res.changedFiles).toBe(2);
     expect(res.diff).toBe("diff --git a/a b/a\n+z\n\ndiff --git a/dev/null b/astro.config.mjs\n+plugin\n");
-    expect(lines()).toContain("git -c core.quotePath=false diff -M main");
+    expect(lines()).toContain("git merge-base main HEAD");
+    // Diffs from the merge-base commit, not "main" itself: if main has moved on since the fork,
+    // a direct diff against main would surface that drift as if this branch had introduced it.
+    expect(lines()).toContain("git -c core.quotePath=false diff -M deadbeef");
+    expect(lines()).not.toContain("git -c core.quotePath=false diff -M main");
+  });
+
+  it("skips the ref-relative diff (rather than falling back to the raw ref) when merge-base fails", async () => {
+    const { git, lines } = makeGit((args) => {
+      const a = subcommand(args);
+      if (a.startsWith("status")) return { stdout: "?? src/content/blog/new.mdx\n" };
+      if (a.startsWith("merge-base")) return { code: 1, stdout: "" };
+      if (args.includes("--no-index")) return { code: 1, stdout: "diff --git a/dev/null b/new.mdx\n+new\n" };
+      return { stdout: "should not be used" };
+    });
+    const res = await computeDiffAgainstRef(git, "/wt", "main", "all");
+    expect(res.diff).toBe("diff --git a/dev/null b/new.mdx\n+new\n");
+    expect(lines()).toContain("git merge-base main HEAD");
+    // A failed merge-base must not fall back to diffing "main" directly — that's the exact drift
+    // this function exists to avoid.
+    expect(lines().some((l) => l.startsWith("git -c core.quotePath=false diff -M"))).toBe(false);
   });
 
   it("skips the ref-relative diff (but keeps status + untracked synthesis) when ref is null", async () => {
@@ -163,6 +184,7 @@ describe("computeDiffAgainstRef", () => {
     });
     const res = await computeDiffAgainstRef(git, "/wt", null, "all");
     expect(res.diff).toBe("diff --git a/dev/null b/new.mdx\n+new\n");
+    expect(lines().some((l) => l.startsWith("git merge-base"))).toBe(false);
     expect(lines().some((l) => l.startsWith("git -c core.quotePath=false diff -M"))).toBe(false);
   });
 });
