@@ -21,3 +21,28 @@ export function parsePostDate(createdAt: string): PostDate {
   const raw = createdAt.trim();
   return { raw, day: raw.slice(0, 10), instant: new Date(raw) };
 }
+
+const DISPLAY_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/**
+ * The author-local day rendered for display, e.g. "March 12, 2022". Formats the `day` string
+ * components directly (no `Date` round-trip) so it can't drift a day between the author's zone
+ * and the UTC build.
+ */
+export function formatDisplayDate(date: PostDate): string {
+  const [year, month, day] = date.day.split("-");
+  return `${DISPLAY_MONTHS[Number(month) - 1]} ${Number(day)}, ${year}`;
+}
