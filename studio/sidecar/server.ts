@@ -19,10 +19,10 @@ import type { StudioServices } from "../shared/services";
 import { type StudioStore, postWouldLoseWork } from "../state/store";
 import type { StudioAgentHost } from "./agentHost";
 import type {
+  BranchesResponse,
   ClientMessage,
   DiffResponse,
   DirtyPostsResponse,
-  DraftsResponse,
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
@@ -172,12 +172,13 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return sendJson(res, 200, { dirty, uncommitted } satisfies DirtyPostsResponse);
       }
 
-      case "GET /posts/drafts": {
-        // blog/* draft branches with no live worktree, invisible to /posts and the open-tab set. The
-        // palette lists them as reopenable; selecting one runs the adopt-then-open path. Offline-safe
-        // (local refs only); probed on demand.
-        const drafts = await store.listDrafts();
-        return sendJson(res, 200, { drafts } satisfies DraftsResponse);
+      case "GET /posts/branches": {
+        // Every blog/* branch's local/remote/stale status, for every stem regardless of open or
+        // published state (including one left by a sidecar that died or a tab that was closed),
+        // otherwise invisible to both /posts and the open-tab set. Powers the palette's status
+        // chips. Offline-safe (local refs only); probed on demand.
+        const branches = await store.listBranchStatuses();
+        return sendJson(res, 200, { branches } satisfies BranchesResponse);
       }
 
       case "POST /ship": {

@@ -6,7 +6,7 @@
 // and services the full tab lifecycle and mcp.setEnabled.
 
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
-import type { ClientMessage, DraftSummary, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
+import type { BranchStatus, ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import type { SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
 import { REST_BASE, WS_BASE } from "./config";
@@ -76,14 +76,15 @@ const CLOSED_POSTS: PostSummaryDTO[] = [
   },
 ];
 
-// Draft branches with no live worktree, for the ⌘P palette. One local, one remote-only, one stale
-// (already merged, so reopening would fork fresh rather than adopt it).
-const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
+// Every blog/* branch's status, for the ⌘P palette's chips. One local-only, one remote-only, one
+// both-and-stale (already merged, so reopening would fork fresh rather than adopt it).
+const MOCK_BRANCHES: { summary: BranchStatus; title: string }[] = [
   {
     summary: {
       path: postPath("2026-04-18", "a-half-written-idea"),
       stem: "2026-04-18_a-half-written-idea",
-      origin: "local",
+      local: true,
+      remote: false,
       stale: false,
     },
     title: "A Half-Written Idea",
@@ -92,7 +93,8 @@ const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
     summary: {
       path: postPath("2026-02-02", "notes-from-a-plane"),
       stem: "2026-02-02_notes-from-a-plane",
-      origin: "remote",
+      local: false,
+      remote: true,
       stale: false,
     },
     title: "Notes From a Plane",
@@ -101,7 +103,8 @@ const MOCK_DRAFTS: { summary: DraftSummary; title: string }[] = [
     summary: {
       path: postPath("2026-01-05", "a-shipped-experiment"),
       stem: "2026-01-05_a-shipped-experiment",
-      origin: "both",
+      local: true,
+      remote: true,
       stale: true,
     },
     title: "A Shipped Experiment",
@@ -324,9 +327,8 @@ class MockBackend {
     return { dirty: [...this.open], uncommitted: this.open.includes(this.activePath) ? [this.activePath] : [] };
   }
 
-  drafts(): DraftSummary[] {
-    // Draft branches with no worktree: drop any adopted (opened) this session.
-    return MOCK_DRAFTS.filter((d) => !this.open.includes(d.summary.path)).map((d) => d.summary);
+  branchStatuses(): BranchStatus[] {
+    return MOCK_BRANCHES.map((d) => d.summary);
   }
 
   ship(req: ShipRequest): ShipResponse {
@@ -411,7 +413,7 @@ class MockBackend {
     // Adopt a known-but-closed post (or an existing draft branch) into docs on first open.
     if (!this.docs.has(path)) {
       const closed = CLOSED_POSTS.find((p) => p.path === path);
-      const draft = MOCK_DRAFTS.find((d) => d.summary.path === path);
+      const draft = MOCK_BRANCHES.find((d) => d.summary.path === path);
       const known = closed ?? (draft ? { path, title: draft.title } : null);
       if (!known) {
         this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
@@ -856,7 +858,7 @@ export function installMock(): void {
     if (method === "GET" && path === "/sessions") return ok({ sessions: backend.sessions() });
     if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
     if (method === "GET" && path === "/posts/dirty") return ok(backend.dirtyStatus());
-    if (method === "GET" && path === "/posts/drafts") return ok({ drafts: backend.drafts() });
+    if (method === "GET" && path === "/posts/branches") return ok({ branches: backend.branchStatuses() });
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
     if (method === "POST" && path === "/save-draft") return ok(backend.saveDraft(body as SaveDraftRequest));
 

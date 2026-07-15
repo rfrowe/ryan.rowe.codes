@@ -9,7 +9,7 @@
 import path from "node:path";
 
 import type { ApplyEditResult } from "../shared/mcpTools";
-import type { DraftSummary, ServerMessage } from "../shared/protocol";
+import type { BranchStatus, ServerMessage } from "../shared/protocol";
 import type { Fs, GitRunner } from "../shared/seams";
 import type { Store } from "../shared/services";
 import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/types";
@@ -339,11 +339,11 @@ export interface StudioStore extends Store {
    */
   scanDirtyPosts(): Promise<{ dirty: string[]; uncommitted: string[] }>;
   /**
-   * Enumerate `blog/*` draft branches with no live worktree and not open: drafts started elsewhere
-   * or left behind. Offline-safe (reads refs on disk, never fetches). Powers the ⌘P palette's draft
-   * entries; selecting one runs the adopt-then-open path.
+   * Every `blog/*` branch's local/remote/stale status, for every stem whether open, published,
+   * or neither (a closed tab, or a sidecar that exited without a clean shutdown, still leaves a
+   * findable stem). Offline-safe (reads refs on disk, never fetches); powers the ⌘P palette's chips.
    */
-  listDrafts(): Promise<DraftSummary[]>;
+  listBranchStatuses(): Promise<BranchStatus[]>;
   /**
    * Delete a draft post: remove its worktree and force-delete its branch (never touches origin),
    * re-focusing another open post like close. The preview daemon is stopped first so it can't hold
@@ -549,7 +549,9 @@ export function createStore(deps: StoreDeps): StudioStore {
    * draft. A branch already merged into the default branch doesn't count: this repo doesn't
    * delete-on-merge, so a shipped PR's branch can linger on origin as dead weight, not a draft
    * still being worked on. Offline-safe: reads refs on disk, never fetches, so `remote` may be
-   * stale. Used to adopt an existing draft and to refuse forking over one.
+   * stale. Used to adopt an existing draft and to refuse forking over one. Not the same shape as
+   * {@link BranchStatus}'s `local`/`remote`: those track worktree-on-disk/pushed regardless of
+   * merge status, with staleness broken out into its own field.
    */
   async function branchRefs(stem: string): Promise<{ local: boolean; remote: boolean }> {
     const branch = await branchFor(stem);
@@ -644,15 +646,32 @@ export function createStore(deps: StoreDeps): StudioStore {
     return wtPaths;
   }
 
+  /** Repo-relative candidates for `stem`'s post file, simple layout before folder layout. */
+  function postUnitCandidates(stem: string): string[] {
+    return [`${BLOG_CONTENT_DIR}/${stem}.mdx`, `${BLOG_CONTENT_DIR}/${stem}/post.mdx`];
+  }
+
   /**
    * The post file path (repo-relative) for `stem` on git `ref`, checking the simple then folder
    * layout via `git cat-file -e`, or null when the branch carries no post file. Lets draft
    * enumeration build the canonical path before any worktree exists.
    */
   async function draftUnitRel(ref: string, stem: string): Promise<string | null> {
-    const candidates = [`${BLOG_CONTENT_DIR}/${stem}.mdx`, `${BLOG_CONTENT_DIR}/${stem}/post.mdx`];
-    for (const rel of candidates) {
+    for (const rel of postUnitCandidates(stem)) {
       if ((await git.git(["cat-file", "-e", `${ref}:${rel}`], { cwd: repoRoot })).code === 0) return rel;
+    }
+    return null;
+  }
+
+  /**
+   * The post file path (repo-relative) for `stem`'s on-disk worktree, checking the simple then
+   * folder layout via `fs.exists`. Reads disk rather than git history so an autosaved-but-never-
+   * committed post (nothing on its branch's HEAD yet) still resolves for draft enumeration.
+   */
+  async function worktreeUnitRel(stem: string): Promise<string | null> {
+    const worktreePath = await worktreePathFor(stem);
+    for (const rel of postUnitCandidates(stem)) {
+      if (await fs.exists(path.join(worktreePath, rel))) return rel;
     }
     return null;
   }
@@ -1215,15 +1234,11 @@ export function createStore(deps: StoreDeps): StudioStore {
 
         if (!uncommittedNonEmpty && ahead === 0) continue;
 
-        // Map the dirty worktree to its post's canonical path via its stem.
-        let canonical: string | null = null;
-        if (await fs.exists(path.join(wtPath, BLOG_CONTENT_DIR, `${stem}.mdx`))) {
-          canonical = path.join(repoRoot, BLOG_CONTENT_DIR, `${stem}.mdx`);
-        } else if (await fs.exists(path.join(wtPath, BLOG_CONTENT_DIR, stem, "post.mdx"))) {
-          canonical = path.join(repoRoot, BLOG_CONTENT_DIR, stem, "post.mdx");
-        }
-        // Else: can't resolve which post this worktree backs, so skip it.
-        if (!canonical) continue;
+        // Map the dirty worktree to its post's canonical path via its stem; null if it can't be
+        // resolved (nothing matching the stem under the blog dir), so skip it.
+        const rel = await worktreeUnitRel(stem);
+        if (!rel) continue;
+        const canonical = path.join(repoRoot, rel);
         dirty.push(canonical);
         // Only posts with uncommitted edits are revertable; a clean-but-ahead post has nothing for
         // "Revert to clean" to discard.
@@ -1232,40 +1247,35 @@ export function createStore(deps: StoreDeps): StudioStore {
       return { dirty: [...new Set(dirty)], uncommitted: [...new Set(uncommitted)] };
     },
 
-    async listDrafts() {
-      // Enumerate this session's draft branches locally and on origin, scoped to its own namespace
-      // (`[<seg>/]blog/*`) so a non-primary session never lists or adopts another session's drafts.
-      // Offline-safe: reads refs on disk (an out-of-date origin/* is the accepted tradeoff). A branch
-      // with no post file is skipped, not guessed. Each result's `stale` flag reuses isMergedIntoDefault
-      // (the same check ensureWorktree uses to decide whether to adopt), so the picker and the open
-      // behavior agree on whether a branch is a live draft or already-shipped dead weight.
+    async listBranchStatuses() {
+      // Scoped to this session's own namespace (`[<seg>/]blog/*`) so a non-primary session never
+      // lists or adopts another session's drafts. `stale` reuses isMergedIntoDefault, the same check
+      // ensureWorktree uses to decide whether to adopt.
       const seg = await prefixSeg();
       const localRoot = seg ? `refs/heads/${seg}/blog` : "refs/heads/blog";
       const remoteRoot = seg ? `refs/remotes/origin/${seg}/blog` : "refs/remotes/origin/blog";
       const localStems = await refStems(["for-each-ref", "--format=%(refname)", localRoot], `${localRoot}/`);
       const remoteStems = await refStems(["for-each-ref", "--format=%(refname)", remoteRoot], `${remoteRoot}/`);
+      const worktreeStems = new Set((await worktreePathsOnDisk()).map((p) => path.basename(p)));
 
-      // A "draft w/o worktree" is one whose stem has neither a live worktree on disk nor an open tab.
-      const liveStems = new Set((await worktreePathsOnDisk()).map((p) => path.basename(p)));
-      const openStems = new Set([...open.values()].map((d) => postStem(d.canonicalPath)));
-
-      const drafts: DraftSummary[] = [];
-      for (const stem of new Set([...localStems, ...remoteStems])) {
-        if (liveStems.has(stem) || openStems.has(stem)) continue;
-        const isLocal = localStems.has(stem);
-        const isRemote = remoteStems.has(stem);
-        const ref = isLocal ? await branchFor(stem) : `origin/${await branchFor(stem)}`;
-        const rel = await draftUnitRel(ref, stem);
-        if (!rel) continue;
-        drafts.push({
-          path: path.join(repoRoot, rel),
-          stem,
-          origin: isLocal && isRemote ? "both" : isLocal ? "local" : "remote",
-          stale: await isMergedIntoDefault(ref),
-        });
-      }
-      drafts.sort((a, b) => a.stem.localeCompare(b.stem));
-      return drafts;
+      // Every stem's status is an independent read, so resolve them concurrently.
+      const results = await Promise.all(
+        [...new Set([...localStems, ...remoteStems, ...worktreeStems])].map(async (stem): Promise<BranchStatus | null> => {
+          const local = worktreeStems.has(stem);
+          const remote = remoteStems.has(stem);
+          const ref = localStems.has(stem) ? await branchFor(stem) : `origin/${await branchFor(stem)}`;
+          // Prefer the worktree's own disk state over git history (catches an autosaved-but-never-
+          // committed post), falling back to history when the worktree registration is stale (its
+          // directory was removed without `git worktree remove`/prune).
+          let rel = local ? await worktreeUnitRel(stem) : null;
+          if (!rel) rel = await draftUnitRel(ref, stem);
+          if (!rel) return null;
+          return { path: path.join(repoRoot, rel), stem, local, remote, stale: await isMergedIntoDefault(ref) };
+        }),
+      );
+      const statuses = results.filter((s): s is BranchStatus => s !== null);
+      statuses.sort((a, b) => a.stem.localeCompare(b.stem));
+      return statuses;
     },
 
     async deletePost(canonicalPath) {
