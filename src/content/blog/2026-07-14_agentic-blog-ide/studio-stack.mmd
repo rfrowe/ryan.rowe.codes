@@ -1,0 +1,47 @@
+flowchart TB
+  browser["Browser (author)"]
+  ext["External MCP clients<br/>(Claude Code, etc.)"]
+
+  orch["studio/bin/studio.mjs<br/>orchestrator: boot, health-gate, teardown"]
+
+  subgraph spa["Frontend SPA · Vite + React · :5199"]
+    editor["CodeMirror 6 MDX editor"]
+    preview["Live preview"]
+    chat["Agent chat panel"]
+  end
+
+  subgraph sidecar["Sidecar · studio/sidecar"]
+    web["Web face :4319<br/>REST + WebSocket"]
+    mcp["MCP face :4318<br/>StreamableHTTP"]
+    agent["Agent host<br/>@anthropic-ai/claude-agent-sdk<br/>one query() session per post"]
+    docsync["docSync<br/>file-and-store watcher"]
+    ship["ship<br/>PR + save-draft (human-gated)"]
+    store["doc store + sessions"]
+  end
+
+  astro["Astro dev daemon :4321"]
+  wt[("Per-post git worktree<br/>branch blog/{slug}")]
+  origin[("origin")]
+
+  orch -. spawns .-> spa
+  orch -. spawns .-> sidecar
+
+  browser --> spa
+  ext --> mcp
+
+  editor <--> web
+  chat <--> web
+  preview --> astro
+
+  web --- store
+  mcp --- store
+  agent --- store
+  docsync --- store
+  ship --- store
+
+  sidecar -. owns .-> astro
+  agent -->|edits files| wt
+  docsync -->|watches| wt
+  astro -->|serves post route| wt
+  ship -->|commit, push, PR| origin
+  wt -. forked from .- origin

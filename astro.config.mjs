@@ -8,6 +8,7 @@ import expressiveCode from "astro-expressive-code";
 import { vanillaExtractPlugin } from "@vanilla-extract/vite-plugin";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import remarkMermaid from "./remark-mermaid.mjs";
 
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 // The studio previews each post from a git worktree whose node_modules symlinks to the main repo's.
@@ -45,7 +46,7 @@ export default defineConfig({
     watchLocalConfigFiles([]),
   ],
   markdown: {
-    remarkPlugins: [remarkMath],
+    remarkPlugins: [remarkMath, remarkMermaid],
     rehypePlugins: [rehypeKatex],
   },
   vite: {
