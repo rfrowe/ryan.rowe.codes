@@ -5,13 +5,14 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from "react";
 import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { markdown } from "@codemirror/lang-markdown";
 import { basicSetup } from "codemirror";
+import { tokyoNightInit } from "@uiw/codemirror-theme-tokyo-night";
 import type { DocRev, Range } from "../../shared/types";
 import type { PromptContext, PutDocResponse } from "../../shared/protocol";
 import { putDoc } from "./api";
 import { frontmatterCompletionSource } from "./editor/frontmatterCompletion";
 import { recipeSnippetSource } from "./editor/recipeSnippets";
+import { mdx } from "./editor/mdx";
 import { filePathToUri, getLspClient } from "./lsp/client";
 import { docResolvingCompletionSource } from "./lsp/completion";
 
@@ -339,14 +340,22 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
 
     // Register the completion sources via language data (not autocompletion({override})) so they
     // compose with each other and with the LSP plugin's source; an override would suppress them.
-    const md = markdown();
+    const md = mdx();
     // The MDX language server (completion, hover, signature help), when a real sidecar is present.
     // Composes with the two built-in sources above; languageId "mdx" is mandatory or the server
     // won't attach its MDX/TS service. Null under the mock / tokenless dev.
     const lspClient = getLspClient();
     const extensions = [
       basicSetup,
+      // Tokyo Night dark theme: editor surface plus a dark-tuned highlight style that takes
+      // precedence over basicSetup's light-oriented default. studio.css leaves the editor's
+      // colors (surface, gutter, cursor, selection, syntax) to it. Its default foreground (#787c99)
+      // is too dim for plain prose, so brighten the base text to Tokyo Night's #c0caf5.
+      tokyoNightInit({ settings: { foreground: "#c0caf5" } }),
       md,
+      // MDX comments are {/* */}, not markdown's HTML <!-- -->; override the block-comment tokens
+      // so the toggle-comment keybinding wraps selections the MDX way.
+      Prec.highest(md.language.data.of({ commentTokens: { block: { open: "{/*", close: "*/}" } } })),
       md.language.data.of({ autocomplete: frontmatterCompletionSource }),
       md.language.data.of({ autocomplete: recipeSnippetSource }),
       ...(lspClient

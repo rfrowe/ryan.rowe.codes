@@ -14,12 +14,12 @@ This is a "Hello, World!" for my new blog site written using [Next.js](https://n
 Using Tina, I can leverage the power of [MDX](https://mdxjs.com/) to easily create pages using Markdown with
 embedded <abbr title="JavaScript XML">JSX</abbr> all styled through [MUI](https://mui.com/).
 
-For example, the contents of this post look like this:
+For example, here's the full source of this post, rendered from its own bytes with Expressive Code's `<Code>` component:
 
-import CodeBlock from '@components/mdx/CodeBlock'
+import { Code } from 'astro-expressive-code/components'
 
-<CodeBlock
-    language='markdown'
-    source={props.source}
-    client:load
+<Code
+    code={props.source}
+    lang="mdx"
+    meta={`title="${props.fileName}"`}
 />

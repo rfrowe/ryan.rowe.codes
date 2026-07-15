@@ -1,5 +1,5 @@
 // Completion source offering the blog-authoring recipe snippets from SKILL.md: figures, island
-// imports and usage, KaTeX math, fenced code, and the CodeBlock island. Each is a snippetCompletion
+// imports and usage, KaTeX math, fenced code, and the Expressive Code component. Each is a snippetCompletion
 // with tab stops, keyed to a memorable label so typing e.g. "figure" or "math" filters to it.
 //
 // Gated to the MDX body: returns null inside the leading frontmatter block. Templates are plain
@@ -37,7 +37,7 @@ const RECIPES: Completion[] = [
     "<${Component} client:load />",
     "island (client:load)",
     "hydrate a server-rendered island",
-    "client:load — for an island that renders on the server and just needs to hydrate (e.g. CodeBlock). Prefer this unless the component touches window/canvas at import time.",
+    "client:load — for an island that renders on the server and just needs to hydrate. Prefer this unless the component touches window/canvas at import time.",
   ),
   snip(
     '<${Component} client:only="react" />',
@@ -57,13 +57,13 @@ const RECIPES: Completion[] = [
     "```${language}\n${code}\n```",
     "code (fenced)",
     "highlighted fenced block",
-    "Fenced code block, highlighted at build time by astro-expressive-code — just tag the language.",
+    "Fenced code block, highlighted at build time by astro-expressive-code. Tag the language; the meta string after it adds extras (title, {1,3} line highlights, showLineNumbers, ins/del).",
   ),
   snip(
-    "<CodeBlock language='${language}' source={${props.source}} client:load />",
-    "CodeBlock island",
-    "client-rendered raw source",
-    "The client-rendered CodeBlock island — use only when the raw source must survive verbatim in the static output (as in the hello-world post).",
+    '<Code code={${props.source}} lang="${mdx}" />',
+    "Code (runtime string)",
+    "Expressive Code component",
+    "Expressive Code's <Code> highlights a runtime string, not a literal fence. Import { Code } from 'astro-expressive-code/components'. Pass the code as the code prop (a string); <Code> rejects children. The hello-world quine feeds it props.source.",
   ),
 ];
 

@@ -650,6 +650,8 @@ body {
   min-height: 0;
   overflow: auto;
 }
+/* Layout only. The Tokyo Night theme (Editor.tsx) owns the editor's colors: surface, gutter,
+   cursor, selection, active line, and syntax. */
 .editor__surface .cm-editor {
   height: 100%;
   font-family: var(--mono);
@@ -661,29 +663,8 @@ body {
 .editor__surface .cm-editor.cm-focused {
   outline: none;
 }
-.editor__surface .cm-gutters {
-  background: var(--bg);
-  border-right: 1px solid var(--border-subtle);
-  color: var(--fg-faint);
-}
 .editor__surface .cm-content {
   padding: 10px 0;
-  caret-color: var(--accent);
-}
-.editor__surface .cm-cursor {
-  border-left-color: var(--accent);
-}
-.editor__surface .cm-activeLine {
-  background: rgba(255, 255, 255, 0.028);
-}
-.editor__surface .cm-activeLineGutter {
-  background: transparent;
-  color: var(--fg-dim);
-}
-.editor__surface .cm-selectionBackground,
-.editor__surface .cm-focused .cm-selectionBackground,
-.editor__surface ::selection {
-  background: var(--accent-soft) !important;
 }
 
 /* Editor tooltip theming (autocomplete dropdown, completion info popout, LSP hover / signature help)
