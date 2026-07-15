@@ -1,0 +1,73 @@
+---
+import { getCollection, type CollectionEntry } from "astro:content";
+import type { GetStaticPaths, Page } from "astro";
+import Base from "@layouts/Base.astro";
+import { formatDisplayDate } from "@lib/blog";
+import { excerpt } from "@lib/excerpt";
+import * as styles from "@styles/blog-list.css.ts";
+
+// Rest param so the first page is `/blog` and the rest are `/blog/2`, `/blog/3`, …
+export const getStaticPaths = (async ({ paginate }) => {
+  const posts = await getCollection("blog");
+  posts.sort((a, b) => b.data.created_at.instant.getTime() - a.data.created_at.instant.getTime());
+  return paginate(posts, { pageSize: 10 });
+}) satisfies GetStaticPaths;
+
+interface Props {
+  page: Page<CollectionEntry<"blog">>;
+}
+
+const { page } = Astro.props;
+---
+
+<Base title="Blog — ryan.rowe.codes" description="Writing and experiments on software, graphics, and the occasional interactive toy.">
+  <section class={styles.container}>
+    <h1 class={styles.heading}>Blog</h1>
+
+    <ul class={styles.list}>
+      {
+        page.data.map(post => (
+          <li class={styles.item}>
+            <a class={styles.titleLink} href={`/blog/${post.data.created_at.day}/${post.data.slug}`}>
+              <h2 class={styles.title}>{post.data.title}</h2>
+            </a>
+            <time class={styles.date} datetime={post.data.created_at.day}>
+              {formatDisplayDate(post.data.created_at)}
+            </time>
+            <p class={styles.preview}>{excerpt(post.body ?? "") || post.data.headline}</p>
+          </li>
+        ))
+      }
+    </ul>
+
+    {
+      page.lastPage > 1 && (
+        <nav class={styles.pagination} aria-label="Blog pages">
+          {page.url.prev ? (
+            <a class={styles.pageLink} href={page.url.prev} rel="prev">
+              Newer posts
+            </a>
+          ) : (
+            <span class={`${styles.pageLink} ${styles.pageLinkDisabled}`} aria-disabled="true">
+              Newer posts
+            </span>
+          )}
+
+          <span class={styles.pageStatus}>
+            Page {page.currentPage} of {page.lastPage}
+          </span>
+
+          {page.url.next ? (
+            <a class={styles.pageLink} href={page.url.next} rel="next">
+              Older posts
+            </a>
+          ) : (
+            <span class={`${styles.pageLink} ${styles.pageLinkDisabled}`} aria-disabled="true">
+              Older posts
+            </span>
+          )}
+        </nav>
+      )
+    }
+  </section>
+</Base>
