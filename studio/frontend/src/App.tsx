@@ -16,6 +16,7 @@ import { CommandPalette } from "./CommandPalette";
 import { McpStatusBar, type McpServerStatus } from "./McpStatusBar";
 import { ModeChip } from "./ModeChip";
 import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveConfirm";
+import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
 import { getDirtyPosts, saveDraft } from "./api";
@@ -536,6 +537,7 @@ export default function App() {
             changedFiles: msg.changedFiles,
             ahead: msg.ahead,
             diff: msg.diff,
+            scope: msg.scope,
           });
           return;
         }
@@ -653,8 +655,10 @@ export default function App() {
   // Revert/delete from the tab menu. Sent with confirm:false first: the sidecar either acts
   // immediately (nothing to lose) or replies post.confirm with what's at risk, raising the dialog.
   // An error becomes a transient notice; the tab set updates via the authoritative tabs broadcast.
+  // `scope` is omitted for the first request of a revert (the sidecar picks it: "all" when there's
+  // more than just the post, else "post", and echoes its choice back on post.confirm).
   const requestDestructive = useCallback(
-    async (op: "delete" | "revert", path: string) => {
+    async (op: "delete" | "revert", path: string, scope?: Scope) => {
       // Flush the active editor first so the "what would be lost" diff (and a subsequent save) reflect
       // the newest keystrokes, not just the last autosave. Only the active tab has a live buffer.
       if (path === activePathRef.current) {
@@ -668,13 +672,34 @@ export default function App() {
       pendingRef.current.set(requestId, (ok, error) => {
         if (!ok && error) showNotice(error);
       });
-      socketRef.current?.send({ type: op === "delete" ? "post.delete" : "post.revert", requestId, path, confirm: false });
+      if (op === "delete") {
+        socketRef.current?.send({ type: "post.delete", requestId, path, confirm: false });
+      } else {
+        socketRef.current?.send({ type: "post.revert", requestId, path, scope, confirm: false });
+      }
     },
     [showNotice],
   );
 
   const onDeletePost = useCallback((path: string) => void requestDestructive("delete", path), [requestDestructive]);
   const onRevertPost = useCallback((path: string) => void requestDestructive("revert", path), [requestDestructive]);
+
+  // In-dialog scope toggle for revert (delete never shows the toggle): re-request the preview under
+  // the new scope, swapping the dialog's data on reply, or closing it if the new scope turns out
+  // clean (e.g. toggling from "all" down to "post" when only an outside file was dirty).
+  const onRevertScopeChange = useCallback(
+    (scope: Scope) => {
+      if (!pendingConfirm || pendingConfirm.op !== "revert") return;
+      const { path } = pendingConfirm;
+      const requestId = nid();
+      pendingRef.current.set(requestId, (ok, error) => {
+        if (ok) setPendingConfirm(null);
+        else if (error) showNotice(error);
+      });
+      socketRef.current?.send({ type: "post.revert", requestId, path, scope, confirm: false });
+    },
+    [pendingConfirm, showNotice],
+  );
 
   // Open the Save-draft panel for a post (footer button or tab menu). Flush the active editor first so
   // the commit captures the newest keystrokes; a non-active tab's buffer was already flushed on switch.
@@ -719,7 +744,7 @@ export default function App() {
   // error inline. A rejected send (dropped connection) clears the busy latch so the dialog doesn't hang.
   const onConfirmDestructive = useCallback(() => {
     if (!pendingConfirm) return;
-    const { op, path } = pendingConfirm;
+    const { op, path, scope } = pendingConfirm;
     const requestId = nid();
     setConfirmBusy(true);
     setConfirmError(null);
@@ -732,7 +757,10 @@ export default function App() {
         setConfirmError(error ?? `Failed to ${op} the post.`);
       }
     });
-    const sent = socketRef.current?.send({ type: op === "delete" ? "post.delete" : "post.revert", requestId, path, confirm: true }) ?? false;
+    const sent =
+      (op === "delete"
+        ? socketRef.current?.send({ type: "post.delete", requestId, path, confirm: true })
+        : socketRef.current?.send({ type: "post.revert", requestId, path, scope, confirm: true })) ?? false;
     if (!sent) {
       pendingRef.current.delete(requestId);
       setConfirmBusy(false);
@@ -749,6 +777,8 @@ export default function App() {
   // Delete-draft alternative: push the draft to origin first, then delete only the local worktree +
   // branch, so the work survives as an adoptable remote draft. Aborts the delete if the push fails
   // (the work isn't safe on the remote yet). A noop save (already on origin) is safe to delete.
+  // Saves the whole worktree, not just the post: delete destroys everything in it, so anything less
+  // than scope "all" here would claim to preserve the draft while still discarding part of it.
   const onSaveThenDelete = useCallback(() => {
     if (!pendingConfirm || pendingConfirm.op !== "delete") return;
     const { path } = pendingConfirm;
@@ -758,7 +788,7 @@ export default function App() {
     void (async () => {
       let saved: Awaited<ReturnType<typeof saveDraft>>;
       try {
-        saved = await saveDraft({ path, subject: `Save draft${title ? `: ${title}` : ""}`, body: "", confirm: true });
+        saved = await saveDraft({ path, subject: `Save draft${title ? `: ${title}` : ""}`, body: "", scope: "all", confirm: true });
       } catch (e: unknown) {
         setConfirmBusy(false);
         setConfirmError(e instanceof Error ? e.message : "Failed to save the draft to remote.");
@@ -1119,6 +1149,7 @@ export default function App() {
               error={confirmError}
               onConfirm={onConfirmDestructive}
               onSaveAndDelete={onSaveThenDelete}
+              onScopeChange={onRevertScopeChange}
               onCancel={onCancelDestructive}
             />
           </div>

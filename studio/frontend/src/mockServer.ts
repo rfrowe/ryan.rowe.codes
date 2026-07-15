@@ -276,8 +276,8 @@ class MockBackend {
     return { ok: true, rev: doc.rev };
   }
 
-  diff(): { status: string; diff: string } {
-    return { status: " M src/content/blog/2026-07-10_aligning-a-skyline/post.mdx", diff: SAMPLE_DIFF };
+  diff(): { status: string; diff: string; outsideCount: number } {
+    return { status: " M src/content/blog/2026-07-10_aligning-a-skyline/post.mdx", diff: SAMPLE_DIFF, outsideCount: 0 };
   }
 
   sessions(): SessionListItem[] {
@@ -362,7 +362,7 @@ class MockBackend {
         this.deletePost(msg.requestId, msg.path, msg.confirm);
         break;
       case "post.revert":
-        this.revertPost(msg.requestId, msg.path, msg.confirm);
+        this.revertPost(msg.requestId, msg.path, msg.scope ?? "post", msg.confirm);
         break;
       case "mcp.setEnabled":
         this.setMcpEnabled(msg.server, msg.enabled);
@@ -532,7 +532,7 @@ class MockBackend {
       return;
     }
     if (!confirm) {
-      this.broadcast({ type: "post.confirm", requestId, op: "delete", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path) });
+      this.broadcast({ type: "post.confirm", requestId, op: "delete", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path), scope: "all" });
       return;
     }
     const at = this.open.indexOf(path);
@@ -550,14 +550,14 @@ class MockBackend {
     this.broadcast({ type: "post.result", requestId, ok: true, path });
   }
 
-  private revertPost(requestId: string, path: string, confirm: boolean): void {
+  private revertPost(requestId: string, path: string, scope: "post" | "all", confirm: boolean): void {
     const doc = this.docs.get(path);
     if (!doc) {
       this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
       return;
     }
     if (!confirm) {
-      this.broadcast({ type: "post.confirm", requestId, op: "revert", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path) });
+      this.broadcast({ type: "post.confirm", requestId, op: "revert", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path), scope });
       return;
     }
     // Restore to a clean baseline and push it (origin "agent", so the buffer is replaced, no banner).

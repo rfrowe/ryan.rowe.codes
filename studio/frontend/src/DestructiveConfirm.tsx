@@ -4,6 +4,7 @@
 // shown when the sidecar reports there is something to lose (a clean delete never reaches here).
 
 import { DiffView } from "./DiffView";
+import { ScopeSelector, type Scope } from "./ScopeSelector";
 
 export interface DestructiveConfirmData {
   op: "delete" | "revert";
@@ -11,6 +12,9 @@ export interface DestructiveConfirmData {
   changedFiles: number;
   ahead: number;
   diff: string;
+  /** The scope this preview reflects. Always "all" for delete (never partial); "post" or "all" for
+   *  revert, per the toggle below. */
+  scope: Scope;
 }
 
 interface DestructiveConfirmProps {
@@ -23,6 +27,9 @@ interface DestructiveConfirmProps {
   /** Delete only: push the draft to origin first, then delete the local worktree + branch, so the
    *  work survives as a remote draft. Omitted for revert. */
   onSaveAndDelete?: () => void;
+  /** Revert only: re-request the preview under a different scope. Omitted for delete, which is
+   *  never partial and shows no toggle. */
+  onScopeChange?: (scope: Scope) => void;
   onCancel: () => void;
 }
 
@@ -30,7 +37,16 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-export function DestructiveConfirm({ data, title, busy, error, onConfirm, onSaveAndDelete, onCancel }: DestructiveConfirmProps) {
+export function DestructiveConfirm({
+  data,
+  title,
+  busy,
+  error,
+  onConfirm,
+  onSaveAndDelete,
+  onScopeChange,
+  onCancel,
+}: DestructiveConfirmProps) {
   const isDelete = data.op === "delete";
 
   const lossParts: string[] = [];
@@ -41,7 +57,10 @@ export function DestructiveConfirm({ data, title, busy, error, onConfirm, onSave
   return (
     <div className="confirm">
       <header className="confirm__head">
-        <h2>{isDelete ? "Delete draft" : "Revert to clean"}</h2>
+        <div className="ship__head">
+          <h2>{isDelete ? "Delete draft" : "Revert to clean"}</h2>
+          {!isDelete && onScopeChange && <ScopeSelector scope={data.scope} onChange={onScopeChange} disabled={busy} />}
+        </div>
         <p className="confirm__sub">
           <code>{title}</code>
         </p>

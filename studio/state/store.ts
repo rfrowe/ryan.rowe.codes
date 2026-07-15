@@ -18,6 +18,7 @@ import { FRONTMATTER_BLOCK, FRONTMATTER_LINE, frontmatterTitle } from "../../src
 import { isValidSlug, postStem, slugFromPath, stemParts } from "../shared/slug";
 import { applyEdits, revsEqual } from "./applyEdits";
 import { DEFAULT_PREVIEW_BASE, deriveUrl } from "../preview/deriveUrl";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, type DiffScope } from "../sidecar/diffService";
 import { sha256Hex } from "../sidecar/hash";
 
 /** Serializes async mutations so a rev-check and its write can't be interleaved. */
@@ -67,8 +68,6 @@ export class SelfWriteGuard {
   }
 }
 
-/** Relative dir (from repo root) that holds authored posts; the jail for every open post. */
-const BLOG_CONTENT_DIR = "src/content/blog";
 /**
  * Worktree parent dir, relative to the repo root (the same `.worktrees` tree dev-session worktrees
  * live in). Post worktrees live under `<base>/<prefixSeg>/blog/<stem>`: `<base>/blog/<stem>` for a
@@ -119,6 +118,9 @@ export interface PostLossPreview {
   /** Unified diff the op would discard. Revert: `git diff HEAD`. Delete: the full delta from the
    *  published base plus synthesized diffs for untracked files. */
   diff: string;
+  /** The scope this preview reflects: always "all" for delete (never partial); for revert, the
+   *  caller's requested scope, or the sidecar's own pick when the request left it unspecified. */
+  scope: DiffScope;
 }
 
 /**
@@ -321,8 +323,14 @@ export interface StudioStore extends Store {
    * broadcast to the editor. A no-op when already in sync.
    */
   revertUrl(canonicalPath: string): Promise<RenamePostResult>;
-  /** What deleting / reverting a post would discard (uncommitted files, unmerged commits, diff). */
-  postLossPreview(canonicalPath: string, op: "delete" | "revert"): Promise<PostLossPreview>;
+  /**
+   * What deleting / reverting a post would discard (uncommitted files, unmerged commits, diff).
+   * `scope` only affects `"revert"` (post-only vs. the whole worktree); delete always discards the
+   * whole worktree, so it has nothing to choose. Omit `scope` on a revert to have it picked
+   * automatically ("all" when there's more than just the post, else "post"); the resolved value comes
+   * back on {@link PostLossPreview.scope}.
+   */
+  postLossPreview(canonicalPath: string, op: "delete" | "revert", scope?: DiffScope): Promise<PostLossPreview>;
   /**
    * Scan the on-disk worktrees (not the in-memory `open` map, so strays from a failed boot or the CLI
    * are covered) for two overlapping sets of canonical paths: `dirty` = any unshipped work (uncommitted
@@ -342,8 +350,10 @@ export interface StudioStore extends Store {
    * the port.
    */
   deletePost(canonicalPath: string): Promise<DeletePostResult>;
-  /** Discard a post's uncommitted edits back to its branch's HEAD; reloads the buffer if it changed. */
-  revertPost(canonicalPath: string): Promise<RevertPostResult>;
+  /** Discard a post's uncommitted edits back to its branch's HEAD (post-only, or the whole worktree
+   *  for `scope: "all"`); reloads the buffer if it changed. Callers pass the scope
+   *  {@link StudioStore.postLossPreview} resolved, so the checkout matches what was previewed. */
+  revertPost(canonicalPath: string, scope: DiffScope): Promise<RevertPostResult>;
   /** Persist exact text to the post at `canonicalPath` (autosave); returns new rev or stale-rev. */
   writeByPath(canonicalPath: string, text: string, baseRev: DocRev): Promise<WriteResult>;
   /** The active post as { path, title, branch } (path = canonical) for the tab bar / snapshot; null if none. */
@@ -1089,34 +1099,31 @@ export function createStore(deps: StoreDeps): StudioStore {
       });
     },
 
-    async postLossPreview(canonicalPath, op) {
+    async postLossPreview(canonicalPath, op, scope) {
       const jailed = resolveJailed(canonicalPath) ?? canonicalPath;
       const doc = open.get(jailed);
-      if (!doc) return { dirty: false, changedFiles: 0, ahead: 0, diff: "" };
+      if (!doc) return { dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: scope ?? "post" };
       const cwd = doc.worktreePath;
-      const pathspec = postUnitPathspec(doc.relPath);
 
       if (op === "revert") {
-        // Revert restores tracked files to HEAD, so the preview is `git diff HEAD`. Scoped to the
-        // whole blog dir with -M: a per-post pathspec hides the old half of a staged rename, showing
-        // "new file" instead. The per-post worktree only touches this post, so widening is safe.
-        // Untracked files have no HEAD state and are left to delete.
-        const names = await git.git(["diff", "-M", "HEAD", "--name-only", "--", BLOG_CONTENT_DIR], { cwd });
-        const changedFiles = names.stdout.split("\n").filter((l) => l.trim().length > 0).length;
-        const diffRes = await git.git(["diff", "-M", "HEAD", "--", BLOG_CONTENT_DIR], { cwd });
-        return { dirty: changedFiles > 0, changedFiles, ahead: 0, diff: diffRes.stdout };
+        // Revert restores tracked files to HEAD; untracked files have no HEAD state and are left to
+        // delete, so they're excluded from both the diff and the count.
+        if (scope) {
+          const { diff, changedFiles } = await computeWorkingTreeDiff(git, cwd, scope);
+          return { dirty: changedFiles > 0, changedFiles, ahead: 0, diff, scope };
+        }
+        // No scope requested (the first preview for this post, before any dialog is open): default to
+        // "all" when there's more to revert than just the post, else "post", the narrower, more
+        // precise pathspec.
+        const [all, post] = await Promise.all([computeWorkingTreeDiff(git, cwd, "all"), computeWorkingTreeDiff(git, cwd, "post")]);
+        const resolved: DiffScope = all.changedFiles > post.changedFiles ? "all" : "post";
+        const chosen = resolved === "all" ? all : post;
+        return { dirty: chosen.changedFiles > 0, changedFiles: chosen.changedFiles, ahead: 0, diff: chosen.diff, scope: resolved };
       }
 
-      // delete: everything lost = uncommitted files (incl. untracked) plus commits ahead of the base.
-      // `--untracked-files=all` lists an untracked subdir's individual files rather than collapsing
-      // to one entry, else they're undercounted and the per-file add-diff below is skipped.
-      const statusRes = await git.git(
-        ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "--", pathspec],
-        { cwd },
-      );
-      const statusLines = statusRes.stdout.split("\n").filter((l) => l.trim().length > 0);
-      const changedFiles = statusLines.length;
-
+      // delete: destroys the whole worktree (git worktree remove + branch -D), so the preview always
+      // covers everything in it: uncommitted and untracked files, plus commits the base doesn't have
+      // yet, never just this post. `scope` is a revert-only choice; delete has nothing to choose.
       let ahead = 0;
       let base: string | null = null;
       try {
@@ -1125,30 +1132,10 @@ export function createStore(deps: StoreDeps): StudioStore {
         if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
       } catch {
         // Base unresolved (offline / no gh): can't count unmerged commits, so report 0 rather than
-        // blocking the delete on a network call. The tracked-delta diff below is skipped too.
+        // blocking the delete on a network call. The base-relative diff below is skipped too.
       }
-
-      // Build the "what delete discards" diff: the tracked delta from the base (committed-but-unmerged
-      // plus uncommitted), plus a synthesized add-diff per untracked file (a brand-new post is all
-      // untracked, invisible to plain `git diff`). Scoped to the blog dir with -M, like revert above.
-      const parts: string[] = [];
-      if (base) {
-        const tracked = await git.git(
-          ["-c", "core.quotePath=false", "diff", "-M", base, "--", BLOG_CONTENT_DIR],
-          { cwd },
-        );
-        if (tracked.stdout.trim().length > 0) parts.push(tracked.stdout);
-      }
-      for (const line of statusLines) {
-        if (!line.startsWith("??")) continue;
-        let p = line.slice(3);
-        if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-        // `--no-index` exits non-zero when the files differ (always, vs /dev/null); the diff we want
-        // is on stdout regardless, so the exit code is intentionally ignored.
-        const added = await git.git(["diff", "--no-index", "--", "/dev/null", p], { cwd });
-        if (added.stdout.trim().length > 0) parts.push(added.stdout);
-      }
-      return { dirty: changedFiles > 0, changedFiles, ahead, diff: parts.join("\n") };
+      const { diff, changedFiles } = await computeDiffAgainstRef(git, cwd, base, "all");
+      return { dirty: changedFiles > 0, changedFiles, ahead, diff, scope: "all" };
     },
 
     async scanDirtyPosts() {
@@ -1159,11 +1146,10 @@ export function createStore(deps: StoreDeps): StudioStore {
       const dirty: string[] = [];
       const uncommitted: string[] = [];
       for (const wtPath of wtPaths) {
-        // Uncommitted, mirroring postLossPreview's delete-scope status check.
-        const statusRes = await git.git(
-          ["-c", "core.quotePath=false", "status", "--porcelain", "--", BLOG_CONTENT_DIR],
-          { cwd: wtPath },
-        );
+        // Uncommitted, unscoped like postLossPreview's delete/revert-all check: a change outside the
+        // blog dir (e.g. an agent edit to astro.config.mjs) must still mark the post dirty, or the tab
+        // menu disables "Revert to clean" and hides "Delete draft" for a worktree that isn't clean.
+        const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: wtPath });
         const uncommittedNonEmpty = statusRes.stdout.trim().length > 0;
 
         // Ahead of the base, with postLossPreview's offline-safe fallback: any error or nonzero exit
@@ -1274,14 +1260,15 @@ export function createStore(deps: StoreDeps): StudioStore {
       return { ok: true };
     },
 
-    async revertPost(canonicalPath) {
+    async revertPost(canonicalPath, scope) {
       const jailed = resolveJailed(canonicalPath) ?? canonicalPath;
       const doc = open.get(jailed);
       if (!doc) return { ok: false, error: "post is not open" };
-      const pathspec = postUnitPathspec(doc.relPath);
+      // "post" restores just this post; "all" restores the whole worktree (`.`, run with cwd at its
+      // root). Either way, untracked files (e.g. a never-committed new post) have no HEAD state and
+      // are intentionally left as-is.
+      const pathspec = scope === "all" ? "." : postUnitPathspec(doc.relPath);
 
-      // Restore tracked files under the post to HEAD, discarding uncommitted edits. Untracked files
-      // (e.g. a never-committed new post) have no HEAD state and are intentionally left as-is.
       const coRes = await git.git(["checkout", "HEAD", "--", pathspec], { cwd: doc.worktreePath });
       if (coRes.code !== 0) {
         return { ok: false, error: `git checkout failed: ${coRes.stderr.trim() || `exit ${coRes.code}`}` };

@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 import type { ShipResponse } from "../../shared/protocol";
 import { getDiff, ship } from "./api";
 import { DiffView } from "./DiffView";
+import { ScopeSelector } from "./ScopeSelector";
+import { ScopeWarning } from "./ScopeWarning";
 
 interface ShipPanelProps {
   /** The active post's isolation branch, display-only (the sidecar pushes its own regardless).
@@ -24,6 +26,7 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
   const [status, setStatus] = useState<string>("");
   const [diff, setDiff] = useState<string | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
+  const [outsideCount, setOutsideCount] = useState(0);
 
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -47,6 +50,7 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
         }
         setStatus(res.status);
         setDiff(res.diff);
+        setOutsideCount(res.outsideCount);
       })
       .catch((e: unknown) => {
         if (live) setDiffError(e instanceof Error ? e.message : "failed to load diff");
@@ -75,15 +79,12 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
     <div className="ship">
       <header className="ship__head">
         <h2>Ship as PR</h2>
-        <div className="ship__scope">
-          <label>
-            <input type="radio" checked={scope === "post"} onChange={() => setScope("post")} /> post only
-          </label>
-          <label>
-            <input type="radio" checked={scope === "all"} onChange={() => setScope("all")} /> all changes
-          </label>
-        </div>
+        <ScopeSelector scope={scope} onChange={setScope} />
       </header>
+
+      {scope === "post" && outsideCount > 0 && (
+        <ScopeWarning count={outsideCount} onSwitchToAll={() => setScope("all")} />
+      )}
 
       <section className="ship__diff">
         <div className="ship__diff-status">{status || "working tree"}</div>
