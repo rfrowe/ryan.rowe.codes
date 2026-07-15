@@ -47,7 +47,7 @@ interface TabState {
   branch: string | null;
   doc: DocState | null;
   /** Buffer patch for the editor; version increments on each agent/reconciled write. */
-  remoteUpdate: { text: string; version: number } | null;
+  remoteUpdate: { text: string; version: number; kind: "agent" | "reload" } | null;
   preview: PreviewState;
   session: AgentState;
   chat: ChatItem[];
@@ -230,10 +230,14 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
         return patchTab(state, msg.path, (t) => ({ ...t, doc: nextDoc }));
       }
       if (msg.origin === "agent") {
+        // "agent" origin also covers store-mediated rewrites (revert, revertUrl, relayout) that
+        // mean to win outright, not merge with whatever's unsaved in the buffer — they're never
+        // turn-driven, so only rebase onto local edits when a turn is actually live for this path.
+        const kind = state.turn?.path === msg.path ? "agent" : "reload";
         return patchTab(state, msg.path, (t) => ({
           ...t,
           doc: nextDoc,
-          remoteUpdate: { text: msg.text, version: (t.remoteUpdate?.version ?? 0) + 1 },
+          remoteUpdate: { text: msg.text, version: (t.remoteUpdate?.version ?? 0) + 1, kind },
         }));
       }
       // external: a rev not strictly newer is a duplicate/hydrate snapshot (e.g. a replay after a
@@ -421,7 +425,7 @@ function reducer(state: StudioState, action: Action): StudioState {
       return patchTab(state, action.path, (x) => ({
         ...x,
         doc: { ...x.doc!, text: ext.text, rev: ext.rev },
-        remoteUpdate: { text: ext.text, version },
+        remoteUpdate: { text: ext.text, version, kind: "reload" },
         externalChange: null,
       }));
     }
@@ -975,7 +979,6 @@ export default function App() {
               initialText={activeDoc.text}
               rev={activeDoc.rev}
               remoteUpdate={activeTab.remoteUpdate}
-              readOnly={turnOnActive}
               promptInFlight={turnOnActive}
               suspendSave={activeTab.externalChange != null}
               onRev={onRev}
