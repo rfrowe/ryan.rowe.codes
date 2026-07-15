@@ -8,6 +8,8 @@ import type {
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
+  SaveDraftRequest,
+  SaveDraftResponse,
   SessionsResponse,
   ShipRequest,
   ShipResponse,
@@ -36,9 +38,10 @@ export async function putDoc(req: PutDocRequest): Promise<PutDocResponse> {
   return asJson<PutDocResponse>(res);
 }
 
-/** Working-tree diff for the ship review pane. */
-export async function getDiff(scope: "post" | "all" = "post"): Promise<DiffResponse> {
-  const res = await fetch(endpoint("/diff", { scope }), { headers: { ...authHeaders() } });
+/** Working-tree diff for the ship / save-draft review pane. `path` targets a specific open post;
+ *  omitted, the diff follows the active post. */
+export async function getDiff(scope: "post" | "all" = "post", path?: string): Promise<DiffResponse> {
+  const res = await fetch(endpoint("/diff", path ? { scope, path } : { scope }), { headers: { ...authHeaders() } });
   return asJson<DiffResponse>(res);
 }
 
@@ -74,4 +77,14 @@ export async function ship(req: ShipRequest): Promise<ShipResponse> {
     body: JSON.stringify(req),
   });
   return asJson<ShipResponse>(res);
+}
+
+/** Studio-run save-draft flow (commit + push the post's branch, no PR). Requires `confirm`. */
+export async function saveDraft(req: SaveDraftRequest): Promise<SaveDraftResponse> {
+  const res = await fetch(endpoint("/save-draft"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify(req),
+  });
+  return asJson<SaveDraftResponse>(res);
 }

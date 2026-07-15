@@ -40,10 +40,15 @@ interface TabBarProps {
   /** Canonical paths of open posts that are drafts (unshipped work); drives the tab dot and
    *  gates "Delete draft…" in the right-click menu. */
   dirtyPaths: Set<string>;
+  /** Canonical paths with uncommitted edits (⊆ dirtyPaths); gates "Revert to clean…", which has
+   *  nothing to discard on a clean (or clean-but-ahead) post. */
+  uncommittedPaths: Set<string>;
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onNewPost: () => void;
   onRename: (path: string, newSlug: string) => void;
+  /** Commit + push the post's branch to origin (no PR), so the draft can be resumed later. */
+  onSaveDraft: (path: string) => void;
   onRevert: (path: string) => void;
   onDelete: (path: string) => void;
 }
@@ -55,10 +60,12 @@ export function TabBar({
   stackStatus,
   studio,
   dirtyPaths,
+  uncommittedPaths,
   onSelect,
   onClose,
   onNewPost,
   onRename,
+  onSaveDraft,
   onRevert,
   onDelete,
 }: TabBarProps) {
@@ -247,6 +254,19 @@ export function TabBar({
             type="button"
             className="tabmenu__item"
             role="menuitem"
+            onClick={() => {
+              onSaveDraft(menu.path);
+              setMenu(null);
+            }}
+          >
+            Save to remote…
+          </button>
+          <button
+            type="button"
+            className="tabmenu__item"
+            role="menuitem"
+            disabled={!uncommittedPaths.has(menu.path)}
+            title={uncommittedPaths.has(menu.path) ? undefined : "No uncommitted changes to revert"}
             onClick={() => {
               onRevert(menu.path);
               setMenu(null);

@@ -117,10 +117,13 @@ export interface PostsResponse {
   posts: PostSummaryDTO[];
 }
 
-// Canonical paths with unshipped changes: uncommitted edits or commits not yet in origin/<default>.
-// Powers the ⌘P palette's badge. Reflects every worktree on disk, not just this session's open tabs.
+// Post status across every worktree on disk (not just this session's open tabs). `dirty` = unshipped
+// work (uncommitted edits or commits not yet in origin/<default>), powering the ⌘P palette badge and
+// tab dot. `uncommitted` ⊆ `dirty` = posts with uncommitted edits, so the UI can gate "Revert to
+// clean" (which only discards uncommitted edits) off a clean-but-ahead post.
 export interface DirtyPostsResponse {
   dirty: string[];
+  uncommitted: string[];
 }
 
 // A `blog/<stem>` draft branch with no live worktree (invisible to the open-tabs/main-tree listings).
@@ -145,3 +148,19 @@ export interface ShipRequest {
 export type ShipResponse =
   | { ok: true; prUrl: string }
   | { ok: false; error: string; violations?: string[] };
+
+// Persist a draft to origin without opening a PR: commit the post with the pinned identity and push
+// its `blog/<stem>` isolation branch, so the draft survives locally-detached (reopened as a remote
+// draft from ⌘P, or checked out in another editor). `path` selects the post (any open tab), defaulting
+// to the active one.
+export interface SaveDraftRequest {
+  path?: string;
+  subject: string;
+  body: string;
+  confirm: boolean;
+}
+// `committed` is false when there was nothing uncommitted to stage (an already-committed branch just
+// gets pushed); `noop` is true when the local branch already matched origin, so nothing was pushed.
+export type SaveDraftResponse =
+  | { ok: true; branch: string; committed: boolean; pushed: boolean; noop: boolean }
+  | { ok: false; error: string };

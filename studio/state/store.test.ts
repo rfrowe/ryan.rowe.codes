@@ -750,20 +750,28 @@ describe("store.postLossPreview", () => {
   });
 });
 
-describe("store.dirtyPostPaths (enumerates worktrees on disk, not just open tabs)", () => {
-  it("returns the canonical path of an open post with uncommitted work", async () => {
+describe("store.scanDirtyPosts (enumerates worktrees on disk, not just open tabs)", () => {
+  it("reports an open post with uncommitted work in both sets", async () => {
     const { store } = newStore(
       { [SKYLINE_WT_FILE]: SKYLINE },
       { statusPorcelain: " M src/content/blog/2026-07-10_aligning-a-skyline.mdx\n" },
     );
     await store.openPost(SKYLINE_CANON);
-    expect(await store.dirtyPostPaths()).toEqual([SKYLINE_CANON]);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [SKYLINE_CANON] });
   });
 
-  it("excludes a clean worktree", async () => {
+  it("excludes a clean worktree from both sets", async () => {
     const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }); // default cfg = clean
     await store.openPost(SKYLINE_CANON);
-    expect(await store.dirtyPostPaths()).toEqual([]);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
+  });
+
+  it("marks a clean-but-ahead post dirty but not uncommitted (nothing to revert)", async () => {
+    // No uncommitted edits, but commits ahead of the base: unshipped work (dirty) with nothing for
+    // "Revert to clean" to discard (not uncommitted).
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { revListCount: "2\n" });
+    await store.openPost(SKYLINE_CANON);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [] });
   });
 
   it("finds a dirty worktree that was never opened this session", async () => {
@@ -772,7 +780,7 @@ describe("store.dirtyPostPaths (enumerates worktrees on disk, not just open tabs
     const { store, fs } = newStore({}, { statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n" });
     fs.store.set(`${WT}/2022-03-11_hello/.git`, "gitdir");
     fs.store.set(HELLO_WT_FILE, HELLO);
-    expect(await store.dirtyPostPaths()).toEqual([HELLO_CANON]);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [HELLO_CANON], uncommitted: [HELLO_CANON] });
   });
 
   it("dedupes and skips a worktree whose post file can't be resolved", async () => {
@@ -780,7 +788,7 @@ describe("store.dirtyPostPaths (enumerates worktrees on disk, not just open tabs
     // A worktree dir with neither `<stem>.mdx` nor `<stem>/post.mdx` inside it: can't map back to
     // a canonical path, so it's skipped rather than guessed at.
     fs.store.set(`${WT}/mystery/.git`, "gitdir");
-    expect(await store.dirtyPostPaths()).toEqual([]);
+    expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
   });
 });
 
