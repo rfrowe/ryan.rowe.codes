@@ -99,6 +99,7 @@ async function main(): Promise<void> {
     git,
     sessionBranch,
     getActiveWorktree: () => store.getActiveWorktree(),
+    getWorktreeFor: (p) => store.getWorktreeFor(p),
     getActiveNameSync: () => store.getActiveNameSync(),
   });
   const sessions = createSessionsService({ blogRepoDir: REPO_ROOT });

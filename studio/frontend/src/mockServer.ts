@@ -8,7 +8,7 @@
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
 import type { ClientMessage, DraftSummary, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
-import type { ShipRequest, ShipResponse } from "../../shared/protocol";
+import type { SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
 import { REST_BASE, WS_BASE } from "./config";
 
 // ---- mock enable check ----
@@ -205,7 +205,8 @@ class MockBackend {
     socket.deliver(this.tabsMsg());
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
-    socket.deliver({ type: "studio.branch", ref: "origin/main", worktree: "/repo/ryan.rowe.codes" });
+    // Label the status chip "mock" so it's obvious no real sidecar/git is behind this session.
+    socket.deliver({ type: "studio.branch", ref: "mock", worktree: "/repo/ryan.rowe.codes (mock)" });
     this.deliverActive(socket);
     const active = this.docs.get(this.activePath);
     if (active?.agent.sessionId) socket.deliver({ type: "session", sessionId: active.agent.sessionId, mode: active.agent.mode });
@@ -293,9 +294,11 @@ class MockBackend {
     return [...openSummaries, ...CLOSED_POSTS.filter((p) => !openPaths.has(p.path))];
   }
 
-  dirtyPosts(): string[] {
-    // Every open post is treated as carrying unshipped work, so the dirty badge is exercised in dev.
-    return [...this.open];
+  dirtyStatus(): { dirty: string[]; uncommitted: string[] } {
+    // Every open post carries unshipped work (exercises the dirty badge/dot); only the active post is
+    // treated as having uncommitted edits, so "Revert to clean" is enabled there and disabled on the
+    // other open tabs (exercises both states in dev).
+    return { dirty: [...this.open], uncommitted: this.open.includes(this.activePath) ? [this.activePath] : [] };
   }
 
   drafts(): DraftSummary[] {
@@ -306,6 +309,12 @@ class MockBackend {
   ship(req: ShipRequest): ShipResponse {
     if (!req.confirm) return { ok: false, error: "confirmation required" };
     return { ok: true, prUrl: "https://github.com/rfrowe/ryan.rowe.codes/pull/42" };
+  }
+
+  saveDraft(req: SaveDraftRequest): SaveDraftResponse {
+    if (!req.confirm) return { ok: false, error: "confirmation required" };
+    const path = req.path ?? this.activePath;
+    return { ok: true, branch: branchFromPath(path), committed: true, pushed: true, noop: false };
   }
 
   // ---- WS client messages ----
@@ -749,9 +758,10 @@ export function installMock(): void {
     if (method === "GET" && path === "/diff") return ok(backend.diff());
     if (method === "GET" && path === "/sessions") return ok({ sessions: backend.sessions() });
     if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
-    if (method === "GET" && path === "/posts/dirty") return ok({ dirty: backend.dirtyPosts() });
+    if (method === "GET" && path === "/posts/dirty") return ok(backend.dirtyStatus());
     if (method === "GET" && path === "/posts/drafts") return ok({ drafts: backend.drafts() });
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
+    if (method === "POST" && path === "/save-draft") return ok(backend.saveDraft(body as SaveDraftRequest));
 
     return ok({ error: `mock: no route for ${method} ${path}` }, 404);
   };

@@ -9,6 +9,7 @@ import { Preview } from "./Preview";
 import { Chat, type ChatItem, type PendingPermission } from "./Chat";
 import { SessionPicker } from "./SessionPicker";
 import { ShipPanel } from "./ShipPanel";
+import { SaveDraftPanel } from "./SaveDraftPanel";
 import { TabBar, type StackComponent } from "./TabBar";
 import { NewPostDialog, type NewPostFields } from "./NewPostDialog";
 import { CommandPalette } from "./CommandPalette";
@@ -17,7 +18,7 @@ import { ModeChip } from "./ModeChip";
 import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveConfirm";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
-import { getDirtyPosts } from "./api";
+import { getDirtyPosts, saveDraft } from "./api";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { PromptContext, ServerMessage } from "../../shared/protocol";
@@ -439,6 +440,8 @@ export default function App() {
   const [status, setStatus] = useState<SocketStatus>("connecting");
   const [showPicker, setShowPicker] = useState(false);
   const [showShip, setShowShip] = useState(false);
+  // Canonical path of the post whose Save-draft panel is open, or null when closed.
+  const [saveDraftFor, setSaveDraftFor] = useState<string | null>(null);
   const [showPalette, setShowPalette] = useState(false);
   const [showNewPost, setShowNewPost] = useState(false);
   // Seeds the New Post dialog's title: empty from the button, the ⌘P search term from the palette.
@@ -454,6 +457,8 @@ export default function App() {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   // Open posts that are drafts (unshipped work), for the tab bar's dot; refreshed via refreshDirty.
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
+  // Posts with uncommitted edits (⊆ dirtyPaths); gates the tab menu's "Revert to clean".
+  const [uncommittedPaths, setUncommittedPaths] = useState<Set<string>>(() => new Set());
 
   const socketRef = useRef<StudioSocket | null>(null);
   const editorRef = useRef<EditorHandle | null>(null);
@@ -487,7 +492,10 @@ export default function App() {
     if (dirtyTimerRef.current) clearTimeout(dirtyTimerRef.current);
     dirtyTimerRef.current = setTimeout(() => {
       getDirtyPosts()
-        .then((res) => setDirtyPaths(new Set(res.dirty)))
+        .then((res) => {
+          setDirtyPaths(new Set(res.dirty));
+          setUncommittedPaths(new Set(res.uncommitted));
+        })
         .catch(() => {
           /* best-effort: leave the previous dirty set in place */
         });
@@ -646,7 +654,16 @@ export default function App() {
   // immediately (nothing to lose) or replies post.confirm with what's at risk, raising the dialog.
   // An error becomes a transient notice; the tab set updates via the authoritative tabs broadcast.
   const requestDestructive = useCallback(
-    (op: "delete" | "revert", path: string) => {
+    async (op: "delete" | "revert", path: string) => {
+      // Flush the active editor first so the "what would be lost" diff (and a subsequent save) reflect
+      // the newest keystrokes, not just the last autosave. Only the active tab has a live buffer.
+      if (path === activePathRef.current) {
+        try {
+          await editorRef.current?.flush();
+        } catch {
+          /* proceed; edits still live in the worktree file and any conflict surfaces via the banner */
+        }
+      }
       const requestId = nid();
       pendingRef.current.set(requestId, (ok, error) => {
         if (!ok && error) showNotice(error);
@@ -656,8 +673,21 @@ export default function App() {
     [showNotice],
   );
 
-  const onDeletePost = useCallback((path: string) => requestDestructive("delete", path), [requestDestructive]);
-  const onRevertPost = useCallback((path: string) => requestDestructive("revert", path), [requestDestructive]);
+  const onDeletePost = useCallback((path: string) => void requestDestructive("delete", path), [requestDestructive]);
+  const onRevertPost = useCallback((path: string) => void requestDestructive("revert", path), [requestDestructive]);
+
+  // Open the Save-draft panel for a post (footer button or tab menu). Flush the active editor first so
+  // the commit captures the newest keystrokes; a non-active tab's buffer was already flushed on switch.
+  const onSaveDraft = useCallback(async (path: string) => {
+    if (path === activePathRef.current) {
+      try {
+        await editorRef.current?.flush();
+      } catch {
+        /* proceed; edits still live in the worktree file */
+      }
+    }
+    setSaveDraftFor(path);
+  }, []);
 
   // Resolve a desync by renaming file/worktree/branch to match the frontmatter. The sidecar derives
   // the target from the post's own text; a refusal (e.g. the target stem is taken) surfaces as a notice.
@@ -715,6 +745,49 @@ export default function App() {
     setPendingConfirm(null);
     setConfirmError(null);
   }, [confirmBusy]);
+
+  // Delete-draft alternative: push the draft to origin first, then delete only the local worktree +
+  // branch, so the work survives as an adoptable remote draft. Aborts the delete if the push fails
+  // (the work isn't safe on the remote yet). A noop save (already on origin) is safe to delete.
+  const onSaveThenDelete = useCallback(() => {
+    if (!pendingConfirm || pendingConfirm.op !== "delete") return;
+    const { path } = pendingConfirm;
+    const title = state.tabs.find((t) => t.path === path)?.title ?? "";
+    setConfirmBusy(true);
+    setConfirmError(null);
+    void (async () => {
+      let saved: Awaited<ReturnType<typeof saveDraft>>;
+      try {
+        saved = await saveDraft({ path, subject: `Save draft${title ? `: ${title}` : ""}`, body: "", confirm: true });
+      } catch (e: unknown) {
+        setConfirmBusy(false);
+        setConfirmError(e instanceof Error ? e.message : "Failed to save the draft to remote.");
+        return;
+      }
+      if (!saved.ok) {
+        setConfirmBusy(false);
+        setConfirmError(saved.error);
+        return;
+      }
+      // Pushed (or already on origin): now delete the local copy.
+      const requestId = nid();
+      pendingRef.current.set(requestId, (ok, error) => {
+        setConfirmBusy(false);
+        if (ok) {
+          setPendingConfirm(null);
+          setConfirmError(null);
+        } else {
+          setConfirmError(error ?? "Saved to remote, but the local delete failed.");
+        }
+      });
+      const sent = socketRef.current?.send({ type: "post.delete", requestId, path, confirm: true }) ?? false;
+      if (!sent) {
+        pendingRef.current.delete(requestId);
+        setConfirmBusy(false);
+        setConfirmError("Saved to remote, but lost the connection before deleting locally.");
+      }
+    })();
+  }, [pendingConfirm, state.tabs]);
 
   // Open the New Post dialog seeded with `title` (empty for a blank post), clearing any stale error.
   const openNewPost = useCallback((title: string) => {
@@ -841,10 +914,12 @@ export default function App() {
         stackStatus={stackStatus}
         studio={state.studio}
         dirtyPaths={dirtyPaths}
+        uncommittedPaths={uncommittedPaths}
         onSelect={openPost}
         onClose={onCloseTab}
         onNewPost={() => openNewPost("")}
         onRename={onRename}
+        onSaveDraft={onSaveDraft}
         onRevert={onRevertPost}
         onDelete={onDeletePost}
       />
@@ -951,6 +1026,16 @@ export default function App() {
         >
           Ship…
         </button>
+        <button
+          className="btn btn--ghost"
+          disabled={!state.activePath}
+          title="Commit and push this draft to origin (no PR), so it can be resumed later"
+          onClick={() => {
+            if (state.activePath) void onSaveDraft(state.activePath);
+          }}
+        >
+          Save draft…
+        </button>
         <button className="btn btn--ghost" onClick={() => setShowPalette(true)}>
           Open… <kbd className="kbd">⌘P</kbd>
         </button>
@@ -1007,6 +1092,23 @@ export default function App() {
           </div>
         </div>
       )}
+      {saveDraftFor &&
+        (() => {
+          const tab = state.tabs.find((t) => t.path === saveDraftFor);
+          if (!tab) return null;
+          return (
+            <div className="modal" onClick={() => setSaveDraftFor(null)}>
+              <div className="modal__body modal__body--wide" onClick={(e) => e.stopPropagation()}>
+                <SaveDraftPanel
+                  path={tab.path}
+                  branch={tab.branch}
+                  title={tab.title}
+                  onClose={() => setSaveDraftFor(null)}
+                />
+              </div>
+            </div>
+          );
+        })()}
       {pendingConfirm && (
         <div className="modal" onClick={onCancelDestructive}>
           <div className="modal__body modal__body--wide" onClick={(e) => e.stopPropagation()}>
@@ -1016,6 +1118,7 @@ export default function App() {
               busy={confirmBusy}
               error={confirmError}
               onConfirm={onConfirmDestructive}
+              onSaveAndDelete={onSaveThenDelete}
               onCancel={onCancelDestructive}
             />
           </div>

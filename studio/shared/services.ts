@@ -4,7 +4,7 @@
 // constructs the concretes and injects them.
 
 import type { ActiveDoc, DocRev, EditorContext, PreviewState, Range, SessionMode, TextEdit } from "./types";
-import type { PromptContext, ServerMessage } from "./protocol";
+import type { PromptContext, SaveDraftRequest, SaveDraftResponse, ServerMessage } from "./protocol";
 import type {
   ApplyEditResult,
   DescribeResult,
@@ -55,10 +55,12 @@ export interface StudioTools {
   openPr(input: OpenPrInput): Promise<OpenPrResult>;
 }
 
-/** Studio-run git/gh ship flow (never invoked by the agent directly). */
+/** Studio-run git/gh flows to origin (ship-as-PR and persist-draft); never invoked by the agent directly. */
 export interface ShipService {
-  diff(scope: "post" | "all"): Promise<{ status: string; diff: string }>;
+  diff(scope: "post" | "all", path?: string): Promise<{ status: string; diff: string }>;
   openPr(input: OpenPrInput): Promise<OpenPrResult>;
+  /** Commit the post with the pinned identity and push its branch to origin, without opening a PR. */
+  saveDraft(input: SaveDraftRequest): Promise<SaveDraftResponse>;
 }
 
 /** Enumerates prior sessions for the picker. */

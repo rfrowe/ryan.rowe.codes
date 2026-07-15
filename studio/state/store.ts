@@ -324,11 +324,12 @@ export interface StudioStore extends Store {
   /** What deleting / reverting a post would discard (uncommitted files, unmerged commits, diff). */
   postLossPreview(canonicalPath: string, op: "delete" | "revert"): Promise<PostLossPreview>;
   /**
-   * Canonical paths of every post with unshipped work (mirrors {@link postWouldLoseWork}), found by
-   * enumerating the worktrees on disk, not the in-memory `open` map, so stray worktrees from a
-   * failed boot or created on the CLI are covered too.
+   * Scan the on-disk worktrees (not the in-memory `open` map, so strays from a failed boot or the CLI
+   * are covered) for two overlapping sets of canonical paths: `dirty` = any unshipped work (uncommitted
+   * edits or commits ahead of the base; mirrors {@link postWouldLoseWork}), and `uncommitted` = only
+   * those with uncommitted edits (the ones "Revert to clean" can actually discard).
    */
-  dirtyPostPaths(): Promise<string[]>;
+  scanDirtyPosts(): Promise<{ dirty: string[]; uncommitted: string[] }>;
   /**
    * Enumerate `blog/*` draft branches with no live worktree and not open: drafts started elsewhere
    * or left behind. Offline-safe (reads refs on disk, never fetches). Powers the ⌘P palette's draft
@@ -1141,12 +1142,13 @@ export function createStore(deps: StoreDeps): StudioStore {
       return { dirty: changedFiles > 0, changedFiles, ahead, diff: parts.join("\n") };
     },
 
-    async dirtyPostPaths() {
+    async scanDirtyPosts() {
       // Enumerate the worktrees actually on disk (not the in-memory `open` map), so open tabs, stray
       // worktrees from a failed boot, and worktrees created outside the studio are all covered.
       const wtPaths = await worktreePathsOnDisk();
 
-      const canonicalPaths: string[] = [];
+      const dirty: string[] = [];
+      const uncommitted: string[] = [];
       for (const wtPath of wtPaths) {
         // Uncommitted, mirroring postLossPreview's delete-scope status check.
         const statusRes = await git.git(
@@ -1177,9 +1179,13 @@ export function createStore(deps: StoreDeps): StudioStore {
           canonical = path.join(repoRoot, BLOG_CONTENT_DIR, stem, "post.mdx");
         }
         // Else: can't resolve which post this worktree backs, so skip it.
-        if (canonical) canonicalPaths.push(canonical);
+        if (!canonical) continue;
+        dirty.push(canonical);
+        // Only posts with uncommitted edits are revertable; a clean-but-ahead post has nothing for
+        // "Revert to clean" to discard.
+        if (uncommittedNonEmpty) uncommitted.push(canonical);
       }
-      return [...new Set(canonicalPaths)];
+      return { dirty: [...new Set(dirty)], uncommitted: [...new Set(uncommitted)] };
     },
 
     async listDrafts() {

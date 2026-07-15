@@ -26,6 +26,8 @@ import type {
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
+  SaveDraftRequest,
+  SaveDraftResponse,
   ServerMessage,
   SessionsResponse,
   ShipRequest,
@@ -145,7 +147,10 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
 
       case "GET /diff": {
         const scope = url.searchParams.get("scope") === "all" ? "all" : "post";
-        const { status, diff } = await services.ship.diff(scope);
+        // Optional `path` targets a specific open post (save-draft can review a non-focused tab);
+        // omitted, the diff follows the active post (ship).
+        const path = url.searchParams.get("path") ?? undefined;
+        const { status, diff } = await services.ship.diff(scope, path);
         return sendJson(res, 200, { status, diff } satisfies DiffResponse);
       }
 
@@ -160,11 +165,11 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       case "GET /posts/dirty": {
-        // Posts with unshipped changes (the palette's dirty badge). Reflects every worktree on disk,
-        // not just this session's open tabs (also strays and worktrees created on the CLI). Probed
-        // on demand, not on every tab broadcast.
-        const dirty = await store.dirtyPostPaths();
-        return sendJson(res, 200, { dirty } satisfies DirtyPostsResponse);
+        // Posts with unshipped changes (the palette's dirty badge / tab dot) plus the uncommitted
+        // subset (gates "Revert to clean"). Reflects every worktree on disk, not just this session's
+        // open tabs (also strays and worktrees created on the CLI). Probed on demand.
+        const { dirty, uncommitted } = await store.scanDirtyPosts();
+        return sendJson(res, 200, { dirty, uncommitted } satisfies DirtyPostsResponse);
       }
 
       case "GET /posts/drafts": {
@@ -185,6 +190,18 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
           confirm: body.confirm,
         });
         return sendJson(res, 200, result satisfies ShipResponse);
+      }
+
+      case "POST /save-draft": {
+        // Persist a draft to origin (commit + push its branch, no PR). Studio-run, like ship.
+        const body = await readJson<SaveDraftRequest>(req);
+        const result = await services.ship.saveDraft({
+          path: body.path,
+          subject: body.subject,
+          body: body.body,
+          confirm: body.confirm,
+        });
+        return sendJson(res, 200, result satisfies SaveDraftResponse);
       }
 
       default:
