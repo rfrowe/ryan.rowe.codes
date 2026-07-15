@@ -1,0 +1,160 @@
+// Integration test for the docSync watcher detecting a post flip between file and folder layout, exercised against a
+// real chokidar watch over a temp dir (this is the seam that strands the editor when the agent
+// restructures a simple post into a folder to co-locate a component). A minimal fake store records
+// the `relayout` call the watcher makes so we can assert it fires with the right old/new paths, in
+// both flip directions and regardless of whether the new file is created before or after the old one
+// is removed.
+
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { createDocSync, type DocSync } from "./docSync";
+import { sha256Hex } from "./hash";
+import { SelfWriteGuard } from "../state/store";
+import type { StudioStore } from "../state/store";
+import type { ActiveDoc, DocRev } from "../shared/types";
+
+interface RelayoutCall {
+  oldPath: string;
+  newPath: string;
+  origin: "external" | "agent";
+}
+
+/** A stand-in store exposing only what docSync touches, recording every relayout it's asked to do. */
+function makeFakeStore(watchPath: string, text: string) {
+  const guard = new SelfWriteGuard();
+  const relayoutCalls: RelayoutCall[] = [];
+  let current = watchPath;
+  let rev: DocRev = { n: 1, hash: sha256Hex(text) };
+
+  const fake: Partial<StudioStore> = {
+    guard,
+    getActiveDoc: () => ({ path: current, text, rev }),
+    getActiveWatchPath: () => current,
+    getDocByWatchPath: (p) => (p === current ? { path: p, rev } : null),
+    reloadByWatchPath: async (p, next): Promise<ActiveDoc | null> => {
+      rev = { n: rev.n + 1, hash: sha256Hex(next) };
+      return { path: p, text: next, rev };
+    },
+    relayout: async (oldPath, newPath, origin): Promise<ActiveDoc | null> => {
+      relayoutCalls.push({ oldPath, newPath, origin });
+      current = newPath;
+      rev = { n: rev.n + 1, hash: sha256Hex("migrated") };
+      return { path: newPath, text: "migrated", rev };
+    },
+  };
+  return { store: fake as StudioStore, relayoutCalls };
+}
+
+/** Poll until `pred` holds or the deadline passes (fs-watch events are inherently async). */
+async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+describe("docSync layout-flip detection", () => {
+  let dir: string;
+  let sync: DocSync | null = null;
+
+  afterEach(async () => {
+    await sync?.close();
+    sync = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  const STEM = "2026-07-14_hello";
+
+  async function setup() {
+    dir = await mkdtemp(path.join(tmpdir(), "docsync-"));
+    const blog = path.join(dir, "src", "content", "blog");
+    await mkdir(blog, { recursive: true });
+    return {
+      blog,
+      fileLayout: path.join(blog, `${STEM}.mdx`),
+      folderDir: path.join(blog, STEM),
+      folderLayout: path.join(blog, STEM, "post.mdx"),
+    };
+  }
+
+  it("detects a flip to folder layout when the new file is created after the old is removed", async () => {
+    const { fileLayout, folderDir, folderLayout } = await setup();
+    await writeFile(fileLayout, "file post\n");
+    const { store, relayoutCalls } = makeFakeStore(fileLayout, "file post\n");
+    sync = createDocSync(store, { filePath: fileLayout });
+
+    await rm(fileLayout);
+    await new Promise((r) => setTimeout(r, 120));
+    await mkdir(folderDir, { recursive: true });
+    await writeFile(folderLayout, "folder post\n");
+
+    await waitFor(() => relayoutCalls.length > 0);
+    expect(relayoutCalls.at(-1)).toEqual({ oldPath: fileLayout, newPath: folderLayout, origin: "external" });
+  });
+
+  it("detects a flip to folder layout when the new file is created before the old is removed", async () => {
+    const { fileLayout, folderDir, folderLayout } = await setup();
+    await writeFile(fileLayout, "file post\n");
+    const { store, relayoutCalls } = makeFakeStore(fileLayout, "file post\n");
+    sync = createDocSync(store, { filePath: fileLayout });
+
+    await mkdir(folderDir, { recursive: true });
+    await writeFile(folderLayout, "folder post\n");
+    await new Promise((r) => setTimeout(r, 120));
+    await rm(fileLayout);
+
+    await waitFor(() => relayoutCalls.some((c) => c.newPath === folderLayout));
+    expect(relayoutCalls.at(-1)).toMatchObject({ oldPath: fileLayout, newPath: folderLayout });
+  });
+
+  it("detects the reverse flip back to file layout", async () => {
+    const { fileLayout, folderDir, folderLayout } = await setup();
+    await mkdir(folderDir, { recursive: true });
+    await writeFile(folderLayout, "folder post\n");
+    const { store, relayoutCalls } = makeFakeStore(folderLayout, "folder post\n");
+    sync = createDocSync(store, { filePath: folderLayout });
+
+    await writeFile(fileLayout, "file post\n");
+    await new Promise((r) => setTimeout(r, 120));
+    await rm(folderDir, { recursive: true, force: true });
+
+    await waitFor(() => relayoutCalls.some((c) => c.newPath === fileLayout));
+    expect(relayoutCalls.at(-1)).toMatchObject({ oldPath: folderLayout, newPath: fileLayout });
+  });
+
+  it("classifies a flip during a locked agent turn as an agent-origin write", async () => {
+    const { fileLayout, folderDir, folderLayout } = await setup();
+    await writeFile(fileLayout, "file post\n");
+    const { store, relayoutCalls } = makeFakeStore(fileLayout, "file post\n");
+    sync = createDocSync(store, { filePath: fileLayout });
+    sync.dispatch({ type: "prompt.dispatch" }); // lock the turn
+
+    await rm(fileLayout);
+    await mkdir(folderDir, { recursive: true });
+    await writeFile(folderLayout, "folder post\n");
+
+    await waitFor(() => relayoutCalls.length > 0);
+    expect(relayoutCalls.at(-1)?.origin).toBe("agent");
+  });
+
+  it("does not flip when a co-located asset is added while the simple-post file still exists", async () => {
+    // The false-positive guard: adding `<stem>/Widget.tsx` next to a still-present `<stem>.mdx` is a
+    // folder appearing under the watched stem dir, not a layout flip. A flip only fires once the
+    // current-layout file becomes unreadable.
+    const { fileLayout, folderDir } = await setup();
+    await writeFile(fileLayout, "file post\n");
+    const { store, relayoutCalls } = makeFakeStore(fileLayout, "file post\n");
+    sync = createDocSync(store, { filePath: fileLayout });
+
+    await mkdir(folderDir, { recursive: true });
+    await writeFile(path.join(folderDir, "Widget.tsx"), "export const Widget = () => null;\n");
+
+    // Give the watcher ample time to process the add; the assertion is that nothing flipped.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(relayoutCalls).toEqual([]);
+  });
+});

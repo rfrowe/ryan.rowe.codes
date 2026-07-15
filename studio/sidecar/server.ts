@@ -355,20 +355,18 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`. On
-      // success, re-key the SDK session so the resumable conversation follows the rename (the store
-      // already broadcast `post.renamed` for the clients' tab migration).
+      // Rename the active post's slug: move the file, `git branch -m`, then `git worktree move`. The
+      // store broadcasts `post.renamed`, which drives both the clients' tab migration and the SDK
+      // session re-key (wired in main.ts), so the resumable conversation follows the rename.
       case "post.rename": {
         const { requestId, path } = message;
         store.renamePost(path, { slug: message.newSlug }).then(
-          (result) => {
-            if (result.ok) agentHost.renameSessionKey(path, result.path);
+          (result) =>
             sendPostResult(
               ws,
               requestId,
               result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
-            );
-          },
+            ),
           (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
         );
         return;
@@ -379,14 +377,12 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       case "post.completeRename": {
         const { requestId, path } = message;
         store.completeRename(path).then(
-          (result) => {
-            if (result.ok) agentHost.renameSessionKey(path, result.path);
+          (result) =>
             sendPostResult(
               ws,
               requestId,
               result.ok ? { ok: true, path: result.path } : { ok: false, error: result.error },
-            );
-          },
+            ),
           (err: unknown) => sendPostResult(ws, requestId, { ok: false, error: errorText(err) }),
         );
         return;

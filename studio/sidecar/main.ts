@@ -148,6 +148,13 @@ async function main(): Promise<void> {
     onTurnEnd: () => docSync?.dispatch({ type: "agent.turn.end" }),
   });
 
+  // `post.renamed` is the single migration signal: the SPA follows a tab's transcript to the new
+  // path, and the SDK session must follow too so the resumable conversation isn't orphaned. Covers
+  // slug/date renames and the watcher-driven layout relayout (file to folder or back) alike.
+  store.subscribe((msg) => {
+    if (msg.type === "post.renamed") agentHost.renameSessionKey(msg.oldPath, msg.newPath);
+  });
+
   // ---- bootstrap the initial active post (best-effort) ----
   if (bootstrapPath) {
     try {
