@@ -514,16 +514,42 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * Whether `blog/<stem>` exists locally and/or as a remote-tracking ref. Offline-safe: reads refs
-   * on disk, never fetches, so `remote` may be stale. Used to adopt an existing draft and to refuse
-   * forking over one.
+   * Whether `ref`'s commits already shipped, so there's nothing left on it to adopt. This repo
+   * squash-merges, so a shipped branch's commit is never an ancestor of the default branch. `git
+   * cherry` instead matches by patch content against `origin/<default>`, which survives a squash
+   * (or rebase) regardless of how the merge happened. Offline: reads refs on disk, never fetches.
+   * Can't tell apart a branch merged as several commits squashed into one (no single commit's
+   * patch matches the combined diff) from a genuinely unmerged one; that case still looks live.
+   */
+  async function isMergedIntoDefault(ref: string): Promise<boolean> {
+    const def = await defaultBranch();
+    const cherry = await git.git(["cherry", `origin/${def}`, ref], { cwd: repoRoot });
+    return cherry.code === 0 && !cherry.stdout.split("\n").some((line) => line.startsWith("+"));
+  }
+
+  /** Whether `ref` exists (a local `refs/heads/...` or remote-tracking `refs/remotes/origin/...` ref). */
+  async function refExists(ref: string): Promise<boolean> {
+    return (await git.git(["rev-parse", "--verify", "--quiet", ref], { cwd: repoRoot })).code === 0;
+  }
+
+  /**
+   * Whether `blog/<stem>` exists locally and/or as a remote-tracking ref, as a live (unmerged)
+   * draft. A branch already merged into the default branch doesn't count: this repo doesn't
+   * delete-on-merge, so a shipped PR's branch can linger on origin as dead weight, not a draft
+   * still being worked on. Offline-safe: reads refs on disk, never fetches, so `remote` may be
+   * stale. Used to adopt an existing draft and to refuse forking over one.
    */
   async function branchRefs(stem: string): Promise<{ local: boolean; remote: boolean }> {
     const branch = await branchFor(stem);
-    const local = (await git.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot })).code === 0;
-    const remote =
-      (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: repoRoot })).code === 0;
-    return { local, remote };
+    const localRef = `refs/heads/${branch}`;
+    const remoteRef = `refs/remotes/origin/${branch}`;
+    const localExists = await refExists(localRef);
+    const remoteExists = await refExists(remoteRef);
+    const [localMerged, remoteMerged] = await Promise.all([
+      localExists ? isMergedIntoDefault(localRef) : false,
+      remoteExists ? isMergedIntoDefault(remoteRef) : false,
+    ]);
+    return { local: localExists && !localMerged, remote: remoteExists && !remoteMerged };
   }
 
   /**
@@ -562,6 +588,14 @@ export function createStore(deps: StoreDeps): StudioStore {
         } else {
           await deps.removePath?.(worktreePath);
         }
+      }
+
+      if (!localExists) {
+        // A same-named local branch merged into main but never deleted (this repo doesn't
+        // auto-delete on merge) would collide with the `-b` create below, used by both the
+        // remote-adopt and fork-fresh paths. Clear it so a fresh branch can reclaim the name;
+        // harmless no-op if there's nothing to clear.
+        await git.git(["branch", "-D", branch], { cwd: repoRoot });
       }
 
       // Adopt local, then adopt remote-only (create a tracking branch), then fork fresh off the base
@@ -1186,8 +1220,10 @@ export function createStore(deps: StoreDeps): StudioStore {
     async listDrafts() {
       // Enumerate this session's draft branches locally and on origin, scoped to its own namespace
       // (`[<seg>/]blog/*`) so a non-primary session never lists or adopts another session's drafts.
-      // Offline-safe: reads refs on disk (a stale origin/* is the accepted tradeoff). A branch with no
-      // post file is skipped, not guessed.
+      // Offline-safe: reads refs on disk (an out-of-date origin/* is the accepted tradeoff). A branch
+      // with no post file is skipped, not guessed. Each result's `stale` flag reuses isMergedIntoDefault
+      // (the same check ensureWorktree uses to decide whether to adopt), so the picker and the open
+      // behavior agree on whether a branch is a live draft or already-shipped dead weight.
       const seg = await prefixSeg();
       const localRoot = seg ? `refs/heads/${seg}/blog` : "refs/heads/blog";
       const remoteRoot = seg ? `refs/remotes/origin/${seg}/blog` : "refs/remotes/origin/blog";
@@ -1210,6 +1246,7 @@ export function createStore(deps: StoreDeps): StudioStore {
           path: path.join(repoRoot, rel),
           stem,
           origin: isLocal && isRemote ? "both" : isLocal ? "local" : "remote",
+          stale: await isMergedIntoDefault(ref),
         });
       }
       drafts.sort((a, b) => a.stem.localeCompare(b.stem));

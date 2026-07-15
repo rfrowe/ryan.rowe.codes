@@ -15,6 +15,9 @@ interface PaletteEntry {
   /** Set when this row is a draft branch with no live worktree (adoptable). `remote`-only draft
    *  reopens by adopting a tracking worktree from origin (shown with a chip). */
   draft?: "local" | "remote" | "both";
+  /** The draft branch is already merged into the default branch, so reopening forks a fresh one
+   *  over it instead of adopting its (shipped) content. Shown as a "Stale" badge, not "draft". */
+  stale?: boolean;
 }
 
 /** A navigable palette row: an existing post to open, or the create-new-post command. */
@@ -111,7 +114,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     }
     for (const d of drafts) {
       if (seen.has(d.path)) continue;
-      merged.push({ path: d.path, title: "", open: false, draft: d.origin });
+      merged.push({ path: d.path, title: "", open: false, draft: d.origin, stale: d.stale });
       seen.add(d.path);
     }
     return merged;
@@ -197,10 +200,19 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
               onClick={() => choose(row)}
             >
               <span className="palette__title">{entry.title || slugFromPath(entry.path)}</span>
-              {dirty.has(entry.path) && (
-                <span className="palette__badge" title="Draft — has unshipped changes (uncommitted or unmerged)">
-                  Draft
+              {entry.stale ? (
+                <span
+                  className="palette__badge palette__badge--stale"
+                  title="Stale — already merged; reopening forks a fresh branch instead of adopting this one"
+                >
+                  Stale
                 </span>
+              ) : (
+                dirty.has(entry.path) && (
+                  <span className="palette__badge" title="Draft — has unshipped changes (uncommitted or unmerged)">
+                    Draft
+                  </span>
+                )
               )}
               {entry.draft === "remote" && (
                 <span className="palette__chip" title="On origin only — reopening adopts a tracking worktree from origin">
@@ -208,7 +220,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
                 </span>
               )}
               <span className="palette__meta">
-                {entry.open ? (entry.path === activePath ? "active" : "open") : entry.draft ? "draft" : "post"} ·{" "}
+                {entry.open ? (entry.path === activePath ? "active" : "open") : entry.stale ? "stale" : entry.draft ? "draft" : "post"} ·{" "}
                 {slugFromPath(entry.path)}
               </span>
             </li>
