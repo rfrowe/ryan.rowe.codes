@@ -23,6 +23,31 @@ interface PaletteEntry {
 /** A navigable palette row: an existing post to open, or the create-new-post command. */
 type PaletteRow = { kind: "post"; entry: PaletteEntry } | { kind: "create"; title: string };
 
+/**
+ * Open tabs first (deduped), then other main-tree posts, then adoptable draft branches, except a
+ * draft matching an already-published, not-currently-open post layers its `draft`/`stale` fields
+ * onto that post's existing entry (in its original position) instead of being dropped: a re-edit of
+ * a published post still needs its remote/stale chip, not to read as an ordinary post with nothing
+ * pending. An open tab's own state always wins, since a live worktree already reflects the draft.
+ */
+export function mergePaletteEntries(
+  openTabs: readonly TabDescriptor[],
+  posts: readonly PaletteEntry[] | null,
+  drafts: readonly DraftSummary[],
+): PaletteEntry[] {
+  const byPath = new Map<string, PaletteEntry>();
+  for (const t of openTabs) byPath.set(t.path, { path: t.path, title: t.title, open: true });
+  for (const p of posts ?? []) {
+    if (!byPath.has(p.path)) byPath.set(p.path, p);
+  }
+  for (const d of drafts) {
+    const existing = byPath.get(d.path);
+    if (existing?.open) continue;
+    byPath.set(d.path, { ...(existing ?? { path: d.path, title: "", open: false }), draft: d.origin, stale: d.stale });
+  }
+  return [...byPath.values()];
+}
+
 interface CommandPaletteProps {
   openTabs: TabDescriptor[];
   activePath: string | null;
@@ -103,22 +128,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     };
   }, []);
 
-  // Open tabs first (deduped), then other main-tree posts, then adoptable draft branches.
-  const entries = useMemo<PaletteEntry[]>(() => {
-    const seen = new Set(openTabs.map((t) => t.path));
-    const merged: PaletteEntry[] = openTabs.map((t) => ({ path: t.path, title: t.title, open: true }));
-    for (const p of posts ?? []) {
-      if (seen.has(p.path)) continue;
-      merged.push(p);
-      seen.add(p.path);
-    }
-    for (const d of drafts) {
-      if (seen.has(d.path)) continue;
-      merged.push({ path: d.path, title: "", open: false, draft: d.origin, stale: d.stale });
-      seen.add(d.path);
-    }
-    return merged;
-  }, [openTabs, posts, drafts]);
+  const entries = useMemo(() => mergePaletteEntries(openTabs, posts, drafts), [openTabs, posts, drafts]);
 
   const filtered = useMemo(
     () => entries.filter((e) => fuzzyMatch(`${e.title} ${slugFromPath(e.path)}`, query.trim())),

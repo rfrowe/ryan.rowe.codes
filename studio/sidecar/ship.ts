@@ -9,7 +9,7 @@ import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
 import type { SaveDraftRequest, SaveDraftResponse } from "../shared/protocol";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
-import { BLOG_CONTENT_DIR, computeWorkingTreeDiff, countOutsideBlog, parseStatusPaths, underBlog } from "./diffService";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, parseStatusPaths, underBlog } from "./diffService";
 
 // Pinned commit identity (CLAUDE.md), independent of local git config.
 const PINNED_NAME = "Ryan Rowe";
@@ -42,15 +42,40 @@ export function createShipService(deps: ShipDeps): ShipService {
   /** Read the diff for the ship / save-draft review UI. Defaults to the active post's worktree; a
    *  `path` targets a specific open post (the save-draft panel can review a non-focused tab).
    *  `outsideCount` is independent of `scope`: it's what a "post"-scoped review would leave behind,
-   *  powering the nudge toward "all" without ever forcing it. */
+   *  powering the nudge toward "all" without ever forcing it.
+   *
+   *  Ship (no `path`; it only ever reviews the active post) previews against the PR's actual base, so
+   *  an adopted draft's already-committed history shows up alongside anything uncommitted since (not
+   *  just the latter, which is all a HEAD-relative diff would catch). Save-draft (always called with
+   *  an explicit `path`) has no such base, since it only ever pushes its own branch, so it stays
+   *  HEAD-relative: "nothing uncommitted" there correctly means nothing new to push. */
   async function diff(scope: "post" | "all", path?: string): Promise<{ status: string; diff: string; outsideCount: number }> {
     const wt = path ? getWorktreeFor(path) : getActiveWorktree();
     if (!wt) return { status: "", diff: "", outsideCount: 0 };
+    const cwd = wt.worktreePath;
+    // prBase(cwd) is chained with .then rather than awaited inline, so its git round-trip runs
+    // concurrently with countOutsideBlog's instead of blocking Promise.all from even starting it.
     const [{ status, diff }, outsideCount] = await Promise.all([
-      computeWorkingTreeDiff(git, wt.worktreePath, scope, { includeUntracked: true }),
-      countOutsideBlog(git, wt.worktreePath),
+      path
+        ? computeWorkingTreeDiff(git, cwd, scope, { includeUntracked: true })
+        : prBase(cwd).then((base) => computeDiffAgainstRef(git, cwd, base, scope)),
+      countOutsideBlog(git, cwd),
     ]);
     return { status, diff, outsideCount };
+  }
+
+  /** Whether `refs/remotes/origin/<sessionBranch>` exists (offline-safe: reads the remote-tracking
+   *  ref on disk, never fetches). Backs both {@link prBase}'s preview fallback and {@link openPr}'s
+   *  hard gate, so the two can't drift into checking the ref two different ways. */
+  async function sessionBranchOnOrigin(cwd: string): Promise<boolean> {
+    const res = await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${sessionBranch}`], { cwd });
+    return res.code === 0;
+  }
+
+  /** The ref ship's PR is actually opened against: `origin/<sessionBranch>` once pushed there, else
+   *  the local session branch as a preview fallback before it is. */
+  async function prBase(cwd: string): Promise<string> {
+    return (await sessionBranchOnOrigin(cwd)) ? `origin/${sessionBranch}` : sessionBranch;
   }
 
   async function openPr(input: OpenPrInput): Promise<OpenPrResult> {
@@ -120,11 +145,7 @@ export function createShipService(deps: ShipDeps): ShipService {
       // (`gh pr create --base` resolves the base on the remote), so refuse early (offline-safe: reads
       // the remote-tracking ref, never fetches) with an actionable message instead of a raw gh error.
       const base = sessionBranch;
-      const baseOnOrigin = await git.git(
-        ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`],
-        { cwd },
-      );
-      if (baseOnOrigin.code !== 0) {
+      if (!(await sessionBranchOnOrigin(cwd))) {
         return {
           ok: false,
           error:
