@@ -512,6 +512,11 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       case "permission.response":
         agentHost.resolvePermission(message.requestId, message.decision);
         return;
+
+      // Answer an in-flight AskUserQuestion prompt with the human's picks.
+      case "question.answer":
+        agentHost.answerQuestion(message.requestId, message.answers);
+        return;
     }
   }
 

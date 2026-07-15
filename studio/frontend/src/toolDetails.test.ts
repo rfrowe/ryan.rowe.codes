@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffLines, toolDetail } from "./toolDetails";
+import { diffLines, parseAskQuestions, toolDetail } from "./toolDetails";
 
 describe("diffLines", () => {
   it("marks unchanged lines as context", () => {
@@ -86,5 +86,82 @@ describe("toolDetail", () => {
 
   it("falls back to fields for a non-object input", () => {
     expect(toolDetail("Whatever", "just a string")).toEqual({ kind: "fields", fields: [] });
+  });
+
+  it("renders AskUserQuestion as its questions, not a field list", () => {
+    const input = {
+      questions: [
+        { question: "Which color?", header: "Color", options: [{ label: "Red", description: "Pick red." }], multiSelect: false },
+      ],
+    };
+    const d = toolDetail("AskUserQuestion", input);
+    expect(d.kind).toBe("ask");
+    if (d.kind !== "ask") throw new Error("expected ask");
+    expect(d.questions).toEqual(parseAskQuestions(input));
+  });
+
+  it("renders a nested array/object field as indented lines instead of JSON", () => {
+    const d = toolDetail("mcp__example__ask", {
+      questions: [{ label: "Red", tags: ["a", "b"] }],
+    });
+    if (d.kind !== "fields") throw new Error("expected fields");
+    expect(d.fields).toEqual([
+      {
+        key: "questions",
+        value: "-\n  label: Red\n  tags:\n    - a\n    - b",
+        block: true,
+      },
+    ]);
+  });
+
+  it("relativizes an absolute file path against cwd, in both diff and field views", () => {
+    const cwd = "/repo/.worktrees/blog/x";
+    const edit = toolDetail("Edit", { file_path: `${cwd}/src/content/blog/x.mdx`, old_string: "a", new_string: "b" }, cwd);
+    expect(edit).toMatchObject({ filePath: "src/content/blog/x.mdx" });
+
+    const read = toolDetail("Read", { file_path: `${cwd}/src/content/blog/x.mdx` }, cwd);
+    if (read.kind !== "fields") throw new Error("expected fields");
+    expect(read.fields).toEqual([{ key: "file_path", value: "src/content/blog/x.mdx", block: false }]);
+  });
+
+  it("leaves a path outside cwd untouched", () => {
+    const d = toolDetail("Read", { file_path: "/elsewhere/x.mdx" }, "/repo/.worktrees/blog/x");
+    if (d.kind !== "fields") throw new Error("expected fields");
+    expect(d.fields).toEqual([{ key: "file_path", value: "/elsewhere/x.mdx", block: false }]);
+  });
+});
+
+describe("parseAskQuestions", () => {
+  it("extracts a well-formed AskUserQuestion input", () => {
+    const input = {
+      questions: [
+        {
+          question: "Which color?",
+          header: "Color",
+          options: [
+            { label: "Red", description: "Pick red." },
+            { label: "Blue", description: "Pick blue.", preview: "🔵" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+    expect(parseAskQuestions(input)).toEqual([
+      {
+        question: "Which color?",
+        header: "Color",
+        options: [
+          { label: "Red", description: "Pick red.", preview: undefined },
+          { label: "Blue", description: "Pick blue.", preview: "🔵" },
+        ],
+        multiSelect: false,
+      },
+    ]);
+  });
+
+  it("returns null for a non-AskUserQuestion shape", () => {
+    expect(parseAskQuestions({ command: "ls" })).toBeNull();
+    expect(parseAskQuestions({ questions: "not an array" })).toBeNull();
+    expect(parseAskQuestions({ questions: [{ question: "Q", header: "H", options: "nope" }] })).toBeNull();
   });
 });

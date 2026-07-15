@@ -5,7 +5,7 @@
 // markdown assistant text, collapsible MCP tool-call cards, and a clear
 // running-vs-done state.
 
-import { useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
@@ -18,6 +18,8 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStudioChatRuntime, type StudioChatRuntimeOptions } from "./chatRuntime";
 import { ToolDetailView } from "./ToolDetailView";
+import { AskUserQuestionCard } from "./AskUserQuestion";
+import { parseAskQuestions, type AskQuestionItem } from "./toolDetails";
 import type { PermissionDecision } from "../../shared/types";
 
 // Re-exported so App's `import { ChatItem } from "./Chat"` and its reducer are
@@ -32,6 +34,8 @@ export interface PendingPermission {
   title?: string;
   description?: string;
   reason?: string;
+  /** Matches the tool.start for this call, if any; lets an AskUserQuestion answer land on that entry. */
+  toolUseId?: string;
 }
 
 // Chat receives the same props the hand-rolled panel did (runtime wiring lives in
@@ -39,6 +43,9 @@ export interface PendingPermission {
 type ChatProps = StudioChatRuntimeOptions & {
   pendingPermissions: PendingPermission[];
   onPermission: (requestId: string, decision: PermissionDecision) => void;
+  onAnswerQuestion: (requestId: string, toolUseId: string | undefined, answers: Record<string, string>) => void;
+  /** The active post's worktree root, so file paths in tool calls drop that prefix. */
+  cwd?: string;
 };
 
 /** `mcp__studio__foo` becomes `studio · foo`; other MCP tools drop their server prefix. */
@@ -77,6 +84,20 @@ function argsSummary(args: unknown, argsText: string | undefined): string {
   return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
 }
 
+/** AskUserQuestion's header summary: the picked answer once resolved, else the question itself. */
+function askSummary(questions: AskQuestionItem[], answers: Record<string, string> | undefined): string {
+  const picks = answers && Object.values(answers).filter(Boolean);
+  if (picks && picks.length > 0) return `→ ${picks.join(", ")}`;
+  return questions.length > 1 ? `${questions.length} questions` : questions[0].question;
+}
+
+// The active post's worktree root, read by ToolCard (assistant-ui renders it, so Chat can't just
+// pass it a prop) to relativize a tool call's file paths.
+const CwdContext = createContext<string | undefined>(undefined);
+
+// An AskUserQuestion call's recorded answers, by toolCallId, read by ToolCard the same way as cwd.
+const AnswersContext = createContext<Record<string, Record<string, string>>>({});
+
 // ---- message part renderers ----
 
 // Assistant prose as markdown (the agent drafts MDX/code, so this matters);
@@ -94,7 +115,11 @@ const PlainText: TextMessagePartComponent = ({ text }) => <>{text}</>;
 // (spinner); a set result, or `isError`, means finished. Collapsed by default
 // so the transcript stays scannable: the header carries a one-line arg summary,
 // and the full args and result only render when expanded. Errors auto-expand.
-const ToolCard: ToolCallMessagePartComponent = ({ toolName, args, argsText, result, isError }) => {
+const ToolCard: ToolCallMessagePartComponent = ({ toolName, toolCallId, args, argsText, result, isError }) => {
+  // The active post's worktree root, so a file path in the args drops that prefix. Threaded via
+  // context (not a prop) because assistant-ui, not Chat, controls this component's render call.
+  const cwd = useContext(CwdContext);
+  const answers = useContext(AnswersContext)[toolCallId];
   const finished = result !== undefined || isError === true;
   const state: "running" | "done" | "error" = isError ? "error" : finished ? "done" : "running";
   const hasResult = typeof result === "string" ? result.length > 0 : result != null;
@@ -103,10 +128,16 @@ const ToolCard: ToolCallMessagePartComponent = ({ toolName, args, argsText, resu
   // a boolean means the user toggled it explicitly.
   const [override, setOverride] = useState<boolean | null>(null);
   const open = override ?? isError === true;
-  const summary = argsSummary(args, argsText);
+  // Re-parsing args on every render would run on every streamed token while this message's turn is
+  // in flight, since ToolCard re-renders alongside the sibling text part.
+  const askQuestions = useMemo(() => (toolName === "AskUserQuestion" ? parseAskQuestions(args) : null), [toolName, args]);
+  const summary = useMemo(
+    () => (askQuestions ? askSummary(askQuestions, answers) : argsSummary(args, argsText)),
+    [askQuestions, answers, args, argsText],
+  );
 
   return (
-    <div className={`tool ${isError ? "tool--error" : ""}`}>
+    <div className={`tool ${isError ? "tool--error" : ""} ${askQuestions ? "tool--ask" : ""}`}>
       <button type="button" className="tool__head" aria-expanded={open} onClick={() => setOverride(!open)}>
         <span className={`tool__dot tool__dot--${state}`} />
         <span className="tool__name">{toolTitle(toolName)}</span>
@@ -121,11 +152,16 @@ const ToolCard: ToolCallMessagePartComponent = ({ toolName, args, argsText, resu
       {open && (
         <>
           {isNonEmptyObject(args) ? (
-            <ToolDetailView toolName={toolName} input={args} />
+            <div className="tool__detail">
+              <ToolDetailView toolName={toolName} input={args} cwd={cwd} answers={answers} />
+            </div>
           ) : (
             <pre className="tool__io">{argsDisplay(args, argsText)}</pre>
           )}
-          {hasResult && <pre className="tool__io tool__io--result">{String(result)}</pre>}
+          {/* AskUserQuestion's detail view already renders the outcome, so the SDK's raw result
+              sentence would just repeat it — except on error, where it's the only place the actual
+              error text appears. */}
+          {hasResult && (!askQuestions || isError) && <pre className="tool__io tool__io--result">{String(result)}</pre>}
         </>
       )}
     </div>
@@ -137,9 +173,11 @@ const ToolCard: ToolCallMessagePartComponent = ({ toolName, args, argsText, resu
 // an out-of-worktree edit) so the same call stops prompting.
 function PermissionCard({
   req,
+  cwd,
   onPermission,
 }: {
   req: PendingPermission;
+  cwd?: string;
   onPermission: (requestId: string, decision: PermissionDecision) => void;
 }) {
   const summary = argsSummary(req.input, undefined);
@@ -153,7 +191,7 @@ function PermissionCard({
       </div>
       {prompt && <div className="perm__reason">{prompt}</div>}
       <div className="perm__detail">
-        <ToolDetailView toolName={req.toolName} input={req.input} />
+        <ToolDetailView toolName={req.toolName} input={req.input} cwd={cwd} />
       </div>
       <div className="perm__actions">
         <button type="button" className="btn btn--primary" onClick={() => onPermission(req.requestId, "allow")}>
@@ -233,37 +271,62 @@ function Composer({ connected }: { connected: boolean }) {
 export function Chat(props: ChatProps) {
   const runtime = useStudioChatRuntime(props);
 
+  // Recorded AskUserQuestion answers, by toolUseId, so a resolved call's transcript entry can show
+  // what was answered instead of just the raw questions.
+  const answersById = useMemo(() => {
+    const map: Record<string, Record<string, string>> = {};
+    for (const item of props.items) {
+      if (item.kind === "tool" && item.answers) map[item.toolUseId] = item.answers;
+    }
+    return map;
+  }, [props.items]);
+
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="chat">
-        <ThreadPrimitive.Viewport className="chat__log">
-          <ThreadPrimitive.Empty>
-            <p className="chat__empty">
-              Ask the agent to draft, rework, or generate a figure. ⌘K in the editor prompts at the caret.
-            </p>
-          </ThreadPrimitive.Empty>
+    <CwdContext.Provider value={props.cwd}>
+      <AnswersContext.Provider value={answersById}>
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadPrimitive.Root className="chat">
+            <ThreadPrimitive.Viewport className="chat__log">
+              <ThreadPrimitive.Empty>
+                <p className="chat__empty">
+                  Ask the agent to draft, rework, or generate a figure. ⌘K in the editor prompts at the caret.
+                </p>
+              </ThreadPrimitive.Empty>
 
-          <ThreadPrimitive.Messages components={messageComponents} />
+              <ThreadPrimitive.Messages components={messageComponents} />
 
-          {/* Explicit "agent is thinking" state, including before the first token. */}
-          <ThreadPrimitive.If running>
-            <div className="chat__working">
-              <span className="chat__working-dot" aria-hidden="true" />
-              Working…
-            </div>
-          </ThreadPrimitive.If>
-        </ThreadPrimitive.Viewport>
+              {/* Explicit "agent is thinking" state, including before the first token. */}
+              <ThreadPrimitive.If running>
+                <div className="chat__working">
+                  <span className="chat__working-dot" aria-hidden="true" />
+                  Working…
+                </div>
+              </ThreadPrimitive.If>
+            </ThreadPrimitive.Viewport>
 
-        {props.pendingPermissions.length > 0 && (
-          <div className="perm-list">
-            {props.pendingPermissions.map((p) => (
-              <PermissionCard key={p.requestId} req={p} onPermission={props.onPermission} />
-            ))}
-          </div>
-        )}
+            {props.pendingPermissions.length > 0 && (
+              <div className="perm-list">
+                {props.pendingPermissions.map((p) => {
+                  const questions = p.toolName === "AskUserQuestion" ? parseAskQuestions(p.input) : null;
+                  return questions ? (
+                    <AskUserQuestionCard
+                      key={p.requestId}
+                      requestId={p.requestId}
+                      questions={questions}
+                      onAnswer={(requestId, answers) => props.onAnswerQuestion(requestId, p.toolUseId, answers)}
+                      onSkip={(requestId) => props.onPermission(requestId, "allow")}
+                    />
+                  ) : (
+                    <PermissionCard key={p.requestId} req={p} cwd={props.cwd} onPermission={props.onPermission} />
+                  );
+                })}
+              </div>
+            )}
 
-        <Composer connected={props.connected} />
-      </ThreadPrimitive.Root>
-    </AssistantRuntimeProvider>
+            <Composer connected={props.connected} />
+          </ThreadPrimitive.Root>
+        </AssistantRuntimeProvider>
+      </AnswersContext.Provider>
+    </CwdContext.Provider>
   );
 }
