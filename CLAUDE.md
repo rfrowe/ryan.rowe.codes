@@ -45,7 +45,7 @@ Notes:
 
 ### MDX pipeline (`astro.config.mjs`)
 - Math: `remark-math` + `rehype-katex` (KaTeX), wired via `markdown.remarkPlugins`/`rehypePlugins`. KaTeX CSS is imported in the app shell (see below).
-- Code highlighting: `astro-expressive-code` (+ `@expressive-code/plugin-line-numbers`) at build time for MDX fenced code blocks. A separate theme-reactive runtime component `CodeBlock` (`src/components/mdx/CodeBlock.tsx`, `react-syntax-highlighter`, rendered `client:load`) is used where a client-rendered block is needed instead (e.g. the quine post, so its raw source survives in the static output for verification).
+- Code highlighting: `astro-expressive-code` (+ `@expressive-code/plugin-line-numbers`) at build time. Its options live in `ec.config.mjs` (a separate file, not inline in `astro.config.mjs`), which is required so the runtime `<Code>` component (`astro-expressive-code/components`) can load a JSON-serializable config. Fenced code blocks are highlighted automatically; `<Code code={...} lang={...} />` runs a runtime string through the same engine — the `hello-world` quine feeds it `props.source` (with its filename supplied via the route's `fileName` prop) to print its own source.
 - HTML tag overrides: `src/components/mdx-components.ts` maps intrinsic tags (`h1`–`h6`, `p`, `a`) to `.astro` components under `src/components/mdx/` (`H1`–`H6`, `P`, `Link`). Passed explicitly as the `components` prop to `<Content components={mdxComponents} />` in the post route (`src/pages/blog/[date]/[slug].astro`) — Astro has no MDXProvider-style ambient context, so each render call wires its own component map.
 
 ### Styling & theming

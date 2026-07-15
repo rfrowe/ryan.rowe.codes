@@ -95,12 +95,11 @@ co-located `.tsx` + `.css.ts` island, same folder-post pattern as
 `src/content/blog/2017-01-01_algorithmic-art/`.
 
 - Import with a relative path and no extension: `import CubeCard from './cubeCard'`.
-- Pass data via **props**, not children — e.g.
-  `<CodeBlock language='markdown' source={props.source} client:load />`
-  (`src/content/blog/2022-03-12_hello-world.mdx`).
+- Pass data via **props**, not children — Astro pre-renders an island's
+  children into opaque HTML, so raw data passed as children arrives escaped.
 - Hydration directive:
   - `client:load` when the component can render on the server and just
-    needs to hydrate (e.g. `CodeBlock`).
+    needs to hydrate.
   - `client:only="react"` when the component touches `window`/canvas at
     *import* time and would crash Astro's Node-based static build if
     imported eagerly — e.g. `<CubeCard client:only="react" />`, because the
@@ -116,9 +115,13 @@ co-located `.tsx` + `.css.ts` island, same folder-post pattern as
   and `.../2026-07-10_aligning-a-skyline/post.mdx` for real usage.
 - Fenced code blocks (` ```python `, ` ```tsx `, etc.) are highlighted at
   build time by `astro-expressive-code` — just use ordinary fenced blocks
-  with a language tag. Only use the client-rendered `CodeBlock` island
-  (passed `source` as a prop) when the raw source must survive verbatim in
-  the static output, as in the `hello-world` post.
+  with a language tag, plus its meta string for extras (`title="..."`,
+  `{1,3}` line highlights, `showLineNumbers`, `ins`/`del`). To highlight a
+  *runtime* string instead of a literal block, use the same engine's
+  component: `import { Code } from 'astro-expressive-code/components'`, then
+  `<Code code={someString} lang="mdx" />` (the code must be the `code` prop,
+  a string; `<Code>` rejects children). The `hello-world` post feeds it
+  `props.source` to print its own source.
 
 ## Styling co-located components
 

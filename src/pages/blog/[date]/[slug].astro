@@ -3,9 +3,10 @@ import { getCollection, render, type CollectionEntry } from "astro:content"
 import BlogPost from "@layouts/BlogPost.astro"
 import { mdxComponents } from "@components/mdx-components"
 
-// The hello-world post is a QUINE that renders its own full source (see CodeBlock.tsx).
-// `entry.body` strips the YAML frontmatter, so import each post's raw bytes (`?raw`) to feed
-// the MDX its complete source as `source`, frontmatter and all; `entry.body` is the fallback.
+// The hello-world post is a quine: it prints its own full source through Expressive Code's
+// <Code> component. `entry.body` strips the YAML frontmatter, so import each post's raw bytes
+// (`?raw`) to feed the MDX its complete source as `source`, frontmatter and all; `entry.body`
+// is the fallback.
 const rawSources = import.meta.glob<string>("/src/content/blog/**/*.mdx", {
   query: "?raw",
   import: "default",
@@ -31,8 +32,11 @@ interface Props {
 const { post } = Astro.props
 const { Content } = await render(post)
 const fullSource = (post.filePath && rawSources[`/${post.filePath}`]) || post.body
+// The post's path under the blog content dir, so a post can title its source block off `props`
+// (see hello-world): `2022-03-12_hello-world.mdx` for a simple post, `<slug>/post.mdx` for a folder.
+const fileName = post.filePath?.replace(/^.*\/blog\//, "") ?? `${post.data.slug}.mdx`
 ---
 
 <BlogPost title={post.data.title} description={post.data.headline}>
-  <Content components={mdxComponents} source={fullSource} />
+  <Content components={mdxComponents} source={fullSource} fileName={fileName} />
 </BlogPost>
