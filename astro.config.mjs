@@ -16,6 +16,20 @@ const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 // alongside the root; in the main tree the two coincide, so it's a no-op there.
 const realNodeModules = realpathSync(path.join(projectRoot, "node_modules"));
 
+// Astro's dev server only auto-restarts for this literal file, plus whatever an integration
+// registers via addWatchFile (astro-expressive-code does that itself for ec.config.mjs). A local
+// remark/rehype plugin file has no integration to register it, so list any here.
+function watchLocalConfigFiles(paths) {
+  return {
+    name: "watch-local-config-files",
+    hooks: {
+      "astro:config:setup": ({ addWatchFile }) => {
+        for (const p of paths) addWatchFile(p);
+      },
+    },
+  };
+}
+
 export default defineConfig({
   site: "https://ryan.rowe.codes",
   output: "static",
@@ -23,6 +37,7 @@ export default defineConfig({
     expressiveCode(),
     react(),
     mdx(),
+    watchLocalConfigFiles([]),
   ],
   markdown: {
     remarkPlugins: [remarkMath],

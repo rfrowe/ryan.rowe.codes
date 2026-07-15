@@ -199,6 +199,12 @@ opaque HTML, so raw data passed as children arrives escaped.
 
   Themes track the site's `data-theme` (the header light/dark toggle), not
   `prefers-color-scheme` — wired in `ec.config.mjs`, so blocks follow the page.
+- Adding support for another markup feature (e.g. diagrams) usually means a new
+  remark/rehype plugin in `astro.config.mjs`'s `markdown.remarkPlugins` /
+  `rehypePlugins`. If the plugin is a local file rather than an installed
+  package, also add its path to the `watchLocalConfigFiles([...])` call in
+  `astro.config.mjs` — otherwise the dev server won't restart when you edit it
+  (only the literal `astro.config.mjs` file triggers that on its own).
 - To highlight a **runtime string** instead of a literal fence, use the same
   engine's component: `import { Code } from 'astro-expressive-code/components'`,
   then `<Code code={someString} lang="mdx" meta={…} />`. The `code` must be a
