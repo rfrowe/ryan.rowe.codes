@@ -10,6 +10,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ShipService, Store, StudioTools } from "../shared/services";
 import type { StudioStore } from "../state/store";
 import { STUDIO_TOOLS } from "../shared/mcpTools";
+import { BLOG_CONTENT_DIR } from "../sidecar/diffService";
 import { frontmatterTitle } from "../../src/lib/frontmatter";
 import type {
   DescribeResult,
@@ -24,9 +25,6 @@ import type {
 
 /** MCP server semver reported at `initialize` (shared by both transports). */
 export const STUDIO_MCP_VERSION = "0.1.0";
-
-/** Directory (relative to the blog repo root) that holds authored posts. */
-const BLOG_CONTENT_DIR = "src/content/blog";
 
 /** Injected dependencies for the tool implementations. */
 export interface StudioToolsDeps {

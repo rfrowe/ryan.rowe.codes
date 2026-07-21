@@ -9,6 +9,7 @@ import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewSta
 import type { BranchStatus, ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import type { SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
+import { isValidSlug, postStem } from "../../shared/slug";
 import { REST_BASE, WS_BASE } from "./config";
 
 // ---- mock enable check ----
@@ -168,8 +169,7 @@ function makeRev(n: number, text: string): DocRev {
 
 // The post's isolation branch, mirroring the sidecar: `blog/<date-qualified stem>`.
 function branchFromPath(path: string): string {
-  const base = path.replace(/\/post\.mdx$/, "").replace(/\.mdx$/, "");
-  return `blog/${base.split("/").pop() ?? ""}`;
+  return `blog/${postStem(path)}`;
 }
 
 // One open post's live state. agent is per-post (each tab has its own session), so a rename carries
@@ -272,7 +272,7 @@ class MockBackend {
     const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
     const date = (doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "").slice(0, 10);
     const [pathDate, pathSlug] = splitPath(doc.path);
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isValidSlug(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return { type: "post.namesync", synced: true };
     }
     const expectedStem = `${date}_${slug}`;
@@ -493,7 +493,7 @@ class MockBackend {
     // Derive the target from the post's own frontmatter; leave the text alone.
     const slug = doc.text.match(/^slug:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "";
     const date = (doc.text.match(/^created_at:\s*(.+?)\s*$/m)?.[1]?.replace(/^['"]|['"]$/g, "") ?? "").slice(0, 10);
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isValidSlug(slug) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       this.broadcast({ type: "post.result", requestId, ok: false, error: "cannot complete rename: invalid frontmatter" });
       return;
     }
