@@ -580,17 +580,6 @@ describe("store.writeByPath (editor autosave)", () => {
   });
 });
 
-describe("store.reloadActive (watcher-adopted disk changes)", () => {
-  it("emits file.changed with the given origin and a bumped rev", async () => {
-    const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
-    await store.openPost(SKYLINE_CANON);
-    const agentText = SKYLINE.replace("Body text.", "Agent wrote this.");
-    const reloaded = await store.reloadActive(agentText, "agent");
-    expect(reloaded.rev.n).toBe(2);
-    expect(messages.filter((m) => m.type === "file.changed").at(-1)).toMatchObject({ origin: "agent", path: SKYLINE_CANON });
-  });
-});
-
 describe("store.renamePost", () => {
   it("moves the file, renames the branch + worktree, and rewrites the frontmatter slug", async () => {
     const { store, fs, lines, messages } = newStore({ [HELLO_WT_FILE]: HELLO });

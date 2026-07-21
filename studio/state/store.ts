@@ -8,7 +8,6 @@
 
 import path from "node:path";
 
-import type { ApplyEditResult } from "../shared/mcpTools";
 import type { BranchStatus, ServerMessage } from "../shared/protocol";
 import type { Fs, GitRunner } from "../shared/seams";
 import type { Store } from "../shared/services";
@@ -16,7 +15,7 @@ import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/t
 import type { PostFrontmatter } from "../../src/lib/frontmatter";
 import { FRONTMATTER_BLOCK, FRONTMATTER_LINE, frontmatterTitle } from "../../src/lib/frontmatter";
 import { isValidSlug, postStem, slugFromPath, stemParts } from "../shared/slug";
-import { applyEdits, revsEqual } from "./applyEdits";
+import { revsEqual } from "./applyEdits";
 import { DEFAULT_PREVIEW_BASE, deriveUrl } from "../preview/deriveUrl";
 import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, type DiffScope } from "../sidecar/diffService";
 import { sha256Hex } from "../sidecar/hash";
@@ -384,8 +383,6 @@ export interface StudioStore extends Store {
    * reconcile against the file's owner when a tab switch out-lives an agent turn.
    */
   getDocByWatchPath(worktreeFilePath: string): { path: string; rev: DocRev } | null;
-  /** Adopt externally/agent-changed text as the active doc, emitting file.changed{origin}. */
-  reloadActive(text: string, origin: "external" | "agent"): Promise<ActiveDoc>;
   /**
    * Adopt disk text for the open post backing `worktreeFilePath` (not necessarily active), emitting
    * file.changed{origin}; null if no open post backs it. Lets an agent turn's writes land on the
@@ -910,7 +907,7 @@ export function createStore(deps: StoreDeps): StudioStore {
     });
   }
 
-  /** Persist exact text to the open post at `canonicalPath` (autosave); shared by writeByPath/writeActive. */
+  /** Persist exact text to the open post at `canonicalPath` (autosave). */
   function writeByPathImpl(canonicalPath: string, text: string, baseRev: DocRev): Promise<WriteResult> {
     return mutex.runExclusive(async (): Promise<WriteResult> => {
       const jailed = resolveJailed(canonicalPath) ?? canonicalPath;
@@ -1356,49 +1353,6 @@ export function createStore(deps: StoreDeps): StudioStore {
     sessionWorktreesRoot: worktreesRoot,
 
     writeByPath: writeByPathImpl,
-
-    writeActive(text, baseRev) {
-      const doc = activeDoc();
-      if (!doc) return Promise.reject(new Error("writeActive: no active document"));
-      return writeByPathImpl(doc.canonicalPath, text, baseRev);
-    },
-
-    applyEdit(input) {
-      // Part of the frozen `Store` contract. The agent edits its worktree with native tools rather
-      // than mutating through the store, so this only ever touches the active post.
-      return mutex.runExclusive(async (): Promise<ApplyEditResult> => {
-        const doc = activeDoc();
-        if (!doc) return { ok: false, error: "no-active-document" };
-        const jailed = resolveJailed(input.path);
-        if (!jailed || jailed !== doc.canonicalPath) return { ok: false, error: "path-not-allowed" };
-        if (!revsEqual(doc.rev, input.rev)) return { ok: false, error: "stale-rev", currentRev: doc.rev };
-        const diverged = await diskDivergedRev(doc);
-        if (diverged) return { ok: false, error: "stale-rev", currentRev: diverged };
-        const applied = applyEdits(doc.text, input.edits);
-        if (!applied.ok) return { ok: false, error: applied.error };
-        const nextRev: DocRev = { n: doc.rev.n + 1, hash: sha256Hex(applied.text) };
-        guard.expect(nextRev.hash, "agent");
-        await fs.writeFile(doc.worktreeFilePath, applied.text);
-        doc.text = applied.text;
-        doc.rev = nextRev;
-        publish({ type: "file.changed", path: doc.canonicalPath, text: doc.text, rev: doc.rev, origin: "agent" });
-        refreshPreview();
-        return { ok: true, rev: doc.rev };
-      });
-    },
-
-    reloadActive(text, origin) {
-      return mutex.runExclusive(async () => {
-        const doc = activeDoc();
-        if (!doc) throw new Error("reloadActive: no active document");
-        doc.text = text;
-        doc.rev = { n: doc.rev.n + 1, hash: sha256Hex(text) };
-        doc.title = frontmatterTitle(text) ?? doc.title;
-        publish({ type: "file.changed", path: doc.canonicalPath, text: doc.text, rev: doc.rev, origin });
-        refreshPreview();
-        return { path: doc.canonicalPath, text: doc.text, rev: doc.rev };
-      });
-    },
 
     reloadByWatchPath: reloadByWatchPathImpl,
 

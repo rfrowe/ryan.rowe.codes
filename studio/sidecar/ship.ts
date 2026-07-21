@@ -220,10 +220,10 @@ export function createShipService(deps: ShipDeps): ShipService {
       try {
         const pushRes = await git.git(["push", "-u", "origin", remoteBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
         if (pushRes.code !== 0) {
-          return { ok: false, error: pushFailedMessage(remoteBranch, detail(pushRes.stderr, pushRes.code)) };
+          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)) };
         }
       } catch (e) {
-        return { ok: false, error: pushFailedMessage(remoteBranch, errMsg(e)) };
+        return { ok: false, error: pushFailedMessage(errMsg(e)) };
       }
 
       // Create the PR. Partial failure here = branch pushed, but no PR yet.
@@ -378,7 +378,7 @@ function fail(step: string, stderr: string, code: number): { ok: false; error: s
   return { ok: false, error: `${step} failed: ${detail(stderr, code)}` };
 }
 
-function pushFailedMessage(branch: string, why: string): string {
+function pushFailedMessage(why: string): string {
   return (
     `git push failed: ${why}. The commit is committed locally but was not pushed; ` +
     `re-run ship or push manually from the worktree.`

@@ -13,7 +13,7 @@ import type { HookInput, HookJSONOutput, Options, SDKMessage } from "@anthropic-
 
 import type { AgentHost, StudioTools } from "../shared/services";
 import type { PromptContext, ServerMessage } from "../shared/protocol";
-import type { EditorContext, PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
+import type { PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
 import type { ActiveWorktree } from "../state/store";
 import { STUDIO_MCP_SERVER_NAME, STUDIO_TOOL_WILDCARD } from "../shared/mcpTools";
 import { createInProcessMcp } from "../mcp/inProcess";
@@ -29,8 +29,6 @@ export interface AgentHostDeps {
   skillInstructions: string;
   /** Sink for server-to-client messages. */
   emit: (msg: ServerMessage) => void;
-  /** Reserved for prompt enrichment. */
-  getEditorContext: () => EditorContext | null;
   /** So the doc-sync watcher soft-locks and classifies agent writes for the turn. */
   onTurnStart?: () => void;
   onTurnEnd?: () => void;

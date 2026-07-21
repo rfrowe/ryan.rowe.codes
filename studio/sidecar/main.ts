@@ -145,7 +145,6 @@ async function main(): Promise<void> {
     // The store is the single event bus: the agent host's stream reaches the browser through the
     // same store.subscribe fan-out the web server listens on.
     emit: (msg) => store.publish(msg),
-    getEditorContext: () => store.getEditorContext(),
     // Soft-lock the editor for the turn so the watcher treats the agent's writes as agent-origin
     // (live-applied) rather than external (reload banner).
     onTurnStart: () => docSync?.dispatch({ type: "prompt.dispatch" }),
