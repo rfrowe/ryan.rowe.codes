@@ -2,12 +2,11 @@
 // behind an explicit confirm gate. The sidecar (never the agent) runs git/gh. Surfaces the
 // resulting PR URL, or the error on failure.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ShipResponse } from "../../shared/protocol";
-import { getDiff, ship } from "./api";
-import { DiffView } from "./DiffView";
+import { ship } from "./api";
+import { DiffReviewSection, useDiffReview } from "./DiffReview";
 import { ScopeSelector } from "./ScopeSelector";
-import { ScopeWarning } from "./ScopeWarning";
 
 interface ShipPanelProps {
   /** The active post's isolation branch, display-only (the sidecar pushes its own regardless).
@@ -22,43 +21,14 @@ interface ShipPanelProps {
 type Phase = "editing" | "confirming" | "shipping" | "result";
 
 export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
-  const [scope, setScope] = useState<"post" | "all">("post");
-  const [status, setStatus] = useState<string>("");
-  const [diff, setDiff] = useState<string | null>(null);
-  const [diffError, setDiffError] = useState<string | null>(null);
-  const [outsideCount, setOutsideCount] = useState(0);
+  const review = useDiffReview();
+  const { scope, setScope } = review;
 
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
 
   const [phase, setPhase] = useState<Phase>("editing");
   const [result, setResult] = useState<ShipResponse | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setDiff(null);
-    setDiffError(null);
-    getDiff(scope)
-      .then((res) => {
-        if (!live) return;
-        // The sidecar replies { error } when the diff fails, and asJson doesn't throw on a 500;
-        // guard the shape so an undefined `diff` doesn't reach `diff.trim()` and white-screen.
-        if (typeof res.diff !== "string") {
-          const message = (res as { error?: string }).error;
-          setDiffError(message && message.trim() ? message : "failed to load diff");
-          return;
-        }
-        setStatus(res.status);
-        setDiff(res.diff);
-        setOutsideCount(res.outsideCount);
-      })
-      .catch((e: unknown) => {
-        if (live) setDiffError(e instanceof Error ? e.message : "failed to load diff");
-      });
-    return () => {
-      live = false;
-    };
-  }, [scope]);
 
   // Can't ship until the branch resolves, and never while the frontmatter/filename is desynced.
   const canShip = !!branch && subject.trim().length > 0 && nameSync.synced;
@@ -82,16 +52,7 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
         <ScopeSelector scope={scope} onChange={setScope} />
       </header>
 
-      {scope === "post" && outsideCount > 0 && (
-        <ScopeWarning count={outsideCount} onSwitchToAll={() => setScope("all")} />
-      )}
-
-      <section className="ship__diff">
-        <div className="ship__diff-status">{status || "working tree"}</div>
-        {diffError && <p className="ship__error">{diffError}</p>}
-        {!diffError && diff === null && <p className="ship__loading">Loading diff…</p>}
-        {diff !== null && (diff.trim() ? <DiffView diff={diff} /> : <p className="ship__loading">No changes to ship.</p>)}
-      </section>
+      <DiffReviewSection review={review} emptyLabel="No changes to ship." />
 
       {phase !== "result" && (
         <section className="ship__form">
