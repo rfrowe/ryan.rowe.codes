@@ -9,10 +9,8 @@ export const breakpoints = {
 
 export type Breakpoint = keyof typeof breakpoints;
 
-// Only the elevations actually used (0/3/10).
+// Only the elevation actually used (10).
 export const shadows: Record<number, string> = {
-  0: "none",
-  3: "0px 3px 3px -2px rgba(0,0,0,0.2),0px 3px 4px 0px rgba(0,0,0,0.14),0px 1px 8px 0px rgba(0,0,0,0.12)",
   10: "0px 6px 6px -3px rgba(0,0,0,0.2),0px 10px 14px 1px rgba(0,0,0,0.14),0px 4px 18px 3px rgba(0,0,0,0.12)",
 };
 
@@ -69,30 +67,30 @@ export const typography = {
 
 export const vars = createThemeContract({
   palette: {
-    primary: { main: null, light: null, dark: null, contrastText: null },
+    primary: { main: null },
     text: { primary: null, secondary: null, disabled: null },
     divider: null,
-    background: { default: null, paper: null },
+    background: { default: null },
     action: { active: null },
   },
 });
 
 const lightPalette = {
   palette: {
-    primary: { main: "#1976d2", light: "#42a5f5", dark: "#1565c0", contrastText: "#fff" },
+    primary: { main: "#1976d2" },
     text: { primary: "rgba(0, 0, 0, 0.87)", secondary: "rgba(0, 0, 0, 0.6)", disabled: "rgba(0, 0, 0, 0.38)" },
     divider: "rgba(0, 0, 0, 0.12)",
-    background: { default: "#fff", paper: "#fff" },
+    background: { default: "#fff" },
     action: { active: "rgba(0, 0, 0, 0.54)" },
   },
 };
 
 const darkPalette = {
   palette: {
-    primary: { main: "#90caf9", light: "#e3f2fd", dark: "#42a5f5", contrastText: "rgba(0, 0, 0, 0.87)" },
+    primary: { main: "#90caf9" },
     text: { primary: "#fff", secondary: "rgba(255, 255, 255, 0.7)", disabled: "rgba(255, 255, 255, 0.5)" },
     divider: "rgba(255, 255, 255, 0.12)",
-    background: { default: "#121212", paper: "#121212" },
+    background: { default: "#121212" },
     action: { active: "#fff" },
   },
 };

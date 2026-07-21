@@ -280,7 +280,7 @@ const COMPONENT_INVENTORY_CAP = 40;
 /** Styling/util entry points worth pointing a foreign-cwd agent at, each with a one-line hint. */
 const ENTRY_POINTS: ReadonlyArray<{ path: string; hint: string }> = [
   { path: "src/styles/theme.css.ts", hint: "vanilla-extract design tokens (MUI-like palette/spacing/type scale)" },
-  { path: "src/styles/theme-utils.ts", hint: "mediaUp/mediaDown/mediaBetween/spacing/transition helpers" },
+  { path: "src/styles/theme-utils.ts", hint: "mediaUp/mediaDown/spacing/transition helpers" },
   { path: "src/lib/useThemeMode.ts", hint: "light/dark theme-mode hook" },
   { path: "src/lib/blog.ts", hint: "parsePostDate (created_at → author-local day + instant)" },
   { path: "src/content.config.ts", hint: "blog collection frontmatter Zod schema" },
