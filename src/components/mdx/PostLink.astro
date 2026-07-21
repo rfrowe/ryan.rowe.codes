@@ -1,0 +1,15 @@
+---
+import { getCollection } from "astro:content";
+import { postHref, resolvePostBySlug } from "@lib/blog";
+import Link from "./Link.astro";
+
+interface Props {
+  slug: string;
+  class?: string;
+}
+
+const { slug, ...rest } = Astro.props as Props;
+const post = resolvePostBySlug(await getCollection("blog"), slug);
+---
+
+<Link href={postHref(post)} {...rest}><slot>{post.data.title}</slot></Link>
