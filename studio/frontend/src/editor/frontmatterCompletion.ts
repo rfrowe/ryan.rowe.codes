@@ -8,20 +8,7 @@
 
 import { snippetCompletion, type Completion, type CompletionSource } from "@codemirror/autocomplete";
 import { FRONTMATTER_FIELDS, type FrontmatterField } from "../../../../src/lib/frontmatter";
-
-/**
- * The frontmatter body: the span between the opening `---` and closing `---` (or end-of-doc if not
- * yet closed). Null when the source doesn't open with a `---` fence.
- */
-function frontmatterBody(doc: string): { from: number; to: number } | null {
-  const bomOffset = doc.charCodeAt(0) === 0xfeff ? 1 : 0;
-  const open = /^---[ \t]*\r?\n/.exec(doc.slice(bomOffset));
-  if (!open) return null;
-  const from = bomOffset + open[0].length;
-  const close = /\r?\n---[ \t]*(?:\r?\n|$)/.exec(doc.slice(from));
-  const to = close ? from + close.index : doc.length;
-  return { from, to };
-}
+import { frontmatterSpan } from "./frontmatterSpan";
 
 /** The tab-stop value snippet for a field, seeded with its hint (falling back to its example). */
 function valueSnippet(field: FrontmatterField): Completion {
@@ -46,10 +33,10 @@ function keySnippet(field: FrontmatterField): Completion {
 
 export const frontmatterCompletionSource: CompletionSource = (context) => {
   const doc = context.state.doc.toString();
-  const body = frontmatterBody(doc);
-  if (!body) return null;
+  const span = frontmatterSpan(doc);
+  if (!span) return null;
   // Fire only inside the block body, not on the `---` fences or the post body below.
-  if (context.pos < body.from || context.pos > body.to) return null;
+  if (context.pos < span.from || context.pos > span.bodyEnd) return null;
 
   const line = context.state.doc.lineAt(context.pos);
   const before = line.text.slice(0, context.pos - line.from);
@@ -69,7 +56,7 @@ export const frontmatterCompletionSource: CompletionSource = (context) => {
   const partial = keyMatch[1];
   const present = new Set(
     doc
-      .slice(body.from, body.to)
+      .slice(span.from, span.bodyEnd)
       .split(/\r?\n/)
       .map((l) => /^[ \t]*([A-Za-z0-9_-]+)[ \t]*:/.exec(l)?.[1])
       .filter((k): k is string => !!k && k !== partial),

@@ -17,6 +17,7 @@ import type { PermissionDecision, PermissionMode, Range, SessionMode } from "../
 import type { ActiveWorktree } from "../state/store";
 import { STUDIO_MCP_SERVER_NAME, STUDIO_TOOL_WILDCARD } from "../shared/mcpTools";
 import { createInProcessMcp } from "../mcp/inProcess";
+import { errorMessage } from "./errorMessage";
 
 /** Cap on streamed tool-result previews. */
 const RESULT_PREVIEW_MAX = 2000;
@@ -554,10 +555,6 @@ function redactSecrets(text: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… [truncated ${text.length - max} chars]` : text;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // ---- permission decision mapping ----

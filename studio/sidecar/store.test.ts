@@ -4,7 +4,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { Fs, GitRunner, RunResult } from "../shared/seams";
+import type { GitRunner } from "../shared/seams";
+import { makeFs, ok, type FakeFs } from "../state/fakeFs";
 import { SelfWriteGuard, createStore } from "../state/store";
 
 const REPO = "/repo";
@@ -26,29 +27,6 @@ const VALID_DOC = [
   "",
 ].join("\n");
 
-const ok: RunResult = { stdout: "", stderr: "", code: 0 };
-
-interface FakeFs extends Fs {
-  store: Map<string, string>;
-}
-
-function makeFs(seed: Record<string, string> = {}): FakeFs {
-  const store = new Map(Object.entries(seed));
-  return {
-    store,
-    async readFile(p) {
-      const v = store.get(p);
-      if (v === undefined) throw new Error(`ENOENT: ${p}`);
-      return v;
-    },
-    async writeFile(p, data) {
-      store.set(p, data);
-    },
-    async exists(p) {
-      return store.has(p);
-    },
-  };
-}
 
 function makeGit(fs: FakeFs): GitRunner {
   return {
