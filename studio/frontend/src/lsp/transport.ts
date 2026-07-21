@@ -4,10 +4,9 @@
 // is open so the client's initial `initialize` doesn't have to wait for the connection.
 
 import type { Transport } from "@codemirror/lsp-client";
+import { ReconnectingSocket, type SocketStatus } from "../reconnectingSocket";
 import { STUDIO_TOKEN, WS_BASE } from "../config";
 
-const INITIAL_BACKOFF_MS = 500;
-const MAX_BACKOFF_MS = 5000;
 /** Close code the sidecar uses when a newer tab takes over the single LSP session (don't reconnect). */
 const SUPERSEDED_CODE = 4000;
 
@@ -18,10 +17,9 @@ function lspWsUrl(): string {
 }
 
 /** Connection state of the LSP transport, surfaced to the stack-status popover. */
-export type LspTransportStatus = "connecting" | "open" | "closed";
+export type LspTransportStatus = SocketStatus;
 
-export class LspTransport implements Transport {
-  private ws: WebSocket | null = null;
+export class LspTransport extends ReconnectingSocket implements Transport {
   private readonly handlers = new Set<(value: string) => void>();
   /** Fired on every reopen *after* the first, so the client can re-`initialize` a fresh server. */
   private readonly reopenHandlers = new Set<() => void>();
@@ -29,41 +27,29 @@ export class LspTransport implements Transport {
   private status: LspTransportStatus = "connecting";
   private queued: string[] = [];
   private opened = false;
-  private disposed = false;
-  private backoff = INITIAL_BACKOFF_MS;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  connect(): void {
-    if (this.disposed) return;
-    this.setStatus("connecting");
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(lspWsUrl());
-    } catch {
-      this.scheduleReconnect();
-      return;
-    }
-    this.ws = ws;
-    ws.onopen = () => {
-      this.backoff = INITIAL_BACKOFF_MS;
-      for (const msg of this.queued) ws.send(msg);
-      this.queued = [];
-      this.setStatus("open");
-      if (this.opened) for (const h of [...this.reopenHandlers]) h();
-      this.opened = true;
-    };
-    ws.onmessage = (ev: MessageEvent) => {
-      if (typeof ev.data !== "string") return;
-      for (const h of [...this.handlers]) h(ev.data);
-    };
-    ws.onclose = (ev: CloseEvent) => {
-      if (this.ws === ws) this.ws = null;
-      this.setStatus("closed");
-      // 4000 = a newer tab superseded this socket; stay dormant so two tabs don't ping-pong the session.
-      if (ev.code === SUPERSEDED_CODE) return;
-      this.scheduleReconnect();
-    };
-    ws.onerror = () => ws.close();
+  protected url(): string {
+    return lspWsUrl();
+  }
+
+  protected handleOpen(ws: WebSocket): void {
+    for (const msg of this.queued) ws.send(msg);
+    this.queued = [];
+    this.setStatus("open");
+    if (this.opened) for (const h of [...this.reopenHandlers]) h();
+    this.opened = true;
+  }
+
+  protected handleMessage(data: string): void {
+    for (const h of [...this.handlers]) h(data);
+  }
+
+  protected handleClose(ws: WebSocket, ev: CloseEvent): void {
+    if (this.ws === ws) this.ws = null;
+    this.setStatus("closed");
+    // 4000 = a newer tab superseded this socket; stay dormant so two tabs don't ping-pong the session.
+    if (ev.code === SUPERSEDED_CODE) return;
+    this.scheduleReconnect();
   }
 
   /** Subscribe to connection-state changes; fires immediately with the current status. */
@@ -72,7 +58,7 @@ export class LspTransport implements Transport {
     handler(this.status);
   }
 
-  private setStatus(status: LspTransportStatus): void {
+  protected setStatus(status: LspTransportStatus): void {
     if (this.status === status) return;
     this.status = status;
     for (const h of [...this.statusHandlers]) h(status);
@@ -97,29 +83,5 @@ export class LspTransport implements Transport {
   /** Register a callback fired when the socket reopens after a drop (to re-initialize the client). */
   onReopen(handler: () => void): void {
     this.reopenHandlers.add(handler);
-  }
-
-  dispose(): void {
-    this.disposed = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    const ws = this.ws;
-    this.ws = null;
-    if (ws) {
-      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-      ws.close();
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.disposed || this.reconnectTimer) return;
-    const delay = this.backoff;
-    this.backoff = Math.min(this.backoff * 2, MAX_BACKOFF_MS);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, delay);
   }
 }
