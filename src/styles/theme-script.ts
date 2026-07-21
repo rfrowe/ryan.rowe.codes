@@ -44,7 +44,7 @@ const armThemeTransition = () => {
  * new mode. Client-only (touches document/window at call time).
  */
 export const toggleThemeMode = (): ThemeMode => {
-  const current: ThemeMode = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  const current = readThemeMode();
   const next: ThemeMode = current === "light" ? "dark" : "light";
   armThemeTransition();
   document.documentElement.dataset.theme = next;

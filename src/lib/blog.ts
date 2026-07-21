@@ -46,3 +46,8 @@ export function formatDisplayDate(date: PostDate): string {
   const [year, month, day] = date.day.split("-");
   return `${DISPLAY_MONTHS[Number(month) - 1]} ${Number(day)}, ${year}`;
 }
+
+/** The dated URL for a post, `/blog/<author-local day>/<slug>`, from its blog collection entry. */
+export function postHref(post: { data: { created_at: PostDate; slug: string } }): string {
+  return `/blog/${post.data.created_at.day}/${post.data.slug}`;
+}
