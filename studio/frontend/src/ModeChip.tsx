@@ -6,8 +6,9 @@
 //   manual:       pause, grey          (the SDK's "default": pause and ask)
 // Deliberately exposes only the safe subset; bypassPermissions/dontAsk/plan are not offered.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import type { PermissionMode } from "../../shared/types";
+import { useDismissOnOutsideClick } from "./useDismissOnOutsideClick";
 
 interface ModeChipProps {
   mode: PermissionMode;
@@ -50,15 +51,7 @@ export function ModeChip({ mode, onSetMode }: ModeChipProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Dismiss the popover on an outside click (mirrors McpStatusBar).
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  useDismissOnOutsideClick(rootRef, open, () => setOpen(false));
 
   const current = metaFor(mode);
 

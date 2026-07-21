@@ -521,42 +521,12 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     <div className="editor">
       <div className="editor__surface" ref={hostRef} />
       {staleRebased && (
-        <div
-          className="editor__notice"
-          role="status"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            zIndex: 30,
-            padding: "6px 10px",
-            fontSize: 12,
-            background: "var(--bg-2)",
-            color: "var(--fg)",
-            borderBottom: "1px solid var(--accent-strong)",
-          }}
-        >
+        <div className="editor__notice" role="status">
           The file changed on disk — your edits were rebased onto the latest version and re-saved.
         </div>
       )}
       {saveError && (
-        <div
-          className="editor__notice"
-          role="status"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            zIndex: 30,
-            padding: "6px 10px",
-            fontSize: 12,
-            background: "var(--bg-2)",
-            color: "var(--fg)",
-            borderBottom: "1px solid var(--accent-strong)",
-          }}
-        >
+        <div className="editor__notice" role="status">
           Couldn't save your latest edits — retrying… (your changes are safe in the editor)
         </div>
       )}

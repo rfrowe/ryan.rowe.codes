@@ -667,6 +667,20 @@ body {
   padding: 10px 0;
 }
 
+/* Save/rebase status strip pinned across the top of the editor surface. */
+.editor__notice {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--bg-2);
+  color: var(--fg);
+  border-bottom: 1px solid var(--accent-strong);
+}
+
 /* Editor tooltip theming (autocomplete dropdown, completion info popout, LSP hover / signature help)
    lives in a CodeMirror `EditorView.theme({ dark: true })` in Editor.tsx — a plain CSS `.cm-tooltip`
    rule here loses to CodeMirror's injected light base theme. `.cm-completionInfo code` inline code is

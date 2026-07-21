@@ -2,7 +2,8 @@
 // broadcast; clicking opens a popover listing each server's status with an enable/disable
 // toggle that maps to `mcp.setEnabled`. Re-renders whenever a new mcp.status arrives.
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useDismissOnOutsideClick } from "./useDismissOnOutsideClick";
 
 export interface McpServerStatus {
   name: string;
@@ -43,15 +44,7 @@ export function McpStatusBar({ servers, onToggle }: McpStatusBarProps) {
   const allGood = total > 0 && !attention && connected === servers.filter((s) => s.enabled).length;
   const dotState = attention ? "warn" : allGood ? "ok" : "idle";
 
-  // Dismiss the popover on an outside click.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  useDismissOnOutsideClick(rootRef, open, () => setOpen(false));
 
   return (
     <div className="mcp" ref={rootRef}>
