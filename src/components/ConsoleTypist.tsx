@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useState, type JSX } from "react";
 import * as styles from "./ConsoleTypist.css.ts";
 
 export interface ConsoleTypistProps {
   text: string;
-  startDelayMillis?: number;
   onTypingFinished?: () => void;
-  onTypingFinishedDelayMillis?: number;
-  cursorIntervalMillis?: number;
-  getInsertionDelayMillis?: (idx: number) => number;
-  deletionDelayMillis?: number;
   className?: string;
   /**
    * Type once and hold: type the text a single time and leave it static -- no erase/retype
@@ -20,7 +15,12 @@ export interface ConsoleTypistProps {
 
 const defaultCharacterDelay = () => Math.random() * 75 + 25;
 
-function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, boolean, (flash: boolean) => void] {
+const startDelayMillis = 250;
+const onTypingFinishedDelayMillis = 5000;
+const cursorIntervalMillis = 1000;
+const deletionDelayMillis = 25;
+
+function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, (flash: boolean) => void] {
   const [flashEnabled, setFlashEnabled] = useState(false);
 
   const cursor = useMemo(
@@ -35,11 +35,7 @@ function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, boolean, 
     [flashEnabled, flashIntervalMillis],
   );
 
-  // `flash` is ignored -- this just toggles. Both call sites below are positioned so the
-  // toggle lands on the intended value.
-  const setCursorFlashing = useCallback((_flash: boolean) => setFlashEnabled(state => !state), []);
-
-  return [cursor, flashEnabled, setCursorFlashing];
+  return [cursor, setFlashEnabled];
 }
 
 /**
@@ -53,18 +49,13 @@ function useBlinkingCursor(flashIntervalMillis: number): [JSX.Element, boolean, 
  */
 const ConsoleTypist = ({
   text,
-  startDelayMillis = 250,
   onTypingFinished,
-  onTypingFinishedDelayMillis = 5000,
-  cursorIntervalMillis = 1000,
-  getInsertionDelayMillis = defaultCharacterDelay,
-  deletionDelayMillis = 25,
   className,
   once = false,
 }: ConsoleTypistProps) => {
   const [idx, setIdx] = useState(0);
   const [currentText, setCurrentText] = useState(text);
-  const [cursor, cursorIsFlashing, setCursorFlashing] = useBlinkingCursor(cursorIntervalMillis);
+  const [cursor, setCursorFlashing] = useBlinkingCursor(cursorIntervalMillis);
 
   // Type or erase letters at a pseudo-random, relatively realistic speed.
   useEffect(() => {
@@ -78,7 +69,7 @@ const ConsoleTypist = ({
         setCurrentText(text);
         setIdx(0);
       } else if (idx < text.length) {
-        timer = setTimeout(() => setIdx(prev => prev + 1), getInsertionDelayMillis(idx));
+        timer = setTimeout(() => setIdx(prev => prev + 1), defaultCharacterDelay());
       } else {
         // Finished: hold the fully-typed text, flash the cursor, and notify exactly once.
         setCursorFlashing(true);
@@ -93,7 +84,7 @@ const ConsoleTypist = ({
     // When text has changed, erase back to start; otherwise, type entirety of text character by character.
     if (currentText === text) {
       if (idx < text.length) {
-        timer = setTimeout(() => setIdx(prev => prev + 1), getInsertionDelayMillis(idx));
+        timer = setTimeout(() => setIdx(prev => prev + 1), defaultCharacterDelay());
       } else if (idx === text.length) {
         // Finished typing desired text, notify listener after appropriate delay.
         setCursorFlashing(true);
@@ -102,9 +93,7 @@ const ConsoleTypist = ({
     } else {
       if (idx > 0) {
         timer = setTimeout(() => setIdx(prev => prev - 1), deletionDelayMillis);
-        if (cursorIsFlashing) {
-          setCursorFlashing(false);
-        }
+        setCursorFlashing(false);
       } else {
         // Successfully erased to start, begin typing new text.
         timer = setTimeout(() => {
