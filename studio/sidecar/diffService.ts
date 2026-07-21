@@ -14,6 +14,12 @@ export function underBlog(p: string): boolean {
   return p === BLOG_CONTENT_DIR || p.startsWith(`${BLOG_CONTENT_DIR}/`);
 }
 
+/** Whether `refs/remotes/origin/<branch>` exists. Offline-safe: reads the remote-tracking ref on disk,
+ *  never fetches, so a deleted-upstream ref can still read as present until the next fetch. */
+export async function originRefExists(git: GitRunner, cwd: string, branch: string): Promise<boolean> {
+  return (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd })).code === 0;
+}
+
 // Each worktree checks out exactly one post, so scoping to the whole blog dir and scoping to that
 // post's own path produce the same tracked-file set in practice, but the wider pathspec keeps a
 // staged rename's old half in view (a precise pathspec would show "new file" instead of a rename).

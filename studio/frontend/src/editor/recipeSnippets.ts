@@ -6,16 +6,7 @@
 // strings, not template literals, so their `${…}` reach snippetCompletion literally as tab stops.
 
 import { snippetCompletion, type Completion, type CompletionSource } from "@codemirror/autocomplete";
-
-/** Offset just past the leading `---`…`---` block, or 0 when the source has no frontmatter. */
-function frontmatterEnd(doc: string): number {
-  const bomOffset = doc.charCodeAt(0) === 0xfeff ? 1 : 0;
-  const open = /^---[ \t]*\r?\n/.exec(doc.slice(bomOffset));
-  if (!open) return 0;
-  const from = bomOffset + open[0].length;
-  const close = /\r?\n---[ \t]*(?:\r?\n|$)/.exec(doc.slice(from));
-  return close ? from + close.index + close[0].length : doc.length;
-}
+import { frontmatterSpan } from "./frontmatterSpan";
 
 const snip = (template: string, label: string, detail: string, info: string): Completion =>
   snippetCompletion(template, { label, detail, info, type: "keyword" });
@@ -69,7 +60,8 @@ const RECIPES: Completion[] = [
 
 export const recipeSnippetSource: CompletionSource = (context) => {
   const doc = context.state.doc.toString();
-  if (context.pos < frontmatterEnd(doc)) return null; // the frontmatter region isn't ours
+  // Skip the leading frontmatter block; 0 (no frontmatter) leaves the whole doc ours.
+  if (context.pos < (frontmatterSpan(doc)?.blockEnd ?? 0)) return null;
   const word = context.matchBefore(/[A-Za-z][\w-]*/);
   if (!word && !context.explicit) return null; // don't surface on every keystroke with no prefix
   return { from: word ? word.from : context.pos, options: RECIPES, validFor: /^[\w-]*$/ };

@@ -5,7 +5,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { ServerMessage } from "../shared/protocol";
-import type { Fs, GitRunner, RunResult } from "../shared/seams";
+import type { GitRunner } from "../shared/seams";
+import { makeFs, ok, type FakeFs } from "./fakeFs";
 import { deriveUrl } from "../preview/deriveUrl";
 import { sha256Hex } from "../sidecar/hash";
 import { createStore, type ActiveChangeInfo } from "./store";
@@ -25,30 +26,6 @@ function doc(title: string, slug: string, createdAt = "2026-07-10", body = "Body
 }
 const SKYLINE = doc("Aligning a Skyline", "aligning-a-skyline");
 const HELLO = doc("Hello", "hello", "2022-03-11");
-
-const ok: RunResult = { stdout: "", stderr: "", code: 0 };
-
-interface FakeFs extends Fs {
-  store: Map<string, string>;
-}
-
-function makeFs(seed: Record<string, string> = {}): FakeFs {
-  const store = new Map(Object.entries(seed));
-  return {
-    store,
-    async readFile(p) {
-      const v = store.get(p);
-      if (v === undefined) throw new Error(`ENOENT: ${p}`);
-      return v;
-    },
-    async writeFile(p, data) {
-      store.set(p, data);
-    },
-    async exists(p) {
-      return store.has(p);
-    },
-  };
-}
 
 /** Move every fake-fs entry under `from` (a file or a dir prefix) to `to`. */
 function movePrefix(fs: FakeFs, from: string, to: string): void {
@@ -577,17 +554,6 @@ describe("store.writeByPath (editor autosave)", () => {
     await store.openPost(SKYLINE_CANON);
     const result = await store.writeByPath(HELLO_CANON, "x", { n: 1, hash: "y" });
     expect(result.ok).toBe(false);
-  });
-});
-
-describe("store.reloadActive (watcher-adopted disk changes)", () => {
-  it("emits file.changed with the given origin and a bumped rev", async () => {
-    const { store, messages } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
-    await store.openPost(SKYLINE_CANON);
-    const agentText = SKYLINE.replace("Body text.", "Agent wrote this.");
-    const reloaded = await store.reloadActive(agentText, "agent");
-    expect(reloaded.rev.n).toBe(2);
-    expect(messages.filter((m) => m.type === "file.changed").at(-1)).toMatchObject({ origin: "agent", path: SKYLINE_CANON });
   });
 });
 

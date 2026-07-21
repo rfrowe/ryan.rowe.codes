@@ -5,10 +5,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { SaveDraftResponse } from "../../shared/protocol";
-import { getDiff, saveDraft } from "./api";
-import { DiffView } from "./DiffView";
+import { saveDraft } from "./api";
+import { DiffReviewSection, useDiffReview } from "./DiffReview";
 import { ScopeSelector } from "./ScopeSelector";
-import { ScopeWarning } from "./ScopeWarning";
 import { slugFromPath } from "./slug";
 
 interface SaveDraftPanelProps {
@@ -25,11 +24,8 @@ type Phase = "editing" | "saving" | "result";
 
 export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelProps) {
   const label = title || slugFromPath(path);
-  const [scope, setScope] = useState<"post" | "all">("post");
-  const [status, setStatus] = useState<string>("");
-  const [diff, setDiff] = useState<string | null>(null);
-  const [diffError, setDiffError] = useState<string | null>(null);
-  const [outsideCount, setOutsideCount] = useState(0);
+  const review = useDiffReview(path);
+  const { scope, setScope } = review;
 
   const [subject, setSubject] = useState(`Save draft: ${label}`);
   const [body, setBody] = useState("");
@@ -41,32 +37,6 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
   useEffect(() => () => {
     alive.current = false;
   }, []);
-
-  useEffect(() => {
-    let live = true;
-    setDiff(null);
-    setDiffError(null);
-    getDiff(scope, path)
-      .then((res) => {
-        if (!live) return;
-        // The sidecar replies { error } when the diff fails, and asJson doesn't throw on a 500;
-        // guard the shape so an undefined `diff` doesn't reach `diff.trim()` and white-screen.
-        if (typeof res.diff !== "string") {
-          const message = (res as { error?: string }).error;
-          setDiffError(message && message.trim() ? message : "failed to load diff");
-          return;
-        }
-        setStatus(res.status);
-        setDiff(res.diff);
-        setOutsideCount(res.outsideCount);
-      })
-      .catch((e: unknown) => {
-        if (live) setDiffError(e instanceof Error ? e.message : "failed to load diff");
-      });
-    return () => {
-      live = false;
-    };
-  }, [path, scope]);
 
   const canSave = subject.trim().length > 0;
 
@@ -90,17 +60,7 @@ export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelP
         <ScopeSelector scope={scope} onChange={setScope} />
       </header>
 
-      {scope === "post" && outsideCount > 0 && (
-        <ScopeWarning count={outsideCount} onSwitchToAll={() => setScope("all")} />
-      )}
-
-      <section className="ship__diff">
-        <div className="ship__diff-status">{status || "working tree"}</div>
-        {diffError && <p className="ship__error">{diffError}</p>}
-        {!diffError && diff === null && <p className="ship__loading">Loading diff…</p>}
-        {diff !== null &&
-          (diff.trim() ? <DiffView diff={diff} /> : <p className="ship__loading">Nothing uncommitted — the branch is pushed as-is.</p>)}
-      </section>
+      <DiffReviewSection review={review} emptyLabel="Nothing uncommitted — the branch is pushed as-is." />
 
       {phase !== "result" && (
         <section className="ship__form">

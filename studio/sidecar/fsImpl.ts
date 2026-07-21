@@ -1,8 +1,9 @@
 // The `Fs` seam backed by the real filesystem (node:fs/promises). Injected into the
 // store and file watcher so their logic stays unit-testable against an in-memory fake.
 
-import { access, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import type { Fs } from "../shared/seams";
+import { pathExists } from "./pathExists";
 
 export const nodeFs: Fs = {
   readFile(path) {
@@ -11,12 +12,7 @@ export const nodeFs: Fs = {
   async writeFile(path, data) {
     await writeFile(path, data, "utf8");
   },
-  async exists(path) {
-    try {
-      await access(path);
-      return true;
-    } catch {
-      return false;
-    }
+  exists(path) {
+    return pathExists(path);
   },
 };

@@ -92,7 +92,6 @@ describe("renameSessionKey", () => {
       getActiveWorktree: () => null,
       skillInstructions: "",
       emit: () => {},
-      getEditorContext: () => null,
     });
   }
   const sessionsOf = (host: ReturnType<typeof makeHost>) =>

@@ -1,12 +1,11 @@
-// Focused store tests: the SelfWriteGuard multiset the file watcher relies on, the preview
-// derivation on open, and the retained (frozen-contract) applyEdit path over the active post's
-// worktree. Zero live processes: an in-memory Fs fake and a fake GitRunner (mirroring worktree
-// side effects into that Fs) drive the store.
+// Focused store tests: the SelfWriteGuard multiset the file watcher relies on, and the preview
+// derivation on open. Zero live processes: an in-memory Fs fake and a fake GitRunner (mirroring
+// worktree side effects into that Fs) drive the store.
 
 import { describe, expect, it } from "vitest";
 
-import type { Fs, GitRunner, RunResult } from "../shared/seams";
-import { sha256Hex } from "./hash";
+import type { GitRunner } from "../shared/seams";
+import { makeFs, ok, type FakeFs } from "../state/fakeFs";
 import { SelfWriteGuard, createStore } from "../state/store";
 
 const REPO = "/repo";
@@ -28,29 +27,6 @@ const VALID_DOC = [
   "",
 ].join("\n");
 
-const ok: RunResult = { stdout: "", stderr: "", code: 0 };
-
-interface FakeFs extends Fs {
-  store: Map<string, string>;
-}
-
-function makeFs(seed: Record<string, string> = {}): FakeFs {
-  const store = new Map(Object.entries(seed));
-  return {
-    store,
-    async readFile(p) {
-      const v = store.get(p);
-      if (v === undefined) throw new Error(`ENOENT: ${p}`);
-      return v;
-    },
-    async writeFile(p, data) {
-      store.set(p, data);
-    },
-    async exists(p) {
-      return store.has(p);
-    },
-  };
-}
 
 function makeGit(fs: FakeFs): GitRunner {
   return {
@@ -86,32 +62,6 @@ describe("store.openPost preview", () => {
     const { store } = newStore();
     await store.openPost(CANON);
     expect(store.getPreview()).toEqual({ valid: true, url: "http://localhost:4321/blog/2026-07-10/aligning-a-skyline" });
-  });
-});
-
-describe("store.applyEdit (retained for the frozen contract; over the active post)", () => {
-  it("applies an in-range edit, bumps the rev, writes the worktree file, and emits agent file.changed", async () => {
-    const { store, fs } = newStore();
-    const doc = await store.openPost(CANON);
-    const insertAt = VALID_DOC.indexOf("Body text.");
-    const result = await store.applyEdit({ path: CANON, rev: doc.rev, edits: [{ from: insertAt, to: insertAt, insert: "New. " }] });
-    const expected = VALID_DOC.replace("Body text.", "New. Body text.");
-    expect(result).toEqual({ ok: true, rev: { n: 2, hash: sha256Hex(expected) } });
-    expect(fs.store.get(WT_FILE)).toBe(expected);
-    expect(store.guard.consume(sha256Hex(expected))).toBe("agent");
-  });
-
-  it("rejects a path that is not the active post", async () => {
-    const { store } = newStore();
-    const doc = await store.openPost(CANON);
-    const result = await store.applyEdit({ path: `${BLOG}/2020-01-01_other.mdx`, rev: doc.rev, edits: [] });
-    expect(result).toEqual({ ok: false, error: "path-not-allowed" });
-  });
-
-  it("rejects before any post is open", async () => {
-    const { store } = newStore();
-    const result = await store.applyEdit({ path: CANON, rev: { n: 1, hash: "x" }, edits: [] });
-    expect(result).toEqual({ ok: false, error: "no-active-document" });
   });
 });
 

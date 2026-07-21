@@ -46,3 +46,20 @@ export function formatDisplayDate(date: PostDate): string {
   const [year, month, day] = date.day.split("-");
   return `${DISPLAY_MONTHS[Number(month) - 1]} ${Number(day)}, ${year}`;
 }
+
+/** The dated URL for a post, `/blog/<author-local day>/<slug>`, from its blog collection entry. */
+export function postHref(post: { data: { created_at: PostDate; slug: string } }): string {
+  return `/blog/${post.data.created_at.day}/${post.data.slug}`;
+}
+
+/**
+ * The post carrying `slug`, resolved against the collection at build time. Throws unless exactly one
+ * matches, so a `<PostLink>` to a missing (or ambiguous) slug fails the build instead of shipping a 404.
+ */
+export function resolvePostBySlug<T extends { data: { slug: string } }>(posts: readonly T[], slug: string): T {
+  const matches = posts.filter((post) => post.data.slug === slug);
+  if (matches.length !== 1) {
+    throw new Error(`resolvePostBySlug("${slug}"): ${matches.length === 0 ? "matches no post" : `matches ${matches.length} posts`}.`);
+  }
+  return matches[0];
+}

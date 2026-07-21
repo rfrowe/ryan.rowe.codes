@@ -19,6 +19,7 @@ import { nodeFs } from "./fsImpl";
 import { createStore } from "../state/store";
 import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
+import { originRefExists } from "./diffService";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
 import { createStudioTools } from "../mcp/tools";
@@ -145,7 +146,6 @@ async function main(): Promise<void> {
     // The store is the single event bus: the agent host's stream reaches the browser through the
     // same store.subscribe fan-out the web server listens on.
     emit: (msg) => store.publish(msg),
-    getEditorContext: () => store.getEditorContext(),
     // Soft-lock the editor for the turn so the watcher treats the agent's writes as agent-origin
     // (live-applied) rather than external (reload banner).
     onTurnStart: () => docSync?.dispatch({ type: "prompt.dispatch" }),
@@ -394,9 +394,7 @@ async function resolveStudioBranch(
   sessionBranch: string,
 ): Promise<{ ref: string; worktree: string }> {
   const worktree = REPO_ROOT;
-  const onOrigin =
-    (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${sessionBranch}`], { cwd: REPO_ROOT }))
-      .code === 0;
+  const onOrigin = await originRefExists(git, REPO_ROOT, sessionBranch);
   if (!onOrigin) return { ref: sessionBranch, worktree };
   const counted = await git.git(["rev-list", "--count", `origin/${sessionBranch}..${sessionBranch}`], { cwd: REPO_ROOT });
   const ahead = Number.parseInt(counted.stdout.trim() || "0", 10) || 0;

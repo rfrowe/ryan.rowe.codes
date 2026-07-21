@@ -6,13 +6,16 @@ import H5 from "./mdx/H5.astro";
 import H6 from "./mdx/H6.astro";
 import P from "./mdx/P.astro";
 import Link from "./mdx/Link.astro";
+import PostLink from "./mdx/PostLink.astro";
 
 /**
- * MDX tag overrides passed to `<Content components={mdxComponents} />` in the post route.
- * Only the tags listed here are overridden; everything else renders as plain HTML.
+ * Component map passed to `<Content components={mdxComponents} />` in the post route: lowercase keys
+ * override the matching HTML tag; capitalized keys (e.g. PostLink) are provided to MDX so a post can
+ * use them without importing. Everything else renders as plain HTML.
  */
 export const mdxComponents = {
   a: Link,
+  PostLink,
   h1: H1,
   h2: H2,
   h3: H3,

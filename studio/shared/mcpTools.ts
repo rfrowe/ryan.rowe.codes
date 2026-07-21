@@ -2,7 +2,7 @@
 // `studio/mcp/tools.ts` (transport-agnostic: mounted in-process for the embedded
 // panel and over StreamableHTTP for external clients). Frozen contract.
 
-import type { DocRev, EditorContext, PreviewState } from "./types";
+import type { EditorContext, PreviewState } from "./types";
 
 export const STUDIO_MCP_SERVER_NAME = "studio";
 
@@ -14,9 +14,6 @@ export const STUDIO_TOOLS = {
   previewStatus: "preview_status",
   openPr: "open_pr",
 } as const;
-
-/** Fully-qualified tool name as the agent sees it, e.g. `mcp__studio__scaffold_post`. */
-export type StudioToolName = `mcp__${typeof STUDIO_MCP_SERVER_NAME}__${(typeof STUDIO_TOOLS)[keyof typeof STUDIO_TOOLS]}`;
 
 /** Wildcard for `allowedTools` auto-approval (acceptEdits does not cover MCP tools). */
 export const STUDIO_TOOL_WILDCARD = `mcp__${STUDIO_MCP_SERVER_NAME}__*` as const;
@@ -36,10 +33,6 @@ export interface DescribeResult {
 }
 
 export type GetEditorContextResult = EditorContext | { error: "no-editor-context" };
-
-export type ApplyEditResult =
-  | { ok: true; rev: DocRev }
-  | { ok: false; error: "stale-rev" | "overlap" | "out-of-range" | "path-not-allowed" | "no-active-document"; currentRev?: DocRev };
 
 export interface PostSummary {
   path: string;

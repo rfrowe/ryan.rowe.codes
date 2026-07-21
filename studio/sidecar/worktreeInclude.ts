@@ -4,10 +4,11 @@
 // pattern and is gitignored, so tracked files are never duplicated. node_modules is out of scope here
 // (large and regenerable; the sidecar symlinks it separately).
 
-import { access, copyFile as nodeCopyFile, mkdir } from "node:fs/promises";
+import { copyFile as nodeCopyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { GitRunner } from "../shared/seams";
+import { pathExists } from "./pathExists";
 
 const WORKTREEINCLUDE_FILE = ".worktreeinclude";
 
@@ -24,13 +25,8 @@ export interface WorktreeIncludeIo {
 }
 
 const nodeIo: WorktreeIncludeIo = {
-  async exists(p) {
-    try {
-      await access(p);
-      return true;
-    } catch {
-      return false;
-    }
+  exists(p) {
+    return pathExists(p);
   },
   async mkdirp(dir) {
     await mkdir(dir, { recursive: true });

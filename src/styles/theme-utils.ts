@@ -13,9 +13,6 @@ export const mediaUp = (bp: Breakpoint): string => `screen and (min-width: ${bre
 // boundary pixel.
 export const mediaDown = (bp: Breakpoint): string => `screen and (max-width: ${breakpoints[bp] - 0.05}px)`;
 
-export const mediaBetween = (start: Breakpoint, end: Breakpoint): string =>
-  `screen and (min-width: ${breakpoints[start]}px) and (max-width: ${breakpoints[end] - 0.05}px)`;
-
 const spacingUnitPx = 8;
 
 const toSpacingValue = (value: number | string): string => (typeof value === "number" ? `${value * spacingUnitPx}px` : value);

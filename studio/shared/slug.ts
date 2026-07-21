@@ -5,7 +5,7 @@
  * A post slug: lowercase alphanumerics and hyphens, starting alphanumeric. Names the URL segment,
  * the filename stem, and the isolation branch, so every derivation holds to this one shape.
  */
-export const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 /** Whether `slug` is a valid post slug (see {@link SLUG_RE}). */
 export function isValidSlug(slug: string): boolean {

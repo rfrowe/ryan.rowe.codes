@@ -10,6 +10,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ShipService, Store, StudioTools } from "../shared/services";
 import type { StudioStore } from "../state/store";
 import { STUDIO_TOOLS } from "../shared/mcpTools";
+import { BLOG_CONTENT_DIR } from "../sidecar/diffService";
 import { frontmatterTitle } from "../../src/lib/frontmatter";
 import type {
   DescribeResult,
@@ -24,9 +25,6 @@ import type {
 
 /** MCP server semver reported at `initialize` (shared by both transports). */
 export const STUDIO_MCP_VERSION = "0.1.0";
-
-/** Directory (relative to the blog repo root) that holds authored posts. */
-const BLOG_CONTENT_DIR = "src/content/blog";
 
 /** Injected dependencies for the tool implementations. */
 export interface StudioToolsDeps {
@@ -280,7 +278,7 @@ const COMPONENT_INVENTORY_CAP = 40;
 /** Styling/util entry points worth pointing a foreign-cwd agent at, each with a one-line hint. */
 const ENTRY_POINTS: ReadonlyArray<{ path: string; hint: string }> = [
   { path: "src/styles/theme.css.ts", hint: "vanilla-extract design tokens (MUI-like palette/spacing/type scale)" },
-  { path: "src/styles/theme-utils.ts", hint: "mediaUp/mediaDown/mediaBetween/spacing/transition helpers" },
+  { path: "src/styles/theme-utils.ts", hint: "mediaUp/mediaDown/spacing/transition helpers" },
   { path: "src/lib/useThemeMode.ts", hint: "light/dark theme-mode hook" },
   { path: "src/lib/blog.ts", hint: "parsePostDate (created_at → author-local day + instant)" },
   { path: "src/content.config.ts", hint: "blog collection frontmatter Zod schema" },

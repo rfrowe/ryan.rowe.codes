@@ -2,7 +2,7 @@
 import { getCollection, type CollectionEntry } from "astro:content";
 import type { GetStaticPaths, Page } from "astro";
 import Base from "@layouts/Base.astro";
-import { formatDisplayDate } from "@lib/blog";
+import { formatDisplayDate, postHref } from "@lib/blog";
 import { excerpt } from "@lib/excerpt";
 import * as styles from "@styles/blog-list.css.ts";
 
@@ -28,7 +28,7 @@ const { page } = Astro.props;
       {
         page.data.map(post => (
           <li class={styles.item}>
-            <a class={styles.titleLink} href={`/blog/${post.data.created_at.day}/${post.data.slug}`}>
+            <a class={styles.titleLink} href={postHref(post)}>
               <h2 class={styles.title}>{post.data.title}</h2>
             </a>
             <time class={styles.date} datetime={post.data.created_at.day}>

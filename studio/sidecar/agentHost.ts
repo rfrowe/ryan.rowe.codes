@@ -13,10 +13,11 @@ import type { HookInput, HookJSONOutput, Options, SDKMessage } from "@anthropic-
 
 import type { AgentHost, StudioTools } from "../shared/services";
 import type { PromptContext, ServerMessage } from "../shared/protocol";
-import type { EditorContext, PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
+import type { PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
 import type { ActiveWorktree } from "../state/store";
 import { STUDIO_MCP_SERVER_NAME, STUDIO_TOOL_WILDCARD } from "../shared/mcpTools";
 import { createInProcessMcp } from "../mcp/inProcess";
+import { errorMessage } from "./errorMessage";
 
 /** Cap on streamed tool-result previews. */
 const RESULT_PREVIEW_MAX = 2000;
@@ -29,8 +30,6 @@ export interface AgentHostDeps {
   skillInstructions: string;
   /** Sink for server-to-client messages. */
   emit: (msg: ServerMessage) => void;
-  /** Reserved for prompt enrichment. */
-  getEditorContext: () => EditorContext | null;
   /** So the doc-sync watcher soft-locks and classifies agent writes for the turn. */
   onTurnStart?: () => void;
   onTurnEnd?: () => void;
@@ -556,10 +555,6 @@ function redactSecrets(text: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… [truncated ${text.length - max} chars]` : text;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // ---- permission decision mapping ----

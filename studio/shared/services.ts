@@ -3,10 +3,9 @@
 // concrete files), so each package typechecks independently; the bootstrap
 // constructs the concretes and injects them.
 
-import type { ActiveDoc, DocRev, EditorContext, PreviewState, Range, SessionMode, TextEdit } from "./types";
+import type { ActiveDoc, EditorContext, PreviewState, Range, SessionMode } from "./types";
 import type { PromptContext, SaveDraftRequest, SaveDraftResponse, ServerMessage } from "./protocol";
 import type {
-  ApplyEditResult,
   DescribeResult,
   GetEditorContextResult,
   OpenPrInput,
@@ -23,13 +22,6 @@ export interface Store {
   getActiveDoc(): ActiveDoc | null;
   /** Load a post from disk as the active doc (computes initial rev, derives preview). */
   openPost(absPath: string): Promise<ActiveDoc>;
-  /** Persist exact text to the active doc's path (autosave / self-write); returns new rev or stale-rev. */
-  writeActive(
-    text: string,
-    baseRev: DocRev,
-  ): Promise<{ ok: true; rev: DocRev } | { ok: false; error: "stale-rev"; currentRev: DocRev }>;
-  /** Apply structured edits, rev-checked: the store's structured-mutation seam. */
-  applyEdit(input: { path: string; rev: DocRev; edits: TextEdit[] }): Promise<ApplyEditResult>;
   getEditorContext(): EditorContext | null;
   setEditorContext(ctx: EditorContext): void;
   getPreview(): PreviewState;

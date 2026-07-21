@@ -27,8 +27,7 @@ export type SyncEffect =
   | { type: "lock" }
   | { type: "unlock" }
   | { type: "reloadFromDisk"; rev: DocRev }
-  | { type: "showReloadBanner" }
-  | { type: "stashBuffer" };
+  | { type: "showReloadBanner" };
 
 export interface Transition {
   state: SyncState;

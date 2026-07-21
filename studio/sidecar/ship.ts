@@ -9,7 +9,8 @@ import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
 import type { SaveDraftRequest, SaveDraftResponse } from "../shared/protocol";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
-import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, parseStatusPaths, underBlog } from "./diffService";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, underBlog } from "./diffService";
+import { errorMessage } from "./errorMessage";
 
 // Pinned commit identity (CLAUDE.md), independent of local git config.
 const PINNED_NAME = "Ryan Rowe";
@@ -68,8 +69,7 @@ export function createShipService(deps: ShipDeps): ShipService {
    *  ref on disk, never fetches). Backs both {@link prBase}'s preview fallback and {@link openPr}'s
    *  hard gate, so the two can't drift into checking the ref two different ways. */
   async function sessionBranchOnOrigin(cwd: string): Promise<boolean> {
-    const res = await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${sessionBranch}`], { cwd });
-    return res.code === 0;
+    return originRefExists(git, cwd, sessionBranch);
   }
 
   /** The ref ship's PR is actually opened against: `origin/<sessionBranch>` once pushed there, else
@@ -220,10 +220,10 @@ export function createShipService(deps: ShipDeps): ShipService {
       try {
         const pushRes = await git.git(["push", "-u", "origin", remoteBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
         if (pushRes.code !== 0) {
-          return { ok: false, error: pushFailedMessage(remoteBranch, detail(pushRes.stderr, pushRes.code)) };
+          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)) };
         }
       } catch (e) {
-        return { ok: false, error: pushFailedMessage(remoteBranch, errMsg(e)) };
+        return { ok: false, error: pushFailedMessage(errorMessage(e)) };
       }
 
       // Create the PR. Partial failure here = branch pushed, but no PR yet.
@@ -244,10 +244,10 @@ export function createShipService(deps: ShipDeps): ShipService {
         }
         return { ok: true, prUrl };
       } catch (e) {
-        return { ok: false, error: prFailedMessage(remoteBranch, errMsg(e)) };
+        return { ok: false, error: prFailedMessage(remoteBranch, errorMessage(e)) };
       }
     } catch (e) {
-      return { ok: false, error: `ship failed: ${errMsg(e)}` };
+      return { ok: false, error: `ship failed: ${errorMessage(e)}` };
     }
   }
 
@@ -335,8 +335,7 @@ export function createShipService(deps: ShipDeps): ShipService {
       // Anything to push? The branch is worth pushing when it has no remote counterpart yet, or when
       // it carries commits `origin/<branch>` lacks (the fresh commit above, or unpushed history).
       // Offline-safe: reads the remote-tracking ref on disk, never fetches.
-      const hasRemote =
-        (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${wt.branch}`], { cwd })).code === 0;
+      const hasRemote = await originRefExists(git, cwd, wt.branch);
       let ahead = 0;
       if (hasRemote) {
         const counted = await git.git(["rev-list", "--count", `origin/${wt.branch}..HEAD`], { cwd });
@@ -356,11 +355,11 @@ export function createShipService(deps: ShipDeps): ShipService {
           return { ok: false, error: savePushFailedMessage(committed, detail(pushRes.stderr, pushRes.code)) };
         }
       } catch (e) {
-        return { ok: false, error: savePushFailedMessage(committed, errMsg(e)) };
+        return { ok: false, error: savePushFailedMessage(committed, errorMessage(e)) };
       }
       return { ok: true, branch: wt.branch, committed, pushed: true, noop: false };
     } catch (e) {
-      return { ok: false, error: `save draft failed: ${errMsg(e)}` };
+      return { ok: false, error: `save draft failed: ${errorMessage(e)}` };
     }
   }
 
@@ -378,7 +377,7 @@ function fail(step: string, stderr: string, code: number): { ok: false; error: s
   return { ok: false, error: `${step} failed: ${detail(stderr, code)}` };
 }
 
-function pushFailedMessage(branch: string, why: string): string {
+function pushFailedMessage(why: string): string {
   return (
     `git push failed: ${why}. The commit is committed locally but was not pushed; ` +
     `re-run ship or push manually from the worktree.`
@@ -404,6 +403,3 @@ function extractUrl(s: string): string | null {
   return m ? m[0] : null;
 }
 
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}

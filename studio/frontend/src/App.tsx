@@ -15,6 +15,8 @@ import { NewPostDialog, type NewPostFields } from "./NewPostDialog";
 import { CommandPalette } from "./CommandPalette";
 import { McpStatusBar, type McpServerStatus } from "./McpStatusBar";
 import { ModeChip } from "./ModeChip";
+import { Modal } from "./Modal";
+import { WarnIcon } from "./WarnIcon";
 import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveConfirm";
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
@@ -1000,9 +1002,7 @@ export default function App() {
 
       {activeTab && !activeTab.nameSync.synced && (
         <div className="banner banner--warn">
-          <svg className="banner__icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
-          </svg>
+          <WarnIcon size={16} className="banner__icon" />
           <span>
             This post's deployed URL has changed to <code>{activeTab.nameSync.expectedStem}</code>.
           </span>
@@ -1115,72 +1115,62 @@ export default function App() {
         </div>
       )}
       {showNewPost && (
-        <div className="modal" onClick={() => !creating && setShowNewPost(false)}>
-          <div className="modal__body modal__body--narrow" onClick={(e) => e.stopPropagation()}>
-            <NewPostDialog
-              creating={creating}
-              error={createError}
-              initialTitle={newPostTitle}
-              onSubmit={onCreatePost}
-              onClose={() => setShowNewPost(false)}
-            />
-          </div>
-        </div>
+        <Modal size="narrow" onClose={() => !creating && setShowNewPost(false)}>
+          <NewPostDialog
+            creating={creating}
+            error={createError}
+            initialTitle={newPostTitle}
+            onSubmit={onCreatePost}
+            onClose={() => setShowNewPost(false)}
+          />
+        </Modal>
       )}
       {showPicker && (
-        <div className="modal" onClick={() => setShowPicker(false)}>
-          <div className="modal__body" onClick={(e) => e.stopPropagation()}>
-            <SessionPicker
-              current={activeTab?.session ?? { sessionId: null, mode: "new" }}
-              onSelect={onSelectSession}
-              onClose={() => setShowPicker(false)}
-            />
-          </div>
-        </div>
+        <Modal onClose={() => setShowPicker(false)}>
+          <SessionPicker
+            current={activeTab?.session ?? { sessionId: null, mode: "new" }}
+            onSelect={onSelectSession}
+            onClose={() => setShowPicker(false)}
+          />
+        </Modal>
       )}
       {showShip && (
-        <div className="modal" onClick={() => setShowShip(false)}>
-          <div className="modal__body modal__body--wide" onClick={(e) => e.stopPropagation()}>
-            <ShipPanel
-              branch={activeTab?.branch ?? null}
-              nameSync={activeTab?.nameSync ?? SYNCED}
-              onClose={() => setShowShip(false)}
-            />
-          </div>
-        </div>
+        <Modal size="wide" onClose={() => setShowShip(false)}>
+          <ShipPanel
+            branch={activeTab?.branch ?? null}
+            nameSync={activeTab?.nameSync ?? SYNCED}
+            onClose={() => setShowShip(false)}
+          />
+        </Modal>
       )}
       {saveDraftFor &&
         (() => {
           const tab = state.tabs.find((t) => t.path === saveDraftFor);
           if (!tab) return null;
           return (
-            <div className="modal" onClick={() => setSaveDraftFor(null)}>
-              <div className="modal__body modal__body--wide" onClick={(e) => e.stopPropagation()}>
-                <SaveDraftPanel
-                  path={tab.path}
-                  branch={tab.branch}
-                  title={tab.title}
-                  onClose={() => setSaveDraftFor(null)}
-                />
-              </div>
-            </div>
+            <Modal size="wide" onClose={() => setSaveDraftFor(null)}>
+              <SaveDraftPanel
+                path={tab.path}
+                branch={tab.branch}
+                title={tab.title}
+                onClose={() => setSaveDraftFor(null)}
+              />
+            </Modal>
           );
         })()}
       {pendingConfirm && (
-        <div className="modal" onClick={onCancelDestructive}>
-          <div className="modal__body modal__body--wide" onClick={(e) => e.stopPropagation()}>
-            <DestructiveConfirm
-              data={pendingConfirm}
-              title={state.tabs.find((t) => t.path === pendingConfirm.path)?.title || pendingConfirm.path}
-              busy={confirmBusy}
-              error={confirmError}
-              onConfirm={onConfirmDestructive}
-              onSaveAndDelete={onSaveThenDelete}
-              onScopeChange={onRevertScopeChange}
-              onCancel={onCancelDestructive}
-            />
-          </div>
-        </div>
+        <Modal size="wide" onClose={onCancelDestructive}>
+          <DestructiveConfirm
+            data={pendingConfirm}
+            title={state.tabs.find((t) => t.path === pendingConfirm.path)?.title || pendingConfirm.path}
+            busy={confirmBusy}
+            error={confirmError}
+            onConfirm={onConfirmDestructive}
+            onSaveAndDelete={onSaveThenDelete}
+            onScopeChange={onRevertScopeChange}
+            onCancel={onCancelDestructive}
+          />
+        </Modal>
       )}
     </div>
   );

@@ -131,7 +131,6 @@ const sketch = (p5: P5CanvasInstance) => {
     // No `.parent()` needed: p5 is bound to its own container, so `createCanvas` attaches there.
     const canvas = p5.createCanvas(512, 512, p5.WEBGL);
     canvas.mousePressed(() => (state.drag.start = true));
-    canvas.mouseReleased(() => (state.drag.start = false));
 
     p5.textureMode(p5.NORMAL);
     p5.angleMode(p5.DEGREES);
