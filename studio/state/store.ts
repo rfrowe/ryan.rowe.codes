@@ -171,13 +171,17 @@ interface OpenDoc {
   title: string;
 }
 
+/** Whether a repo-relative post path is a folder post (`<stem>/post.mdx`) rather than a simple `.mdx`. */
+function isFolderPost(relPath: string): boolean {
+  return relPath.endsWith("/post.mdx") || relPath.endsWith(`${path.sep}post.mdx`);
+}
+
 /**
  * The git pathspec scoping a post's status/diff/checkout: the file for a simple post, or its folder
  * for a `<stem>/post.mdx` folder post (so co-located assets are counted and reverted with it).
  */
 function postUnitPathspec(relPath: string): string {
-  const isFolder = relPath.endsWith("/post.mdx") || relPath.endsWith(`${path.sep}post.mdx`);
-  return isFolder ? path.dirname(relPath) : relPath;
+  return isFolderPost(relPath) ? path.dirname(relPath) : relPath;
 }
 
 /** True when `v` can be emitted as a bare YAML plain scalar (no quoting needed). */
@@ -519,6 +523,24 @@ export function createStore(deps: StoreDeps): StudioStore {
     return (await hasOriginRef(branch)) ? `origin/${branch}` : await aheadBase();
   }
 
+  /**
+   * Commits on the worktree's HEAD not yet in the post's loss base, plus the resolved base so a caller
+   * can reuse it for a base-relative diff. Offline-safe: any failure resolving the base or counting
+   * (offline / no gh) yields 0 and a null base rather than blocking on a network call.
+   */
+  async function countAhead(branch: string, cwd: string): Promise<{ ahead: number; base: string | null }> {
+    let base: string | null = null;
+    let ahead = 0;
+    try {
+      base = await lossBase(branch);
+      const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd });
+      if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
+    } catch {
+      // Base unresolved (offline / no gh): report 0 rather than block on a network call.
+    }
+    return { ahead, base };
+  }
+
   /** Canonicalize + root-jail a path to the blog content tree. Returns null if it escapes. */
   function resolveJailed(candidate: string): string | null {
     const resolved = path.resolve(candidate);
@@ -692,7 +714,7 @@ export function createStore(deps: StoreDeps): StudioStore {
 
   /** The canonical path a post at `doc` would take if renamed to stem `newName` (simple vs folder). */
   function targetCanonicalFor(doc: OpenDoc, newName: string): string {
-    const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
+    const isFolder = isFolderPost(doc.relPath);
     return isFolder
       ? path.join(path.dirname(path.dirname(doc.canonicalPath)), newName, "post.mdx")
       : path.join(path.dirname(doc.canonicalPath), `${newName}.mdx`);
@@ -768,6 +790,23 @@ export function createStore(deps: StoreDeps): StudioStore {
     return doc;
   }
 
+  /** After removing `jailed` from `open`, focus the newest surviving post, or clear the active doc. */
+  async function refocusAfterRemoval(jailed: string): Promise<void> {
+    if (activePath !== jailed) {
+      publishTabs();
+      return;
+    }
+    const next = [...open.values()].at(-1) ?? null;
+    if (next) {
+      await reloadFromDisk(next);
+      publishActivation(next);
+    } else {
+      activePath = null;
+      publishTabs();
+      refreshPreview();
+    }
+  }
+
   /**
    * Guard against clobbering an out-of-band edit: re-read the file and compare its hash to what the
    * store last wrote. Returns an on-disk rev when the bytes diverged (caller rejects as stale-rev),
@@ -800,7 +839,7 @@ export function createStore(deps: StoreDeps): StudioStore {
     if (!deps.movePath) return { ok: false, error: "rename is unavailable (no movePath)" };
 
     // A simple post renames the `.mdx`; a folder post moves its parent dir (`<stem>/post.mdx`).
-    const isFolder = doc.relPath.endsWith("/post.mdx") || doc.relPath.endsWith(path.sep + "post.mdx");
+    const isFolder = isFolderPost(doc.relPath);
     const oldName = isFolder ? path.basename(path.dirname(doc.canonicalPath)) : path.basename(doc.canonicalPath, ".mdx");
     // A Complete-rename supplies the frontmatter date; a tab-bar rename keeps the current date prefix.
     const datePrefix = target.date ? `${target.date}_` : stemParts(oldName).datePrefix;
@@ -1089,22 +1128,9 @@ export function createStore(deps: StoreDeps): StudioStore {
         return;
       }
 
+      // Draft present: keep the worktree/branch on disk for re-open.
       open.delete(jailed);
-      // Draft present: keep the worktree/branch on disk. If the closed tab was active, focus another
-      // open post (newest), else clear the active doc.
-      if (activePath === jailed) {
-        const next = [...open.values()].at(-1) ?? null;
-        if (next) {
-          await reloadFromDisk(next);
-          publishActivation(next);
-        } else {
-          activePath = null;
-          publishTabs();
-          refreshPreview();
-        }
-      } else {
-        publishTabs();
-      }
+      await refocusAfterRemoval(jailed);
     },
 
     renamePost(canonicalPath, target) {
@@ -1186,16 +1212,7 @@ export function createStore(deps: StoreDeps): StudioStore {
       // delete: destroys the whole worktree (git worktree remove + branch -D), so the preview always
       // covers everything in it: uncommitted and untracked files, plus commits the base doesn't have
       // yet, never just this post. `scope` is a revert-only choice; delete has nothing to choose.
-      let ahead = 0;
-      let base: string | null = null;
-      try {
-        base = await lossBase(doc.branch);
-        const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd });
-        if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
-      } catch {
-        // Base unresolved (offline / no gh): can't count unmerged commits, so report 0 rather than
-        // blocking the delete on a network call. The base-relative diff below is skipped too.
-      }
+      const { ahead, base } = await countAhead(doc.branch, cwd);
       const { diff, changedFiles } = await computeDiffAgainstRef(git, cwd, base, "all");
       return { dirty: changedFiles > 0, changedFiles, ahead, diff, scope: "all" };
     },
@@ -1218,16 +1235,8 @@ export function createStore(deps: StoreDeps): StudioStore {
         const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: wtPath });
         const uncommittedNonEmpty = statusRes.stdout.trim().length > 0;
 
-        // Ahead of the post's own loss base, with postLossPreview's offline-safe fallback: any error
-        // or nonzero exit means "can't tell", so report 0 rather than block on the network.
-        let ahead = 0;
-        try {
-          const base = await lossBase(await branchFor(stem));
-          const revRes = await git.git(["rev-list", "--count", `${base}..HEAD`], { cwd: wtPath });
-          if (revRes.code === 0) ahead = Number.parseInt(revRes.stdout.trim() || "0", 10) || 0;
-        } catch {
-          // offline / no gh: treat as 0, as above.
-        }
+        // Ahead of the post's own loss base, offline-safe like postLossPreview (any error means 0).
+        const { ahead } = await countAhead(await branchFor(stem), wtPath);
 
         if (!uncommittedNonEmpty && ahead === 0) continue;
 
@@ -1292,19 +1301,7 @@ export function createStore(deps: StoreDeps): StudioStore {
       // Drop the tab and re-focus another post before removal, so onActiveChange retargets astro to
       // a surviving worktree rather than the one being deleted.
       open.delete(jailed);
-      if (activePath === jailed) {
-        const next = [...open.values()].at(-1) ?? null;
-        if (next) {
-          await reloadFromDisk(next);
-          publishActivation(next);
-        } else {
-          activePath = null;
-          publishTabs();
-          refreshPreview();
-        }
-      } else {
-        publishTabs();
-      }
+      await refocusAfterRemoval(jailed);
 
       // Remove the worktree (--force: it carries the draft's uncommitted changes) then force-delete
       // the branch (-D: it may hold commits not merged to the primary branch). origin is never touched.
