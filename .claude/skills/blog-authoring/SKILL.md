@@ -179,6 +179,27 @@ opaque HTML, so raw data passed as children arrives escaped.
 `.tsx` (+ `.css.ts`) island, the same folder-post pattern as `cubeCard.tsx` /
 `cubeCard.css.ts` / `cubeRenderer.tsx` in `2017-01-01_algorithmic-art/`.
 
+## Linking to another post
+
+Link from one post to another with the `<PostLink>` component and the target's
+`slug` — never a hardcoded `/blog/<date>/<slug>` URL (the date is easy to mistype,
+and a wrong path ships a silent 404):
+
+```mdx
+Picks up where my <PostLink slug="hello-world" /> post left off.
+```
+
+`<PostLink>` is provided to every post through the MDX component map
+(`src/components/mdx-components.ts`), so it needs **no import**. At build time it
+resolves the slug against the content collection — a missing or ambiguous slug
+throws and **fails the build** — links to the canonical dated URL, and fills the
+link text with the target post's `title`. Supply children when the sentence needs
+different words:
+
+```mdx
+Back in my <PostLink slug="hello-world">first attempt</PostLink>, I…
+```
+
 ## Math and code
 
 - **Math** is KaTeX via `remark-math` / `rehype-katex`: `$…$` inline, `$$…$$`
@@ -225,8 +246,8 @@ Component styles are vanilla-extract `.css.ts` files beside the `.tsx` they styl
   plain value, so this logic lives there, not in `theme.css.ts`):
   - `spacing(…)` — multiples of the 8px unit (numbers), or passthrough strings
     (`'auto'`, `'2em'`).
-  - `mediaUp(bp)` / `mediaDown(bp)` / `mediaBetween(start, end)` — media queries
-    keyed on the breakpoint tokens (`sm`/`md`/`lg`/`xl`).
+  - `mediaUp(bp)` / `mediaDown(bp)` — media queries keyed on the breakpoint
+    tokens (`sm`/`md`/`lg`/`xl`).
   - `transition(props, { duration, easing })`.
 - If a component needs the current theme in JS (not just CSS), use
   `useThemeMode()` (`src/lib/useThemeMode.ts`): it tracks `<html data-theme>`
