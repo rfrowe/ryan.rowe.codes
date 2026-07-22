@@ -28,3 +28,22 @@ globalStyle("body", {
   backgroundColor: vars.palette.background.default,
   color: vars.palette.text.primary,
 });
+
+globalStyle("table", {
+  borderCollapse: "collapse",
+  width: "100%",
+});
+
+globalStyle("th, td", {
+  padding: "12px 16px",
+  borderBottom: `1px solid ${vars.palette.divider}`,
+  textAlign: "left",
+});
+
+globalStyle("th", {
+  fontWeight: 600,
+  fontSize: "0.875rem",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  color: vars.palette.text.secondary,
+});
