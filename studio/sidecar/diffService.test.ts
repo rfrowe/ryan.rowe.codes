@@ -6,6 +6,7 @@ import type { GitRunner, RunResult } from "../shared/seams";
 import {
   BLOG_CONTENT_DIR,
   computeDiffAgainstRef,
+  computeDivergence,
   computeWorkingTreeDiff,
   countOutsideBlog,
   parseStatusPaths,
@@ -186,5 +187,41 @@ describe("computeDiffAgainstRef", () => {
     expect(res.diff).toBe("diff --git a/dev/null b/new.mdx\n+new\n");
     expect(lines().some((l) => l.startsWith("git merge-base"))).toBe(false);
     expect(lines().some((l) => l.startsWith("git -c core.quotePath=false diff -M"))).toBe(false);
+  });
+});
+
+describe("computeDivergence", () => {
+  it("returns onOrigin:false and never runs rev-list when the origin ref is absent", async () => {
+    const { git, lines } = makeGit((args) => (args.includes("rev-parse") ? { code: 1 } : {}));
+    expect(await computeDivergence(git, "/wt", "main")).toEqual({ onOrigin: false, ahead: 0, behind: 0 });
+    expect(lines().some((l) => l.includes("rev-list"))).toBe(false);
+  });
+
+  it("parses left(behind)/right(ahead) from rev-list --left-right --count", async () => {
+    const { git, lines } = makeGit((args) => {
+      if (args.includes("rev-parse")) return { code: 0 };
+      if (args.includes("rev-list")) return { stdout: "2\t3\n" };
+      return {};
+    });
+    expect(await computeDivergence(git, "/wt", "main")).toEqual({ onOrigin: true, behind: 2, ahead: 3 });
+    expect(lines()).toContain("git rev-list --left-right --count origin/main...HEAD");
+  });
+
+  it("treats an ahead-only count as not behind (the post's own commits never warn)", async () => {
+    const { git } = makeGit((args) => {
+      if (args.includes("rev-parse")) return { code: 0 };
+      if (args.includes("rev-list")) return { stdout: "0\t5" };
+      return {};
+    });
+    expect(await computeDivergence(git, "/wt", "main")).toEqual({ onOrigin: true, behind: 0, ahead: 5 });
+  });
+
+  it("reports behind when origin's base carries commits this HEAD lacks", async () => {
+    const { git } = makeGit((args) => {
+      if (args.includes("rev-parse")) return { code: 0 };
+      if (args.includes("rev-list")) return { stdout: "4\t0" };
+      return {};
+    });
+    expect(await computeDivergence(git, "/wt", "main")).toEqual({ onOrigin: true, behind: 4, ahead: 0 });
   });
 });

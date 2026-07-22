@@ -8,7 +8,7 @@
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
 import type { BranchStatus, ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage, SessionHistoryItem } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
-import type { SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
+import type { FetchResponse, SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
 import { isValidSlug, postStem } from "../../shared/slug";
 import { REST_BASE, WS_BASE } from "./config";
 
@@ -182,10 +182,21 @@ interface MockDoc {
   rev: DocRev;
   preview: PreviewState;
   agent: AgentState;
+  /** Divergence from the base ref, so ?mock can show the header's "behind" warning per post. */
+  divergence: { ahead: number; behind: number };
 }
 
 function makeDoc(path: string, title: string, text: string, preview: PreviewState): MockDoc {
-  return { path, title, branch: branchFromPath(path), text, rev: makeRev(1, text), preview, agent: { sessionId: null, mode: "new" } };
+  return {
+    path,
+    title,
+    branch: branchFromPath(path),
+    text,
+    rev: makeRev(1, text),
+    preview,
+    agent: { sessionId: null, mode: "new" },
+    divergence: { ahead: 0, behind: 0 },
+  };
 }
 
 // ---- shared mock state ----
@@ -219,6 +230,9 @@ class MockBackend {
       CACHE_MDX,
       { valid: true, url: previewUrl("2026-06-22", "the-shape-of-a-cache") },
     );
+    // The active post is behind its base (shows the header's divergence warning); the other is
+    // up-to-date (none), so switching tabs demonstrates the per-active-post behaviour.
+    skyline.divergence = { ahead: 1, behind: 3 };
     this.docs.set(skyline.path, skyline);
     this.docs.set(cache.path, cache);
     this.open = [skyline.path, cache.path];
@@ -264,6 +278,17 @@ class MockBackend {
     send({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "external" });
     send({ type: "preview.url", preview: doc.preview });
     send(this.nameSyncMsg(doc));
+    // Divergence rides the activation like the sidecar's, so the warning follows the active post.
+    send({ type: "post.divergence", path: doc.path, ahead: doc.divergence.ahead, behind: doc.divergence.behind });
+  }
+
+  /** Re-publish the active post's divergence, mirroring the sidecar republishing after a fetch. */
+  fetchRemote(): FetchResponse {
+    const doc = this.docs.get(this.activePath);
+    if (doc) {
+      this.broadcast({ type: "post.divergence", path: doc.path, ahead: doc.divergence.ahead, behind: doc.divergence.behind });
+    }
+    return { ok: true };
   }
 
   // Name-sync for a doc: compare the frontmatter-derived stem to the path stem. A bad slug/date is
@@ -873,6 +898,8 @@ export function installMock(): void {
     if (method === "GET" && path === "/posts/branches") return ok({ branches: backend.branchStatuses() });
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
     if (method === "POST" && path === "/save-draft") return ok(backend.saveDraft(body as SaveDraftRequest));
+    // No real remote offline; re-publish the active post's divergence (as the sidecar does), then succeed.
+    if (method === "POST" && path === "/fetch") return ok(backend.fetchRemote());
 
     return ok({ error: `mock: no route for ${method} ${path}` }, 404);
   };

@@ -17,7 +17,7 @@ import { FRONTMATTER_BLOCK, FRONTMATTER_LINE, frontmatterTitle } from "../../src
 import { isValidSlug, postStem, slugFromPath, stemParts } from "../shared/slug";
 import { revsEqual } from "./applyEdits";
 import { DEFAULT_PREVIEW_BASE, deriveUrl } from "../preview/deriveUrl";
-import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, type DiffScope } from "../sidecar/diffService";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeDivergence, computeWorkingTreeDiff, type DiffScope } from "../sidecar/diffService";
 import { sha256Hex } from "../sidecar/hash";
 
 /** Serializes async mutations so a rev-check and its write can't be interleaved. */
@@ -373,6 +373,17 @@ export interface StudioStore extends Store {
   /** The worktree of the open post at `canonicalPath` (not necessarily active); null if not open.
    *  Resolves the owning worktree even during a switch race. */
   getWorktreeFor(canonicalPath: string): ActiveWorktree | null;
+  /**
+   * The active post's origin-divergence (`ahead`/`behind` origin/<sessionBranch>), tagged with its
+   * canonical path; null when no post is active. Backs the header's "this post is behind its base"
+   * warning. Offline-safe (reads on-disk refs, never fetches).
+   */
+  getActiveDivergence(): Promise<{ path: string; ahead: number; behind: number } | null>;
+  /**
+   * Recompute the active post's divergence and broadcast `post.divergence` (dropping a result the
+   * active post changed out from under). Called on tab switch and after a git fetch.
+   */
+  publishActiveDivergence(): Promise<void>;
   /**
    * Worktree file backing the open post at `canonicalPath` (not necessarily the active one); null if
    * it isn't open. The canonical-to-worktree companion to {@link getDocByWatchPath}: the LSP bridge
@@ -757,6 +768,29 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
+   * The active post's origin-divergence, tagged with its canonical path; null when no post is active.
+   * Measured for the active worktree's HEAD vs origin/<sessionBranch> (its fork base): `behind` > 0
+   * means origin's base has commits this post isn't built on, while its own commits only ever count
+   * as `ahead`. Offline-safe (reads on-disk refs, never fetches).
+   */
+  async function getActiveDivergence(): Promise<{ path: string; ahead: number; behind: number } | null> {
+    const doc = activeDoc();
+    if (!doc) return null;
+    const { ahead, behind } = await computeDivergence(git, doc.worktreePath, sessionBranch);
+    return { path: doc.canonicalPath, ahead, behind };
+  }
+
+  /**
+   * Recompute the active post's divergence and broadcast it, unless the active post changed while the
+   * git read was in flight (a fast tab switch): a stale result would mislabel the now-active tab.
+   */
+  async function publishActiveDivergence(): Promise<void> {
+    const d = await getActiveDivergence();
+    if (!d || d.path !== activePath) return;
+    publish({ type: "post.divergence", path: d.path, ahead: d.ahead, behind: d.behind });
+  }
+
+  /**
    * Announce a just-focused active doc in an order the SPA can bootstrap from: tab bar first (tabs,
    * active) so the target tab exists, then its buffer (file.changed), since the client drops a
    * file.changed for a path it has no tab for. Then refresh the preview and notify active-change
@@ -766,6 +800,9 @@ export function createStore(deps: StoreDeps): StudioStore {
     activePath = doc.canonicalPath;
     publishTabs();
     publish({ type: "active", path: doc.canonicalPath, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath });
+    // Fire-and-forget: divergence is a git round-trip, so don't hold up activation on it; its own
+    // guard drops the result if the active post changes before the read resolves.
+    void publishActiveDivergence();
     publish({ type: "file.changed", path: doc.canonicalPath, text: doc.text, rev: doc.rev, origin: "external" });
     refreshPreview();
     const info: ActiveChangeInfo = {
@@ -1010,6 +1047,10 @@ export function createStore(deps: StoreDeps): StudioStore {
       const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
       return doc ? worktreeOf(doc) : null;
     },
+
+    getActiveDivergence,
+
+    publishActiveDivergence,
 
     getWorktreeFilePath(canonicalPath) {
       const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);

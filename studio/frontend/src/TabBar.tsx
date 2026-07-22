@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { SocketStatus } from "./ws";
 import { kebabSlug, slugFromPath } from "./slug";
+import { WarnIcon } from "./WarnIcon";
+import { SyncIcon } from "./SyncIcon";
 
 export interface TabDescriptor {
   path: string;
@@ -29,6 +31,13 @@ const STATE_WORD: Record<StackComponent["status"], string> = {
   disabled: "off",
 };
 
+/** The origin base the divergence warning is measured against, from the studio's own branch label
+ *  (already `origin/<branch>` when in sync, else the bare branch). */
+function baseRefLabel(studio: { ref: string } | null): string {
+  if (!studio) return "origin";
+  return studio.ref.startsWith("origin/") ? studio.ref : `origin/${studio.ref}`;
+}
+
 interface TabBarProps {
   tabs: TabDescriptor[];
   activePath: string | null;
@@ -37,6 +46,8 @@ interface TabBarProps {
   stackStatus: StackComponent[];
   /** The studio's own branch/worktree, shown as a chip + in the popover; null until the sidecar reports it. */
   studio: { ref: string; worktree: string } | null;
+  /** How many commits origin's base has that the active post isn't built on; > 0 shows the warning. */
+  behind: number;
   /** Canonical paths of open posts that are drafts (unshipped work); drives the tab dot and
    *  gates "Save to remote…" and "Delete draft…" in the right-click menu. */
   dirtyPaths: Set<string>;
@@ -51,6 +62,10 @@ interface TabBarProps {
   onSaveDraft: (path: string) => void;
   onRevert: (path: string) => void;
   onDelete: (path: string) => void;
+  /** Fetch from origin (`git fetch --prune`), refreshing remote-tracking refs and the warning. */
+  onFetch: () => void;
+  /** A fetch is in flight: the button spins and is disabled. */
+  fetching: boolean;
 }
 
 export function TabBar({
@@ -59,6 +74,7 @@ export function TabBar({
   status,
   stackStatus,
   studio,
+  behind,
   dirtyPaths,
   uncommittedPaths,
   onSelect,
@@ -68,6 +84,8 @@ export function TabBar({
   onSaveDraft,
   onRevert,
   onDelete,
+  onFetch,
+  fetching,
 }: TabBarProps) {
   // Path currently being renamed (any tab may enter rename mode via the menu; the active tab also
   // via double-click).
@@ -203,6 +221,24 @@ export function TabBar({
       </div>
 
       <div className="tabbar__spacer" />
+      {behind > 0 && (
+        <span
+          className="tabbar__diverged"
+          title={`${baseRefLabel(studio)} has ${behind} commit${behind === 1 ? "" : "s"} this post isn't based on — fetch and rebase.`}
+        >
+          <WarnIcon size={14} />
+        </span>
+      )}
+      <button
+        type="button"
+        className={`tabbar__fetch ${fetching ? "tabbar__fetch--busy" : ""}`}
+        onClick={onFetch}
+        disabled={fetching}
+        title="Fetch from origin"
+        aria-label="Fetch from origin"
+      >
+        <SyncIcon size={15} />
+      </button>
       <div className="tabbar__status" tabIndex={0} role="status" aria-label={`Stack status — sidecar ${status}`}>
         <span className={`tabbar__conn tabbar__conn--${status}`} aria-hidden="true" />
         <div className="tabbar__statuspop" role="tooltip">

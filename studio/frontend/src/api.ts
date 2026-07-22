@@ -5,6 +5,7 @@ import type {
   BranchesResponse,
   DiffResponse,
   DirtyPostsResponse,
+  FetchResponse,
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
@@ -77,6 +78,12 @@ export async function ship(req: ShipRequest): Promise<ShipResponse> {
     body: JSON.stringify(req),
   });
   return asJson<ShipResponse>(res);
+}
+
+/** Fetch from origin (`git fetch --prune`); the sidecar republishes the active post's divergence. */
+export async function fetchRemote(): Promise<FetchResponse> {
+  const res = await fetch(endpoint("/fetch"), { method: "POST", headers: { ...authHeaders() } });
+  return asJson<FetchResponse>(res);
 }
 
 /** Studio-run save-draft flow (commit + push the post's branch, no PR). Requires `confirm`. */

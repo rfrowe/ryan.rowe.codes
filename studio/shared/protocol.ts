@@ -111,6 +111,11 @@ export type ServerMessage =
   // say whether Complete-rename can proceed (false e.g. when the target stem is already open). Always
   // synced:true when there is no active post.
   | { type: "post.namesync"; synced: boolean; expectedStem?: string; currentStem?: string; canComplete?: boolean; reason?: string }
+  // The active post's divergence from origin/<sessionBranch> (the base it forked from), recomputed on
+  // activation and after a fetch. `behind` > 0 means origin's base carries commits this post isn't
+  // built on (fetch, then rebase); `ahead` is the post's own commits, never a reason to warn. Carries
+  // `path` so a result for a since-switched tab can be dropped rather than mislabel the active one.
+  | { type: "post.divergence"; path: string; ahead: number; behind: number }
   // The active post changed (open/create/switch/rename); file.changed and preview.url follow. branch is
   // the post's isolation branch (`blog/<date>_<slug>`), shown read-only. worktreePath is the absolute
   // dir tool-call paths get shown relative to, so the transcript doesn't repeat it on every file path.
@@ -218,3 +223,8 @@ export interface SaveDraftRequest {
 export type SaveDraftResponse =
   | { ok: true; branch: string; committed: boolean; pushed: boolean; noop: boolean }
   | { ok: false; error: string };
+
+// Result of the persistent git-fetch button: `git fetch --prune origin` (the one place the studio
+// pulls from origin — it's otherwise offline by design), after which the sidecar republishes the
+// active post's divergence so its warning reflects the newly-fetched refs.
+export type FetchResponse = { ok: true } | { ok: false; error: string };
