@@ -11,6 +11,8 @@ import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
 import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, stagePathsForScope, underBlog } from "./diffService";
 import { errorMessage } from "./errorMessage";
+import { cloudflarePreviewOrigin } from "../preview/cloudflare";
+import { deriveUrl } from "../preview/deriveUrl";
 
 // Pinned commit identity (CLAUDE.md), independent of local git config.
 const PINNED_NAME = "Ryan Rowe";
@@ -35,10 +37,13 @@ export interface ShipDeps {
   /** Frontmatter/filename name-sync. Ship refuses a desynced post (its live URL wouldn't match
    *  where it deploys); the author resolves it via Complete-rename or Revert first. */
   getActiveNameSync: () => { synced: boolean; expectedStem?: string; currentStem?: string };
+  /** Cloudflare Pages project name. When set, ship appends a link to the post at its per-branch
+   *  preview deploy to the PR body. Unset disables the link (ship is otherwise unchanged). */
+  pagesProject?: string;
 }
 
 export function createShipService(deps: ShipDeps): ShipService {
-  const { git, sessionBranch, getActiveWorktree, getWorktreeFor, getActiveNameSync } = deps;
+  const { git, sessionBranch, getActiveWorktree, getWorktreeFor, getActiveNameSync, pagesProject } = deps;
 
   /** Read the diff for the ship / save-draft review UI. Defaults to the active post's worktree; a
    *  `path` targets a specific open post (the save-draft panel can review a non-focused tab).
@@ -76,6 +81,24 @@ export function createShipService(deps: ShipDeps): ShipService {
    *  the local session branch as a preview fallback before it is. */
   async function prBase(cwd: string): Promise<string> {
     return (await sessionBranchOnOrigin(cwd)) ? `origin/${sessionBranch}` : sessionBranch;
+  }
+
+  /** The post's predicted Cloudflare preview URL, or undefined when previews aren't configured, the
+   *  branch has no derivable alias, or the committed source yields no valid route. Reads the
+   *  just-committed post (`HEAD:<relPath>`) so the derived path matches the built route. Runs after
+   *  the push, so it never throws: a preview miss must not turn an already-pushed ship into a failure. */
+  async function derivePreviewUrl(cwd: string, branch: string, relPath: string): Promise<string | undefined> {
+    if (!pagesProject) return undefined;
+    const origin = cloudflarePreviewOrigin(branch, pagesProject);
+    if (!origin) return undefined;
+    try {
+      const srcRes = await git.git(["show", `HEAD:${relPath}`], { cwd });
+      if (srcRes.code !== 0) return undefined;
+      const derived = deriveUrl(srcRes.stdout, { base: origin });
+      return derived.valid ? derived.url : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async function openPr(input: OpenPrInput): Promise<OpenPrResult> {
@@ -218,10 +241,19 @@ export function createShipService(deps: ShipDeps): ShipService {
         return { ok: false, error: pushFailedMessage(errorMessage(e)) };
       }
 
+      // Predict the post's own Cloudflare preview URL and append it to the PR body only (the commit
+      // message stays exactly what the author wrote). The branch alias tracks this branch's latest
+      // deploy, so the link goes live once Cloudflare finishes building it. deriveUrl reads the
+      // just-committed source so the path can't drift from the built route.
+      const previewUrl = await derivePreviewUrl(cwd, remoteBranch, wt.relPath);
+      const prBody = previewUrl
+        ? `${input.body.trim() ? `${input.body.trimEnd()}\n\n` : ""}Preview (live once Cloudflare finishes building this branch): ${previewUrl}`
+        : input.body;
+
       // Create the PR. Partial failure here = branch pushed, but no PR yet.
       try {
         const prRes = await git.gh(
-          ["pr", "create", "--base", base, "--head", remoteBranch, "--title", input.subject, "--body", input.body],
+          ["pr", "create", "--base", base, "--head", remoteBranch, "--title", input.subject, "--body", prBody],
           { cwd, timeoutMs: NETWORK_TIMEOUT_MS },
         );
         if (prRes.code !== 0) {
@@ -234,7 +266,7 @@ export function createShipService(deps: ShipDeps): ShipService {
             error: `gh pr create returned no PR URL (branch "${remoteBranch}" is pushed; verify with \`gh pr view\`)`,
           };
         }
-        return { ok: true, prUrl };
+        return { ok: true, prUrl, previewUrl };
       } catch (e) {
         return { ok: false, error: prFailedMessage(remoteBranch, errorMessage(e)) };
       }

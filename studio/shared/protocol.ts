@@ -177,7 +177,7 @@ export interface ShipRequest {
   confirm: boolean;
 }
 export type ShipResponse =
-  | { ok: true; prUrl: string }
+  | { ok: true; prUrl: string; previewUrl?: string }
   | { ok: false; error: string; violations?: string[] };
 
 // Persist a draft to origin without opening a PR: commit the post with the pinned identity and push

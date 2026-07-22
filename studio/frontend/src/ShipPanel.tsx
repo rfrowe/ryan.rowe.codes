@@ -12,6 +12,9 @@ interface ShipPanelProps {
   /** The active post's isolation branch, display-only (the sidecar pushes its own regardless).
    *  Null before a post is active. */
   branch: string | null;
+  /** The active post's slug, seeding the conventional-commit subject prefix. Null before a post
+   *  is active. */
+  slug: string | null;
   /** Frontmatter/filename name-sync. When `synced` is false, ship is blocked (the sidecar refuses
    *  a desynced post too; this disables the button and explains why). */
   nameSync: { synced: boolean; expectedStem?: string; currentStem?: string };
@@ -20,11 +23,11 @@ interface ShipPanelProps {
 
 type Phase = "editing" | "confirming" | "shipping" | "result";
 
-export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
+export function ShipPanel({ branch, slug, nameSync, onClose }: ShipPanelProps) {
   const review = useDiffReview();
   const { scope, setScope } = review;
 
-  const [subject, setSubject] = useState("");
+  const [subject, setSubject] = useState(() => (slug ? `blog(${slug}): ` : ""));
   const [body, setBody] = useState("");
 
   const [phase, setPhase] = useState<Phase>("editing");
@@ -110,6 +113,15 @@ export function ShipPanel({ branch, nameSync, onClose }: ShipPanelProps) {
                 <a href={result.prUrl} target="_blank" rel="noreferrer">
                   {result.prUrl}
                 </a>
+                {result.previewUrl && (
+                  <>
+                    <br />
+                    Preview (live once Cloudflare builds it):{" "}
+                    <a href={result.previewUrl} target="_blank" rel="noreferrer">
+                      {result.previewUrl}
+                    </a>
+                  </>
+                )}
               </p>
             ) : (
               <div className="ship__fail">
