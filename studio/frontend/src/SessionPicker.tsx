@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { AgentState, SessionMode } from "../../shared/types";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import { getSessions } from "./api";
+import { ScopeSelector, type Scope } from "./ScopeSelector";
 
 interface SessionPickerProps {
   current: AgentState;
@@ -26,10 +27,14 @@ export function SessionPicker({ current, onSelect, onClose }: SessionPickerProps
   const [sessions, setSessions] = useState<SessionListItem[] | null>(null);
   const [selected, setSelected] = useState<string | null>(current.sessionId);
   const [error, setError] = useState<string | null>(null);
+  // Open scoped to the active post's worktree; widen to every session on demand.
+  const [scope, setScope] = useState<Scope>("post");
 
   useEffect(() => {
     let live = true;
-    getSessions()
+    setSessions(null);
+    setError(null);
+    getSessions(scope)
       .then((res) => {
         if (live) setSessions(res.sessions);
       })
@@ -39,7 +44,7 @@ export function SessionPicker({ current, onSelect, onClose }: SessionPickerProps
     return () => {
       live = false;
     };
-  }, []);
+  }, [scope]);
 
   return (
     <div className="picker">
@@ -62,6 +67,11 @@ export function SessionPicker({ current, onSelect, onClose }: SessionPickerProps
           New session
         </button>
         <span className="picker__hint">Fresh cold-post session rooted in the blog repo.</span>
+      </div>
+
+      <div className="picker__scope">
+        <span className="picker__hint">Show sessions from</span>
+        <ScopeSelector scope={scope} onChange={setScope} />
       </div>
 
       <div className="picker__list">

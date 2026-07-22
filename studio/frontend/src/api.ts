@@ -45,9 +45,9 @@ export async function getDiff(scope: "post" | "all" = "post", path?: string): Pr
   return asJson<DiffResponse>(res);
 }
 
-/** Prior Claude Code sessions for the picker. */
-export async function getSessions(): Promise<SessionsResponse> {
-  const res = await fetch(endpoint("/sessions"), { headers: { ...authHeaders() } });
+/** Prior Claude Code sessions for the picker. `scope: "post"` narrows to the active post's worktree. */
+export async function getSessions(scope: "post" | "all" = "post"): Promise<SessionsResponse> {
+  const res = await fetch(endpoint("/sessions", { scope }), { headers: { ...authHeaders() } });
   return asJson<SessionsResponse>(res);
 }
 

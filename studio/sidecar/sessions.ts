@@ -1,9 +1,11 @@
 // Enumerates prior sessions for the picker. Reads session metadata via the Agent SDK
-// (`listSessions` per project dir), maps it through the pure `toPickerViewModel`, and
-// merges the blog repo's sessions with any recently-used build repos (post-hoc /
-// cross-repo authoring). Detail (`getSessionMessages`) is left lazy: the picker only
-// needs the summary and mtime the list already carries.
+// (`listSessions` per project dir, which already sweeps the dir's git worktrees), maps it
+// through the pure `toPickerViewModel`, and merges the blog repo's sessions with any
+// recently-used build repos (post-hoc / cross-repo authoring). The picker opens scoped to
+// the active post's worktree and widens to everything on demand. Detail (`getSessionMessages`)
+// is left lazy: the picker only needs the summary and mtime the list already carries.
 
+import path from "node:path";
 import { listSessions } from "@anthropic-ai/claude-agent-sdk";
 
 import type { SessionsService } from "../shared/services";
@@ -14,6 +16,8 @@ export interface SessionsDeps {
   blogRepoDir: string;
   /** Additional repos to surface (e.g. recently-used build repos). */
   buildRepoDirs?: string[];
+  /** The active post's worktree, for the default "post" scope; null when no post is open. */
+  getActiveWorktreePath?: () => string | null;
   /**
    * Seam over the SDK's `listSessions` for testing. Defaults to the real SDK call.
    */
@@ -38,7 +42,7 @@ export function createSessionsService(deps: SessionsDeps): SessionsService {
   const dirs = [...new Set([deps.blogRepoDir, ...(deps.buildRepoDirs ?? [])])];
 
   return {
-    async list(): Promise<SessionListItem[]> {
+    async list(scope: "post" | "all"): Promise<SessionListItem[]> {
       const perDir = await Promise.all(
         dirs.map(async (dir) => {
           try {
@@ -61,7 +65,17 @@ export function createSessionsService(deps: SessionsDeps): SessionsService {
         }
       }
 
-      return toPickerViewModel(raw);
+      return toPickerViewModel(scope === "all" ? raw : scopeToWorktree(raw, deps.getActiveWorktreePath?.() ?? null));
     },
   };
+}
+
+/**
+ * Narrow the list to sessions whose cwd is the active post's worktree. With no active worktree
+ * there's nothing to scope to, so fall back to the full list rather than an empty picker.
+ */
+function scopeToWorktree(sessions: RawSession[], worktreePath: string | null): RawSession[] {
+  if (!worktreePath) return sessions;
+  const target = path.resolve(worktreePath);
+  return sessions.filter((s) => s.repoPath !== undefined && path.resolve(s.repoPath) === target);
 }

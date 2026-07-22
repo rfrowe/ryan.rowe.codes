@@ -3,10 +3,17 @@
 // auto-approve). The `query()`-driven session isn't exercised here, only the extracted helpers.
 
 import { describe, expect, it } from "vitest";
-import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
+import type { HookInput, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import type { StudioTools } from "../shared/services";
-import { createAgentHost, decisionToPermissionResult, mutationTarget, withinAnyDir, worktreeAskHook } from "./agentHost";
+import {
+  createAgentHost,
+  decisionToPermissionResult,
+  mutationTarget,
+  reduceHistory,
+  withinAnyDir,
+  worktreeAskHook,
+} from "./agentHost";
 
 const WT = "/repo/.worktrees/blog/2026-07-10_a-post";
 
@@ -134,6 +141,53 @@ describe("renameSessionKey", () => {
     sessions.set("/same", s);
     host.renameSessionKey("/same", "/same");
     expect(sessions.get("/same")).toBe(s);
+  });
+});
+
+describe("reduceHistory", () => {
+  // A stored transcript entry: only `type` and `message` matter to the reducer.
+  function msg(type: "user" | "assistant", content: unknown): SessionMessage {
+    return {
+      type,
+      uuid: "u",
+      session_id: "s",
+      message: { role: type, content },
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+    } as SessionMessage;
+  }
+
+  it("reduces a studio turn to user/assistant/tool items, filling the tool result in place", () => {
+    const history = reduceHistory([
+      msg("user", "Rewrite the intro.\n\n<studio-context>\nActive post file: /wt/post.mdx.\n</studio-context>"),
+      msg("assistant", [
+        { type: "thinking", thinking: "…" },
+        { type: "text", text: "On it." },
+        { type: "tool_use", id: "t1", name: "Edit", input: { file_path: "/wt/post.mdx" } },
+      ]),
+      msg("user", [{ type: "tool_result", tool_use_id: "t1", content: "ok", is_error: false }]),
+      msg("assistant", [{ type: "text", text: "Done." }]),
+    ]);
+    expect(history).toEqual([
+      { kind: "user", text: "Rewrite the intro." }, // studio-context trailer stripped
+      { kind: "assistant", text: "On it." }, // thinking block skipped
+      { kind: "tool", tool: { toolUseId: "t1", name: "Edit", input: { file_path: "/wt/post.mdx" }, isError: false, resultPreview: "ok" } },
+      { kind: "assistant", text: "Done." },
+    ]);
+  });
+
+  it("marks an errored tool result and emits no bubble for the tool-result-only user turn", () => {
+    const history = reduceHistory([
+      msg("assistant", [{ type: "tool_use", id: "t9", name: "Bash", input: { command: "false" } }]),
+      msg("user", [{ type: "tool_result", tool_use_id: "t9", content: "boom", is_error: true }]),
+    ]);
+    expect(history).toEqual([
+      { kind: "tool", tool: { toolUseId: "t9", name: "Bash", input: { command: "false" }, isError: true, resultPreview: "boom" } },
+    ]);
+  });
+
+  it("keeps a foreign (unwrapped) user prompt verbatim", () => {
+    expect(reduceHistory([msg("user", "just chatting")])).toEqual([{ kind: "user", text: "just chatting" }]);
   });
 });
 

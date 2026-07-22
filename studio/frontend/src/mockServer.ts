@@ -6,7 +6,7 @@
 // and services the full tab lifecycle and mcp.setEnabled.
 
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
-import type { BranchStatus, ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage } from "../../shared/protocol";
+import type { BranchStatus, ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage, SessionHistoryItem } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import type { SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
 import { isValidSlug, postStem } from "../../shared/slug";
@@ -306,8 +306,9 @@ class MockBackend {
     return { status: " M src/content/blog/2026-07-10_aligning-a-skyline/post.mdx", diff: SAMPLE_DIFF, outsideCount: 0 };
   }
 
-  sessions(): SessionListItem[] {
-    return SAMPLE_SESSIONS;
+  sessions(scope: "post" | "all"): SessionListItem[] {
+    // "post" scope narrows to the blog repo's own sessions; "all" adds the cross-repo build session.
+    return scope === "all" ? SAMPLE_SESSIONS : SAMPLE_SESSIONS.filter((s) => s.repoPath === REPO);
   }
 
   posts(): PostSummaryDTO[] {
@@ -355,11 +356,19 @@ class MockBackend {
         this.broadcast({ type: "done", promptId: msg.promptId, stopReason: "cancelled" });
         break;
       case "session.select": {
-        // The selection applies to the active post's session.
+        // The selection applies to the active post's session, and replays its transcript (empty for
+        // a new session, a canned pair for resume/fork so the replaced-chat behaviour is visible).
         const agent: AgentState = { sessionId: msg.sessionId ?? `mock-${msg.mode}-${Date.now().toString(36)}`, mode: msg.mode };
         const doc = this.docs.get(this.activePath);
         if (doc) doc.agent = agent;
-        this.broadcast({ type: "session", sessionId: agent.sessionId!, mode: agent.mode });
+        const items: SessionHistoryItem[] =
+          msg.mode === "new"
+            ? []
+            : [
+                { kind: "user", text: "Tighten the opening paragraph." },
+                { kind: "assistant", text: "Done — I trimmed the intro to a single sentence." },
+              ];
+        this.broadcast({ type: "session.history", sessionId: agent.sessionId!, mode: agent.mode, items });
         break;
       }
       case "editor.state":
@@ -855,7 +864,10 @@ export function installMock(): void {
     if (path === "/health") return ok({ ok: true });
     if (method === "PUT" && path === "/doc") return ok(backend.putDoc(body as PutDocRequest));
     if (method === "GET" && path === "/diff") return ok(backend.diff());
-    if (method === "GET" && path === "/sessions") return ok({ sessions: backend.sessions() });
+    if (method === "GET" && path === "/sessions") {
+      const scope = new URL(url).searchParams.get("scope") === "all" ? "all" : "post";
+      return ok({ sessions: backend.sessions(scope) });
+    }
     if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
     if (method === "GET" && path === "/posts/dirty") return ok(backend.dirtyStatus());
     if (method === "GET" && path === "/posts/branches") return ok({ branches: backend.branchStatuses() });

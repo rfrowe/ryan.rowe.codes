@@ -109,7 +109,10 @@ async function main(): Promise<void> {
     getActiveNameSync: () => store.getActiveNameSync(),
     pagesProject: CF_PAGES_PROJECT,
   });
-  const sessions = createSessionsService({ blogRepoDir: REPO_ROOT });
+  const sessions = createSessionsService({
+    blogRepoDir: REPO_ROOT,
+    getActiveWorktreePath: () => store.getActiveWorktree()?.worktreePath ?? null,
+  });
   const tools = createStudioTools({ store, ship, blogRoot: REPO_ROOT, conventions });
 
   // The sidecar-owned Astro daemon, restarted in the active worktree on every active change.
