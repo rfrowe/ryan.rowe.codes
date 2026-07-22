@@ -63,9 +63,11 @@ Six tools, all auto-approved (they never prompt):
 
 You edit files; you don't run git. Two flows the studio owns:
 
-- **Ship as PR** stages only the post, commits under the pinned
-  `Ryan Rowe <ryan@rowe.codes>` identity, pushes, and opens a PR. It never
-  merges, and it's gated on a human confirm.
+- **Ship as PR** commits under the pinned `Ryan Rowe <ryan@rowe.codes>`
+  identity, pushes, and opens a PR (never merges; gated on a human confirm). Its
+  scope toggle is either "Post only" (just the post) or "Everything" (the whole
+  worktree), so a post that needed supporting changes — a new rehype plugin, a
+  shared component — ships them alongside it.
 - **Save draft to remote** commits and pushes the post's `blog/<slug>` branch
   **without** a PR, so a draft can be resumed later — reopened from the studio's
   post picker as an adoptable remote draft, or checked out elsewhere.
@@ -166,14 +168,21 @@ opaque HTML, so raw data passed as children arrives escaped.
 
 1. Render/export the image offline and commit a `.webp` next to `post.mdx`
    (folder post).
-2. Embed it as an image followed immediately by an *italic* caption line:
+2. Embed it as a plain Markdown image; its **alt text is the caption**:
 
    ```md
-   ![The anchor tool: two source panels with numbered markers…](./anchor-tool.webp)
-   *Click a marker, then click inside its 5x loupe to place it precisely.*
+   ![The rack before: a Supermicro 1U, a Synology DS1515+, and the rest of the fleet.](./rack-before.webp)
    ```
 
-   Write real alt text describing the image content, not the caption repeated.
+   The `rehype-figure` plugin (in `astro.config.mjs`'s `rehypePlugins`) wraps
+   every alt-bearing image into `<figure><img><figcaption>` and fills the caption
+   from the alt text — so there's no separate caption line. Write one sentence
+   that reads well as a caption and serves as the alt text (it's both). The
+   `img`, `figure`, and `figcaption` tags are overridden by styled components
+   under `src/components/mdx/` (mapped in `mdx-components.ts`, styled in
+   `Prose.css.ts`); `Img.astro` sends a relative/imported image (object `src`)
+   through `astro:assets` `<Image>` for optimization and a bare string `src`
+   through a plain `<img>`.
 
 **Interactive figure** (client-side state, canvas, or hydration): a co-located
 `.tsx` (+ `.css.ts`) island, the same folder-post pattern as `cubeCard.tsx` /
@@ -253,6 +262,26 @@ Component styles are vanilla-extract `.css.ts` files beside the `.tsx` they styl
   `useThemeMode()` (`src/lib/useThemeMode.ts`): it tracks `<html data-theme>`
   across islands via a `MutationObserver`, which matters for `client:only`
   islands that render before hydration state is otherwise available.
+
+## Keep this skill current
+
+This skill is the source of truth for how a post is authored, so when a change
+you make alters what an author can write or how it renders, update this file in
+the *same* change. In particular:
+
+- **A remark/rehype plugin** added or changed in `astro.config.mjs`'s
+  `markdown.remarkPlugins` / `rehypePlugins` (like `rehype-figure` for captions,
+  or diagrams, footnotes, …): document the authoring syntax it unlocks and any
+  gotcha. If it's a local file rather than an installed package, also add its
+  path to `watchLocalConfigFiles([...])`.
+- **An MDX tag override or provided component** added or changed in
+  `src/components/mdx-components.ts` (a new `<PostLink>`-style component, a
+  remapped `img`/`figure`, …): document how a post reaches for it.
+- **A new markup feature, fenced-code option, or styling token** an author would
+  use: fold it into the relevant section with a short example.
+
+Match this file's terse, example-first voice, and describe the capability as it
+is now — not the change that introduced it.
 
 ## What not to do
 
