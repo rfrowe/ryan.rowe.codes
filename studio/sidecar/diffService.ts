@@ -27,6 +27,17 @@ export function scopePathspec(scope: DiffScope): string[] {
   return scope === "post" ? ["--", BLOG_CONTENT_DIR] : [];
 }
 
+/**
+ * The paths ship/save-draft stage for a scope, given the worktree's changed set: `all` stages the
+ * whole worktree (a post can carry supporting changes, e.g. a new rehype plugin or shared
+ * component), `post` stages only the blog tree. The staging counterpart to {@link scopePathspec}'s
+ * diff scoping, so what gets committed matches what the review diff showed. Callers pass the result
+ * to `git add -- <paths>`; the flow never runs `git add -A`.
+ */
+export function stagePathsForScope(changed: readonly string[], scope: DiffScope): string[] {
+  return scope === "all" ? [...changed] : changed.filter(underBlog);
+}
+
 /** Parse `git status --porcelain`/`--short` (v1, same format) into the set of changed paths. */
 export function parseStatusPaths(porcelain: string): string[] {
   const paths: string[] = [];

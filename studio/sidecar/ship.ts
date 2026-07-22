@@ -9,7 +9,7 @@ import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
 import type { SaveDraftRequest, SaveDraftResponse } from "../shared/protocol";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
-import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, underBlog } from "./diffService";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, stagePathsForScope, underBlog } from "./diffService";
 import { errorMessage } from "./errorMessage";
 
 // Pinned commit identity (CLAUDE.md), independent of local git config.
@@ -116,29 +116,19 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Derive the staging set and enforce scope. `core.quotePath=false` keeps non-ASCII paths
-      // UTF-8 so `git add -- <path>` matches.
+      // Derive the staging set. `core.quotePath=false` keeps non-ASCII paths UTF-8 so
+      // `git add -- <path>` matches. `all` ships the whole worktree (a post may need supporting
+      // changes, e.g. a rehype plugin or shared component); `post` ships only the blog tree.
       const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd });
       if (statusRes.code !== 0) {
         return fail("git status", statusRes.stderr, statusRes.code);
       }
-      const changed = parseStatusPaths(statusRes.stdout);
-      const blogPaths = changed.filter(underBlog);
-      const outside = changed.filter((p) => !underBlog(p));
-
-      // `all` still never runs `git add -A`; it refuses when there are changes outside the blog
-      // tree that it would otherwise silently drop. `post` just ignores them.
-      if (input.scope === "all" && outside.length > 0) {
+      const stagePaths = stagePathsForScope(parseStatusPaths(statusRes.stdout), input.scope);
+      if (stagePaths.length === 0) {
         return {
           ok: false,
-          error:
-            `refusing to ship scope "all": ${outside.length} change(s) outside ${BLOG_CONTENT_DIR} ` +
-            `would be excluded (this flow never runs \`git add -A\`): ${outside.join(", ")}. ` +
-            `Commit or stash them separately, or use scope "post".`,
+          error: input.scope === "all" ? "no changes to ship" : `no changes under ${BLOG_CONTENT_DIR} to ship`,
         };
-      }
-      if (blogPaths.length === 0) {
-        return { ok: false, error: `no changes under ${BLOG_CONTENT_DIR} to ship` };
       }
 
       // Ship targets the session/"primary" branch, not the repo default. It must exist on origin
@@ -154,8 +144,8 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Scoped add: explicit blog paths only, never `git add -A` / `git add .`.
-      const addRes = await git.git(["add", "--", ...blogPaths], { cwd });
+      // Scoped add: explicit paths only, never `git add -A` / `git add .`.
+      const addRes = await git.git(["add", "--", ...stagePaths], { cwd });
       if (addRes.code !== 0) {
         return fail("git add", addRes.stderr, addRes.code);
       }
@@ -190,28 +180,30 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // The branch's diff vs base must contain only the post. Catches a worktree that somehow
-      // carries unrelated commits before anything is pushed.
-      const rangeRes = await git.git(
-        ["-c", "core.quotePath=false", "diff", "--name-only", `origin/${base}...HEAD`],
-        { cwd },
-      );
-      if (rangeRes.code !== 0) {
-        return fail(`git diff origin/${base}...HEAD`, rangeRes.stderr, rangeRes.code);
-      }
-      const prPaths = rangeRes.stdout
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-      const prOutside = prPaths.filter((p) => !underBlog(p));
-      if (prOutside.length > 0) {
-        return {
-          ok: false,
-          error:
-            `refusing to push: the branch diff vs ${base} includes ${prOutside.length} path(s) outside ` +
-            `${BLOG_CONTENT_DIR}: ${prOutside.join(", ")}. The branch must contain only the post. The commit ` +
-            `exists locally but was NOT pushed.`,
-        };
+      // A post-scoped ship's branch diff vs base must contain only the post; catches a worktree that
+      // somehow carries unrelated commits before anything is pushed. An `all` ship deliberately
+      // carries out-of-post changes, so this guard doesn't apply to it.
+      if (input.scope === "post") {
+        const rangeRes = await git.git(
+          ["-c", "core.quotePath=false", "diff", "--name-only", `origin/${base}...HEAD`],
+          { cwd },
+        );
+        if (rangeRes.code !== 0) {
+          return fail(`git diff origin/${base}...HEAD`, rangeRes.stderr, rangeRes.code);
+        }
+        const prOutside = rangeRes.stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && !underBlog(l));
+        if (prOutside.length > 0) {
+          return {
+            ok: false,
+            error:
+              `refusing to push: the branch diff vs ${base} includes ${prOutside.length} path(s) outside ` +
+              `${BLOG_CONTENT_DIR}: ${prOutside.join(", ")}. The branch must contain only the post. The commit ` +
+              `exists locally but was NOT pushed.`,
+          };
+        }
       }
 
       // Push the worktree's own branch as-is. Partial failure here = committed locally, nothing on
@@ -285,15 +277,13 @@ export function createShipService(deps: ShipDeps): ShipService {
         };
       }
 
-      // Stage precisely, never `git add -A`. `scope: "post"` mirrors ship: only paths under the blog
-      // tree. `scope: "all"` carries the whole worktree, safe here in a way it isn't for ship, since
-      // a draft pushes only its own throwaway branch and never opens a PR against the primary branch.
+      // Stage precisely, never `git add -A`; same scope policy as ship (`all` = the whole worktree,
+      // `post` = only the blog tree).
       const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd });
       if (statusRes.code !== 0) {
         return fail("git status", statusRes.stderr, statusRes.code);
       }
-      const changed = parseStatusPaths(statusRes.stdout);
-      const stagePaths = input.scope === "all" ? changed : changed.filter(underBlog);
+      const stagePaths = stagePathsForScope(parseStatusPaths(statusRes.stdout), input.scope);
 
       let committed = false;
       if (stagePaths.length > 0) {

@@ -231,16 +231,25 @@ describe("createShipService.openPr", () => {
     expect(seq.some((l) => l.includes("pr create"))).toBe(false);
   });
 
-  it('aborts scope "all" when there are changes outside the blog tree (never git add -A)', async () => {
-    const handler = withOverride(happy, (bin, args) =>
-      bin === "git" && args.join(" ").includes("status --porcelain") ? { stdout: ` M ${BLOG_PATH}\n?? .indeed/\n` } : {},
-    );
+  it('scope "all" ships out-of-post changes (a rehype plugin, shared component, etc.)', async () => {
+    const OUTSIDE = "astro.config.mjs";
+    const handler = withOverride(happy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("status --porcelain")) return { stdout: ` M ${BLOG_PATH}\n M ${OUTSIDE}\n` };
+      // The branch range carries the out-of-post path too; an `all` ship must not be blocked by it.
+      if (bin === "git" && a.startsWith("diff --name-only")) return { stdout: `${BLOG_PATH}\n${OUTSIDE}\n` };
+      return {};
+    });
     const { git, lines } = makeGit(handler);
     const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
     const res = await svc.openPr({ ...baseInput, scope: "all" });
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toMatch(/\.indeed\//);
-    expect(lines().some((l) => l.includes("commit"))).toBe(false);
+    expect(res).toEqual({ ok: true, prUrl: PR_URL });
+    // Both the post and the out-of-post change are staged explicitly; never `git add -A` / `git add .`.
+    expect(lines()).toContain(`git add -- ${BLOG_PATH} ${OUTSIDE}`);
+    expect(lines().some((l) => /add -A|add \.$/.test(l))).toBe(false);
+    // Pushed and PR'd: the out-of-post path in the branch range does not block an `all` ship.
+    expect(lines().some((l) => l.startsWith("git push"))).toBe(true);
+    expect(lines().some((l) => l.includes("pr create"))).toBe(true);
   });
 
   it("reports commit-ok/push-fail with a recovery hint and does not create a PR", async () => {
