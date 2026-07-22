@@ -6,6 +6,9 @@ import H5 from "./mdx/H5.astro";
 import H6 from "./mdx/H6.astro";
 import P from "./mdx/P.astro";
 import Link from "./mdx/Link.astro";
+import Img from "./mdx/Img.astro";
+import Figure from "./mdx/Figure.astro";
+import Figcaption from "./mdx/Figcaption.astro";
 import PostLink from "./mdx/PostLink.astro";
 
 /**
@@ -15,6 +18,9 @@ import PostLink from "./mdx/PostLink.astro";
  */
 export const mdxComponents = {
   a: Link,
+  figure: Figure,
+  figcaption: Figcaption,
+  img: Img,
   PostLink,
   h1: H1,
   h2: H2,
