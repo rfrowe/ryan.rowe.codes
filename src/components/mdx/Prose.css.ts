@@ -1,4 +1,4 @@
-import { style } from "@vanilla-extract/css";
+import { globalStyle, style } from "@vanilla-extract/css";
 import { typography, vars } from "@styles/theme.css.ts";
 import { spacing } from "@styles/theme-utils";
 
@@ -20,4 +20,29 @@ export const p = style({
 export const link = style({
   color: vars.palette.primary.main,
   textDecoration: "underline",
+});
+
+export const img = style({
+  maxWidth: "100%",
+  height: "auto",
+  borderRadius: "4px",
+});
+
+export const figure = style({
+  margin: spacing(3, 0),
+  padding: 0,
+});
+
+globalStyle(`${figure} img`, {
+  maxWidth: "100%",
+  height: "auto",
+  borderRadius: "4px",
+});
+
+export const figcaption = style({
+  marginTop: spacing(1),
+  fontSize: "0.875rem",
+  color: vars.palette.text.secondary,
+  textAlign: "center",
+  fontStyle: "italic",
 });

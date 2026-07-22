@@ -1,0 +1,12 @@
+---
+import { Image } from "astro:assets";
+import * as styles from "./Prose.css.ts";
+
+const { src, alt, ...rest } = Astro.props;
+---
+
+{typeof src === "object" ? (
+  <Image src={src} alt={alt ?? ""} class={styles.img} {...rest} />
+) : (
+  <img src={src} alt={alt ?? ""} class={styles.img} {...rest} />
+)}
