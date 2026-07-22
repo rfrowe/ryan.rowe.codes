@@ -15,19 +15,16 @@ interface SaveDraftPanelProps {
   path: string;
   /** The post's isolation branch, display-only (the sidecar pushes its own regardless). */
   branch: string | null;
-  /** The post's title, seeding the default commit subject. */
-  title: string;
   onClose: () => void;
 }
 
 type Phase = "editing" | "saving" | "result";
 
-export function SaveDraftPanel({ path, branch, title, onClose }: SaveDraftPanelProps) {
-  const label = title || slugFromPath(path);
+export function SaveDraftPanel({ path, branch, onClose }: SaveDraftPanelProps) {
   const review = useDiffReview(path);
   const { scope, setScope } = review;
 
-  const [subject, setSubject] = useState(`Save draft: ${label}`);
+  const [subject, setSubject] = useState(`blog(${slugFromPath(path)}): draft`);
   const [body, setBody] = useState("");
   const [phase, setPhase] = useState<Phase>("editing");
   const [result, setResult] = useState<SaveDraftResponse | null>(null);

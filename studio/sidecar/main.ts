@@ -47,6 +47,8 @@ const SPA_PORT = Number(process.env.STUDIO_SPA_PORT) || 5199;
 const PROTOCOL = process.env.STUDIO_PROTOCOL ?? "http";
 // How long to wait for a fresh Astro daemon to answer before declaring the preview unavailable.
 const ASTRO_HEALTH_TIMEOUT_MS = 30_000;
+// Cloudflare Pages project this repo deploys to; ship links the post at its per-branch preview.
+const CF_PAGES_PROJECT = process.env.STUDIO_CF_PAGES_PROJECT?.trim() || "ryan-rowe-codes";
 
 async function main(): Promise<void> {
   const token = process.env.STUDIO_TOKEN ?? "";
@@ -105,6 +107,7 @@ async function main(): Promise<void> {
     getActiveWorktree: () => store.getActiveWorktree(),
     getWorktreeFor: (p) => store.getWorktreeFor(p),
     getActiveNameSync: () => store.getActiveNameSync(),
+    pagesProject: CF_PAGES_PROJECT,
   });
   const sessions = createSessionsService({ blogRepoDir: REPO_ROOT });
   const tools = createStudioTools({ store, ship, blogRoot: REPO_ROOT, conventions });

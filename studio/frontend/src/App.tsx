@@ -22,6 +22,7 @@ import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
 import { getDirtyPosts, saveDraft } from "./api";
+import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { PromptContext, ServerMessage } from "../../shared/protocol";
@@ -801,13 +802,12 @@ export default function App() {
   const onSaveThenDelete = useCallback(() => {
     if (!pendingConfirm || pendingConfirm.op !== "delete") return;
     const { path } = pendingConfirm;
-    const title = state.tabs.find((t) => t.path === path)?.title ?? "";
     setConfirmBusy(true);
     setConfirmError(null);
     void (async () => {
       let saved: Awaited<ReturnType<typeof saveDraft>>;
       try {
-        saved = await saveDraft({ path, subject: `Save draft${title ? `: ${title}` : ""}`, body: "", scope: "all", confirm: true });
+        saved = await saveDraft({ path, subject: `blog(${slugFromPath(path)}): draft`, body: "", scope: "all", confirm: true });
       } catch (e: unknown) {
         setConfirmBusy(false);
         setConfirmError(e instanceof Error ? e.message : "Failed to save the draft to remote.");
@@ -836,7 +836,7 @@ export default function App() {
         setConfirmError("Saved to remote, but lost the connection before deleting locally.");
       }
     })();
-  }, [pendingConfirm, state.tabs]);
+  }, [pendingConfirm]);
 
   // Open the New Post dialog seeded with `title` (empty for a blank post), clearing any stale error.
   const openNewPost = useCallback((title: string) => {
@@ -1138,6 +1138,7 @@ export default function App() {
         <Modal size="wide" onClose={() => setShowShip(false)}>
           <ShipPanel
             branch={activeTab?.branch ?? null}
+            slug={activeTab ? slugFromPath(activeTab.path) : null}
             nameSync={activeTab?.nameSync ?? SYNCED}
             onClose={() => setShowShip(false)}
           />
@@ -1152,7 +1153,6 @@ export default function App() {
               <SaveDraftPanel
                 path={tab.path}
                 branch={tab.branch}
-                title={tab.title}
                 onClose={() => setSaveDraftFor(null)}
               />
             </Modal>

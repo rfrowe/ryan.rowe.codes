@@ -57,4 +57,4 @@ export interface OpenPrInput {
   scope: "post" | "all";
   confirm: boolean;
 }
-export type OpenPrResult = { ok: true; prUrl: string } | { ok: false; error: string; violations?: string[] };
+export type OpenPrResult = { ok: true; prUrl: string; previewUrl?: string } | { ok: false; error: string; violations?: string[] };

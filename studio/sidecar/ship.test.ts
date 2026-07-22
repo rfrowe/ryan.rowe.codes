@@ -308,6 +308,55 @@ describe("createShipService.openPr", () => {
     expect(lines()).toContain("git -c core.quotePath=false status --porcelain");
     expect(lines()).toContain(`git add -- ${CAFE_PATH}`);
   });
+
+  it("appends the predicted Cloudflare preview link to the PR body only, never the commit", async () => {
+    const POST_MDX = [
+      "---",
+      "title: Aligning a Skyline",
+      "slug: aligning-a-skyline",
+      "headline: On least-squares and rooftops",
+      "created_at: 2026-07-10",
+      "---",
+      "",
+      "Body.",
+    ].join("\n");
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith(`show HEAD:${BLOG_PATH}`) ? { stdout: POST_MDX } : {},
+    );
+    const { git, calls, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+      pagesProject: "ryan-rowe-codes",
+    });
+    const res = await svc.openPr(baseInput);
+    // WORKTREE.branch "blog/aligning-a-skyline" aliases to "blog-aligning-a-skyline" (under 28 chars).
+    const previewUrl = "https://blog-aligning-a-skyline.ryan-rowe-codes.pages.dev/blog/2026-07-10/aligning-a-skyline";
+    expect(res).toEqual({ ok: true, prUrl: PR_URL, previewUrl });
+
+    // The source is read from the just-committed HEAD, after the commit.
+    const seq = lines();
+    const idx = (needle: string) => seq.findIndex((l) => l.includes(needle));
+    expect(idx("commit")).toBeLessThan(idx(`show HEAD:${BLOG_PATH}`));
+
+    // It lands in the PR body (author's body preserved above it), never in the commit message.
+    const prLine = calls.find((c) => c.bin === "gh" && c.line.includes("pr create"))!.line;
+    expect(prLine).toContain(baseInput.body);
+    expect(prLine).toContain(`Preview (live once Cloudflare finishes building this branch): ${previewUrl}`);
+    expect(calls.find((c) => c.line.includes("commit"))!.line).not.toContain("pages.dev");
+  });
+
+  it("omits the preview link, and never reads the source, when no Pages project is configured", async () => {
+    const { git, calls, lines } = makeGit(happy);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.openPr(baseInput);
+    expect(res).toEqual({ ok: true, prUrl: PR_URL });
+    expect(lines().some((l) => l.includes("show HEAD:"))).toBe(false);
+    expect(calls.find((c) => c.bin === "gh" && c.line.includes("pr create"))!.line).not.toContain("pages.dev");
+  });
 });
 
 describe("createShipService.diff", () => {
