@@ -1,8 +1,8 @@
 ---
-title: Agentic Blog IDE
-slug: agentic-blog-ide
-headline: An Agentic Blog IDE
-created_at: "2026-07-14"
+title: Agentic Blog Studio
+slug: agentic-blog-studio
+headline: An Agentic Blog Studio
+created_at: "2026-07-22T02:32:38.409-07:00"
 ---
 
 It's been a long time since my <PostLink slug="hello-world">Hello World</PostLink> post. And again a lot has changed. Little did I know how large language models would radiacally transform software development in recent years. Thankfully, wonders like Claude sooth the pain of coming back to a blog like this to find that it's fundamentally broken because several frameworks are no longer supported.
@@ -23,3 +23,18 @@ The requirements were clear:
 * Native agent support with full worktree access and MCP tools for
 
 [The studio stack](./studio-stack.mmd "mermaid:")
+
+### Studio in Action
+The first thing I did with the studio was finish my last in-progress blog post, <PostLink slug="lore-migration" />. And I'm using it to author this blog post right now. The agentic interface is excellent at async, dynamic tasks like finding or generating assets, performing rebases, making styling changes, drafting new components, and adding Astro or rehype plugins.
+
+![The studio's three-pane layout: a CodeMirror MDX editor on the left, a live rendered preview of this post in the center, and the agent chat panel on the right, with one tab per open post across the top and a status bar along the bottom.](./studio-in-action.webp)
+
+
+Here's an example of the studio agent resolving a TODO to import an asset while I continue writing:
+
+![The studio with the previous TODO already resolved into the figure above, shown in both the editor and the live preview. A small prompt box floats over the editor, anchored to the next TODO comment, reading "Finish this too."](./studio-after-todo.webp)
+
+After finishing the post, I can use the agent to spellcheck and then ship the content. This modal previews the diff and ultimately created [!30](https://github.com/rfrowe/ryan.rowe.codes/pull/30), the PR which published this blog post:
+
+![The Ship as PR modal: a scope toggle, the list of staged files, a green diff of the post, and fixed branch with subject and body fields above a Review & ship button.](./ship.webp)
+

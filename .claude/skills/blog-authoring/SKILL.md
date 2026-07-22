@@ -166,14 +166,18 @@ opaque HTML, so raw data passed as children arrives escaped.
 
 1. Render/export the image offline and commit a `.webp` next to `post.mdx`
    (folder post).
-2. Embed it as an image followed immediately by an *italic* caption line:
+2. Embed it as a standalone image. The `rehype-figure` plugin (in
+   `astro.config.mjs`'s `rehypePlugins`) wraps a lone image in a `<figure>` and
+   emits the alt text as its `<figcaption>`, so the alt *is* the visible caption
+   — write one line and don't add a separate caption of your own:
 
    ```md
-   ![The anchor tool: two source panels with numbered markers…](./anchor-tool.webp)
-   *Click a marker, then click inside its 5x loupe to place it precisely.*
+   ![Click a marker, then click inside its 5x loupe to place it precisely.](./anchor-tool.webp)
    ```
 
-   Write real alt text describing the image content, not the caption repeated.
+   Because the alt doubles as the caption, write it as the sentence you want
+   shown under the image, not as a bare accessibility label. Don't follow it with
+   an italic line or any other caption — that would double up.
 
 **Interactive figure** (client-side state, canvas, or hydration): a co-located
 `.tsx` (+ `.css.ts`) island, the same folder-post pattern as `cubeCard.tsx` /
