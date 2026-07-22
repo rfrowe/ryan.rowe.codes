@@ -52,9 +52,30 @@ export type ClientMessage =
   // question's exact text (a multi-select's value is its chosen labels, comma-separated).
   | { type: "question.answer"; requestId: string; answers: Record<string, string> };
 
+// One replayed turn fragment of a selected session's transcript, in chronological order: the
+// author's prompt, a slice of the agent's prose, or a completed tool call (its result already
+// previewed/redacted server-side, like the live stream). The studio's compact view of stored
+// history, decoupled from the frontend's own ChatItem shape.
+export interface SessionHistoryTool {
+  toolUseId: string;
+  name: string;
+  input: unknown;
+  isError: boolean;
+  resultPreview: string;
+}
+export type SessionHistoryItem =
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; text: string }
+  | { kind: "tool"; tool: SessionHistoryTool };
+
 // ---- WebSocket: server to client ----
 export type ServerMessage =
   | { type: "session"; sessionId: string; mode: SessionMode }
+  // The active post's newly-selected session and its full transcript: the prior conversation for a
+  // resume/fork, or [] for a new session. Sent by session.select; the client replaces the active
+  // tab's chat with `items` so the panel reflects the conversation the agent actually resumed
+  // (or clears it for a fresh session) rather than leaving whatever was last on screen.
+  | { type: "session.history"; sessionId: string; mode: SessionMode; items: SessionHistoryItem[] }
   | { type: "assistant.delta"; promptId: string; text: string }
   | { type: "assistant.message"; promptId: string; text: string }
   | { type: "tool.start"; promptId: string; toolUseId: string; name: string; input: unknown }

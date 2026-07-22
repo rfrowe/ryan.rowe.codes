@@ -57,7 +57,11 @@ export interface ShipService {
 
 /** Enumerates prior sessions for the picker. */
 export interface SessionsService {
-  list(): Promise<SessionListItem[]>;
+  /**
+   * Prior sessions for the picker. `scope: "post"` (the default the picker opens on) narrows to the
+   * active post's worktree; `"all"` returns every session across the blog repo and its worktrees.
+   */
+  list(scope: "post" | "all"): Promise<SessionListItem[]>;
 }
 
 /** The bundle the bootstrap constructs and injects into the server factory. */

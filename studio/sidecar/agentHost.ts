@@ -8,11 +8,11 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { HookInput, HookJSONOutput, Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
+import type { HookInput, HookJSONOutput, Options, SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import type { AgentHost, StudioTools } from "../shared/services";
-import type { PromptContext, ServerMessage } from "../shared/protocol";
+import type { PromptContext, ServerMessage, SessionHistoryItem, SessionHistoryTool } from "../shared/protocol";
 import type { PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
 import type { ActiveWorktree } from "../state/store";
 import { STUDIO_MCP_SERVER_NAME, STUDIO_TOOL_WILDCARD } from "../shared/mcpTools";
@@ -37,6 +37,8 @@ export interface AgentHostDeps {
   defaultPermissionMode?: PermissionMode;
   /** Dirs editable beyond the worktree at launch; seeds the granted-dir set. */
   additionalDirectories?: string[];
+  /** Seam over the SDK's `getSessionMessages` for testing; defaults to the real SDK call. */
+  getSessionMessagesImpl?: typeof getSessionMessages;
 }
 
 /** The frozen AgentHost plus the studio's MCP status/toggle and permission surface. */
@@ -124,8 +126,23 @@ class EmbeddedAgentHost implements StudioAgentHost {
     }
     session.mode = mode;
     session.firstTurn = true;
-    this.deps.emit({ type: "session", sessionId: session.sessionId, mode });
+    // Replay the selected conversation so the panel matches what the agent resumes: the source
+    // transcript for resume/fork, empty for a fresh session. The SDK loads this into the agent's
+    // context on the next turn but never re-streams it, so the client has no other way to see it.
+    const items = mode === "new" ? [] : await this.loadHistory(session.resumeFrom as string);
+    this.deps.emit({ type: "session.history", sessionId: session.sessionId, mode, items });
     return { sessionId: session.sessionId, mode };
+  }
+
+  /** Read a prior session's stored transcript into the studio's compact history items. */
+  private async loadHistory(sourceSessionId: string): Promise<SessionHistoryItem[]> {
+    const read = this.deps.getSessionMessagesImpl ?? getSessionMessages;
+    try {
+      return reduceHistory(await read(sourceSessionId, { includeSystemMessages: false }));
+    } catch {
+      // A missing/unreadable transcript shouldn't sink the selection; the agent still resumes.
+      return [];
+    }
   }
 
   async prompt(input: { promptId: string; text: string; context: PromptContext }): Promise<void> {
@@ -555,6 +572,97 @@ function redactSecrets(text: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… [truncated ${text.length - max} chars]` : text;
+}
+
+// ---- session transcript replay ----
+
+interface TextBlock {
+  type: "text";
+  text: string;
+}
+interface ToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+function messageContent(message: unknown): unknown {
+  return message && typeof message === "object" ? (message as { content?: unknown }).content : undefined;
+}
+
+function isTextBlock(block: unknown): block is TextBlock {
+  return (
+    !!block &&
+    typeof block === "object" &&
+    (block as { type?: unknown }).type === "text" &&
+    typeof (block as { text?: unknown }).text === "string"
+  );
+}
+
+function isToolUseBlock(block: unknown): block is ToolUseBlock {
+  if (!block || typeof block !== "object") return false;
+  const b = block as { type?: unknown; id?: unknown; name?: unknown };
+  return b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string";
+}
+
+/** Drop the composed prompt's `<studio-context>` trailer so a replayed turn shows the author's own words. */
+function stripStudioContext(text: string): string {
+  const marker = text.indexOf("<studio-context>");
+  return (marker === -1 ? text : text.slice(0, marker)).trim();
+}
+
+/**
+ * Reduce a stored session transcript into the studio's compact history items, mirroring the live
+ * `dispatch` mapping: assistant text, tool calls (their result filled in from the matching
+ * tool_result the model saw as a user turn), and the author's own prompts. Tool-result-only user
+ * turns carry no bubble of their own. Pure, for unit testing.
+ */
+export function reduceHistory(messages: readonly SessionMessage[]): SessionHistoryItem[] {
+  const items: SessionHistoryItem[] = [];
+  // toolUseId to the emitted tool item awaiting its result, so a later tool_result fills it in place.
+  const toolsById = new Map<string, SessionHistoryTool>();
+
+  for (const entry of messages) {
+    const content = messageContent(entry.message);
+    if (entry.type === "assistant") {
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (isTextBlock(block)) {
+          if (block.text) items.push({ kind: "assistant", text: block.text });
+        } else if (isToolUseBlock(block)) {
+          const tool: SessionHistoryTool = {
+            toolUseId: block.id,
+            name: block.name,
+            input: block.input,
+            isError: false,
+            resultPreview: "",
+          };
+          toolsById.set(block.id, tool);
+          items.push({ kind: "tool", tool });
+        }
+      }
+    } else if (entry.type === "user") {
+      if (typeof content === "string") {
+        const text = stripStudioContext(content);
+        if (text) items.push({ kind: "user", text });
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (isToolResultBlock(block)) {
+            const tool = toolsById.get(block.tool_use_id);
+            if (tool) {
+              tool.isError = block.is_error === true;
+              tool.resultPreview = previewToolResult(block.content);
+            }
+          } else if (isTextBlock(block)) {
+            const text = stripStudioContext(block.text);
+            if (text) items.push({ kind: "user", text });
+          }
+        }
+      }
+    }
+  }
+  return items;
 }
 
 // ---- permission decision mapping ----

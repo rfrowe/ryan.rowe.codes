@@ -187,11 +187,41 @@ function ownerOf(state: StudioState, promptId: string): string | null {
 function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
   switch (msg.type) {
     case "session":
-      // No path in the message; the session belongs to the active (just-selected) post.
+      // No path in the message; the session belongs to the active (just-selected) post. Metadata
+      // only (e.g. the SDK settling on an id mid-turn); the transcript is never touched here so a
+      // live turn's streaming block survives.
       return patchTab(state, state.activePath, (t) => ({
         ...t,
         session: { sessionId: msg.sessionId, mode: msg.mode },
       }));
+
+    case "session.history": {
+      // A session was just selected for the active post: replace the transcript with the resumed
+      // conversation (or clear it for a new session), so the panel matches the context the agent
+      // resumed instead of leaving the previous session's messages on screen. Parked permission
+      // cards belonged to that old conversation, so drop them too.
+      const chat: ChatItem[] = msg.items.map((it): ChatItem => {
+        if (it.kind === "user") return { kind: "user", id: nid(), text: it.text };
+        if (it.kind === "assistant")
+          return { kind: "assistant", id: nid(), promptId: "history", text: it.text, streaming: false };
+        return {
+          kind: "tool",
+          id: nid(),
+          toolUseId: it.tool.toolUseId,
+          name: it.tool.name,
+          input: it.tool.input,
+          status: "done",
+          isError: it.tool.isError,
+          resultPreview: it.tool.resultPreview,
+        };
+      });
+      return patchTab(state, state.activePath, (t) => ({
+        ...t,
+        session: { sessionId: msg.sessionId, mode: msg.mode },
+        chat,
+        permissions: [],
+      }));
+    }
 
     case "assistant.delta":
       return patchTab(state, ownerOf(state, msg.promptId), (t) => ({

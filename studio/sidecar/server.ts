@@ -175,7 +175,9 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       case "GET /sessions": {
-        const sessions = await services.sessions.list();
+        // Default to the active post's worktree; `?scope=all` widens to every session.
+        const scope = url.searchParams.get("scope") === "all" ? "all" : "post";
+        const sessions = await services.sessions.list(scope);
         return sendJson(res, 200, { sessions } satisfies SessionsResponse);
       }
 
@@ -329,13 +331,10 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
 
       case "session.select":
+        // select() broadcasts session.history (session id, mode, and the replayed transcript)
+        // through the store fan-out, so there's nothing to reply here beyond surfacing a failure.
         services.agentHost
           .select(message.mode, message.sessionId)
-          .then((selected) => {
-            if (ws.readyState === ws.OPEN) {
-              ws.send(JSON.stringify({ type: "session", ...selected } satisfies ServerMessage));
-            }
-          })
           .catch((err: unknown) => emitError(ws, undefined, err));
         return;
 
