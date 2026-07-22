@@ -25,6 +25,7 @@ import type {
   ClientMessage,
   DiffResponse,
   DirtyPostsResponse,
+  FetchResponse,
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
@@ -62,6 +63,8 @@ export interface ServerOptions {
   lspConnect?: (ws: WebSocket) => void;
   /** The studio's branch/worktree for the status popover; sent to each client on connect. */
   getStudioBranch?: () => Promise<{ ref: string; worktree: string }>;
+  /** Run `git fetch --prune origin` and republish the active post's divergence; backs `POST /fetch`. */
+  fetchRemote?: () => Promise<FetchResponse>;
 }
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
@@ -213,6 +216,13 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return sendJson(res, 200, result satisfies ShipResponse);
       }
 
+      case "POST /fetch": {
+        // The one route that reaches origin to read (the studio is otherwise offline): fetch, then
+        // the active post's divergence is republished so its header warning updates.
+        const result = (await opts.fetchRemote?.()) ?? { ok: false, error: "fetch is unavailable" };
+        return sendJson(res, 200, result satisfies FetchResponse);
+      }
+
       case "POST /save-draft": {
         // Persist a draft to origin (commit + push its branch, no PR). Studio-run, like ship.
         const body = await readJson<SaveDraftRequest>(req);
@@ -287,6 +297,16 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       .getStudioBranch?.()
       .then((info) => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "studio.branch", ...info } satisfies ServerMessage));
+      })
+      .catch(() => {});
+    // The active post's divergence is a git round-trip too, so defer it like studio.branch rather than
+    // block the snapshot; a failed lookup just omits the warning. Only present when a post is active.
+    store
+      .getActiveDivergence()
+      .then((d) => {
+        if (d && ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ type: "post.divergence", path: d.path, ahead: d.ahead, behind: d.behind } satisfies ServerMessage));
+        }
       })
       .catch(() => {});
 

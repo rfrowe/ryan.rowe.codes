@@ -96,6 +96,9 @@ interface GitConfig {
    *  The fake otherwise only registers the `.git` link, so this is needed when a test can't pre-seed
    *  the file (e.g. a self-heal test that removes the whole worktree dir right before the add). */
   originFiles?: Record<string, string>;
+  /** Parks every `rev-list --left-right` (divergence) call on this promise until it resolves, so a
+   *  test can switch the active post mid-compute and assert the stale result is dropped. */
+  revListGate?: Promise<void>;
 }
 
 function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () => string[] } {
@@ -182,6 +185,7 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
       }
       if (args[0] === "rev-list") {
         const range = args[args.length - 1];
+        if (args.includes("--left-right") && cfg.revListGate) await cfg.revListGate;
         return { ...ok, stdout: cfg.revListCountByRange?.[range] ?? cfg.revListCount ?? "0" };
       }
       if (args[0] === "merge-base") {
@@ -310,6 +314,61 @@ describe("store.openPost (existing post)", () => {
   it("throws a clear error when the post is not present in its worktree (not on the session branch)", async () => {
     const { store } = newStore(); // nothing seeded → the worktree fork lacks the file
     await expect(store.openPost(SKYLINE_CANON)).rejects.toThrow(/not found in its worktree/);
+  });
+});
+
+describe("store divergence (getActiveDivergence / publishActiveDivergence)", () => {
+  const SKYLINE_GIT = `${WT}/2026-07-10_aligning-a-skyline/.git`;
+  const HELLO_GIT = `${WT}/2022-03-11_hello/.git`;
+
+  it("getActiveDivergence is null when no post is active", async () => {
+    const { store } = newStore();
+    expect(await store.getActiveDivergence()).toBeNull();
+  });
+
+  it("tags the active post's canonical path with its ahead/behind vs origin/<sessionBranch>", async () => {
+    const { store } = newStore(
+      { [SKYLINE_GIT]: "gitdir", [SKYLINE_WT_FILE]: SKYLINE },
+      { remoteBranchExists: true, revListCountByRange: { "origin/main...HEAD": "2\t3\n" } },
+    );
+    await store.openPost(SKYLINE_CANON);
+    expect(await store.getActiveDivergence()).toEqual({ path: SKYLINE_CANON, behind: 2, ahead: 3 });
+  });
+
+  it("broadcasts post.divergence for the active post", async () => {
+    const { store, messages } = newStore(
+      { [SKYLINE_GIT]: "gitdir", [SKYLINE_WT_FILE]: SKYLINE },
+      { remoteBranchExists: true, revListCountByRange: { "origin/main...HEAD": "1\t0\n" } },
+    );
+    await store.openPost(SKYLINE_CANON);
+    await store.publishActiveDivergence();
+    const div = messages.filter((m) => m.type === "post.divergence");
+    expect(div.length).toBeGreaterThan(0);
+    expect(div.at(-1)).toEqual({ type: "post.divergence", path: SKYLINE_CANON, ahead: 0, behind: 1 });
+  });
+
+  it("drops a divergence result whose post is no longer active (a fast tab switch mid-read)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { store, messages } = newStore(
+      {
+        [SKYLINE_GIT]: "gitdir",
+        [SKYLINE_WT_FILE]: SKYLINE,
+        [HELLO_GIT]: "gitdir",
+        [HELLO_WT_FILE]: HELLO,
+      },
+      { remoteBranchExists: true, revListCount: "5\t0\n", revListGate: gate },
+    );
+    // Each activation fires a gated divergence read; the second switch lands before either resolves.
+    await store.openPost(SKYLINE_CANON);
+    await store.openPost(HELLO_CANON);
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const div = messages.filter((m) => m.type === "post.divergence");
+    // Only the still-active post is published; the stale read for the switched-away post is dropped.
+    expect(div.length).toBeGreaterThan(0);
+    expect(div.every((m) => m.type === "post.divergence" && m.path === HELLO_CANON)).toBe(true);
   });
 });
 

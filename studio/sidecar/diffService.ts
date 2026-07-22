@@ -20,6 +20,25 @@ export async function originRefExists(git: GitRunner, cwd: string, branch: strin
   return (await git.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd })).code === 0;
 }
 
+/**
+ * How far the worktree at `cwd` has diverged from `origin/<baseBranch>` (the ref it forked from and
+ * ship targets): `behind` = commits on the origin base this HEAD lacks (origin moved on; fetch then
+ * rebase), `ahead` = this HEAD's own commits. `{onOrigin:false,0,0}` when the origin ref is absent,
+ * so nothing ever reads as behind a base that isn't there. Offline-safe: reads on-disk refs, never
+ * fetches, so the numbers are as of the last fetch/push.
+ */
+export async function computeDivergence(
+  git: GitRunner,
+  cwd: string,
+  baseBranch: string,
+): Promise<{ onOrigin: boolean; ahead: number; behind: number }> {
+  if (!(await originRefExists(git, cwd, baseBranch))) return { onOrigin: false, ahead: 0, behind: 0 };
+  // `--left-right --count` prints "<left>\t<right>": left (the origin side) is behind, right (HEAD) is ahead.
+  const res = await git.git(["rev-list", "--left-right", "--count", `origin/${baseBranch}...HEAD`], { cwd });
+  const [behind, ahead] = res.stdout.trim().split(/\s+/).map((n) => Number.parseInt(n, 10) || 0);
+  return { onOrigin: true, ahead: ahead ?? 0, behind: behind ?? 0 };
+}
+
 // Each worktree checks out exactly one post, so scoping to the whole blog dir and scoping to that
 // post's own path produce the same tracked-file set in practice, but the wider pathspec keeps a
 // staged rename's old half in view (a precise pathspec would show "new file" instead of a rename).

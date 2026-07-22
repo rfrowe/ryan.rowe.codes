@@ -21,7 +21,7 @@ import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveCo
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
-import { getDirtyPosts, saveDraft } from "./api";
+import { fetchRemote, getDirtyPosts, saveDraft } from "./api";
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
@@ -62,6 +62,8 @@ interface TabState {
   /** Pending disk change from an external writer, awaiting the reload banner. */
   externalChange: { text: string; rev: DocRev } | null;
   nameSync: NameSync;
+  /** Divergence from origin's base (from `post.divergence`); `behind` > 0 drives the header warning. */
+  divergence: { ahead: number; behind: number };
 }
 
 interface StudioState {
@@ -129,6 +131,7 @@ function makeTab(path: string, title: string, branch: string | null = null): Tab
     permissions: [],
     externalChange: null,
     nameSync: SYNCED,
+    divergence: { ahead: 0, behind: 0 },
   };
 }
 
@@ -276,6 +279,11 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
           reason: msg.reason,
         },
       }));
+
+    case "post.divergence":
+      // Path-scoped (unlike preview/namesync): the divergence read is async, so it names the tab it
+      // measured in case the active post switched before it landed.
+      return patchTab(state, msg.path, (t) => ({ ...t, divergence: { ahead: msg.ahead, behind: msg.behind } }));
 
     case "done": {
       const owner = state.promptOwners[msg.promptId] ?? null;
@@ -480,6 +488,8 @@ export default function App() {
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
   // Posts with uncommitted edits (⊆ dirtyPaths); gates the tab menu's "Revert to clean".
   const [uncommittedPaths, setUncommittedPaths] = useState<Set<string>>(() => new Set());
+  // A git fetch is in flight (the tab bar's fetch button spins and disables while true).
+  const [fetching, setFetching] = useState(false);
 
   const socketRef = useRef<StudioSocket | null>(null);
   const editorRef = useRef<EditorHandle | null>(null);
@@ -562,8 +572,11 @@ export default function App() {
           return;
         }
         dispatch({ type: "server", msg });
-        // Draft-ness can change when the open set changes, an edit lands, or a turn finishes.
-        if (msg.type === "tabs" || msg.type === "file.changed" || msg.type === "done") refreshDirty();
+        // Draft-ness can change when the open set changes, an edit lands, a turn finishes, or a fetch
+        // moves the base under a post (post.divergence rides that fetch), so re-probe the dirty set too.
+        if (msg.type === "tabs" || msg.type === "file.changed" || msg.type === "done" || msg.type === "post.divergence") {
+          refreshDirty();
+        }
       },
       onStatus: setStatus,
     });
@@ -861,6 +874,20 @@ export default function App() {
     socketRef.current?.send({ type: "mcp.setEnabled", requestId: nid(), server, enabled });
   }, []);
 
+  // Fetch from origin (the studio's one read from the remote). The sidecar broadcasts the refreshed
+  // divergence (and the reducer re-probes the dirty set off it), so nothing to reconcile here beyond
+  // the spinner and a failure notice.
+  const onFetch = useCallback(() => {
+    if (fetching) return;
+    setFetching(true);
+    fetchRemote()
+      .then((res) => {
+        if (!res.ok) showNotice(`Fetch failed: ${res.error}`);
+      })
+      .catch((e: unknown) => showNotice(e instanceof Error ? `Fetch failed: ${e.message}` : "Fetch failed."))
+      .finally(() => setFetching(false));
+  }, [fetching, showNotice]);
+
   // Switch the permission mode; the sidecar echoes mode.status back to the chip.
   const onSetMode = useCallback((mode: PermissionMode) => {
     socketRef.current?.send({ type: "mode.set", mode });
@@ -971,6 +998,7 @@ export default function App() {
         status={status}
         stackStatus={stackStatus}
         studio={state.studio}
+        behind={activeTab?.divergence.behind ?? 0}
         dirtyPaths={dirtyPaths}
         uncommittedPaths={uncommittedPaths}
         onSelect={openPost}
@@ -980,6 +1008,8 @@ export default function App() {
         onSaveDraft={onSaveDraft}
         onRevert={onRevertPost}
         onDelete={onDeletePost}
+        onFetch={onFetch}
+        fetching={fetching}
       />
 
       {notice && (

@@ -486,6 +486,53 @@ body {
 .tabbar__spacer {
   flex: 1 1 auto;
 }
+
+/* Persistent fetch-from-origin button (modelled on the new-tab button) at the far right. */
+.tabbar__fetch {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.tabbar__fetch:hover {
+  background: var(--bg-2);
+  color: var(--fg);
+}
+.tabbar__fetch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.tabbar__fetch:disabled {
+  cursor: default;
+}
+.tabbar__fetch--busy svg {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The active post's worktree is behind the base it forked from; sits just left of the fetch button. */
+.tabbar__diverged {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  margin-right: 8px;
+  color: var(--warn);
+}
 .tabbar__conn {
   align-self: center;
   flex: 0 0 auto;
