@@ -16,7 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { nodeFs } from "./fsImpl";
-import { createStore, type StudioStore } from "../state/store";
+import { createStore } from "../state/store";
 import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
 import { createGitWatch } from "./gitWatch";
@@ -33,7 +33,6 @@ import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
 import { copyWorktreeIncludes } from "./worktreeInclude";
 import type { StudioServices } from "../shared/services";
-import type { FetchResponse } from "../shared/protocol";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -50,8 +49,6 @@ const SPA_PORT = Number(process.env.STUDIO_SPA_PORT) || 5199;
 const PROTOCOL = process.env.STUDIO_PROTOCOL ?? "http";
 // How long to wait for a fresh Astro daemon to answer before declaring the preview unavailable.
 const ASTRO_HEALTH_TIMEOUT_MS = 30_000;
-// Network round-trip headroom for the fetch button (mirrors ship's push timeout).
-const NETWORK_TIMEOUT_MS = 120_000;
 // Cloudflare Pages project this repo deploys to; ship links the post at its per-branch preview.
 const CF_PAGES_PROJECT = process.env.STUDIO_CF_PAGES_PROJECT?.trim() || "ryan-rowe-codes";
 
@@ -206,7 +203,7 @@ async function main(): Promise<void> {
     lspConnect: (ws) => lspBridge.connect(ws),
     // Computed fresh per connection so a reload reflects new commits/pushes without a restart.
     getStudioBranch: () => resolveStudioBranch(git, sessionBranch),
-    fetchRemote: () => fetchRemote(git, store),
+    fetchRemote: () => gitStatus.fetch(),
   });
   await web.listen();
   const mcp = createMcpHttpServer(tools, { token, instructions: conventions, port: MCP_PORT });
@@ -424,23 +421,6 @@ async function resolveStudioBranch(
   const counted = await git.git(["rev-list", "--count", `origin/${sessionBranch}..${sessionBranch}`], { cwd: REPO_ROOT });
   const ahead = Number.parseInt(counted.stdout.trim() || "0", 10) || 0;
   return { ref: ahead > 0 ? sessionBranch : `origin/${sessionBranch}`, worktree };
-}
-
-/**
- * Pull down others' pushes: `git fetch --prune origin` at the repo root (ambient credentials, exactly
- * how ship's push authenticates), then republish the active post's divergence so its warning reflects
- * the newly-fetched refs. The one place the studio reaches origin to read — it's otherwise offline by
- * design, so no fetch happens implicitly anywhere else.
- */
-async function fetchRemote(git: ReturnType<typeof createGitRunner>, store: StudioStore): Promise<FetchResponse> {
-  try {
-    const res = await git.git(["fetch", "--prune", "origin"], { cwd: REPO_ROOT, timeoutMs: NETWORK_TIMEOUT_MS });
-    if (res.code !== 0) return { ok: false, error: res.stderr.trim() || `git fetch exited ${res.code}` };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "git fetch failed" };
-  }
-  await store.publishActiveDivergence();
-  return { ok: true };
 }
 
 /** Parse `--post <path>` or `--post=<path>` from argv. */

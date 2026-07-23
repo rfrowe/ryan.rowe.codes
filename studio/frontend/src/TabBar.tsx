@@ -9,7 +9,18 @@ import type { SocketStatus } from "./ws";
 import { kebabSlug, slugFromPath } from "./slug";
 import { Lifebar } from "./Lifebar";
 import { selectPost, selectPushable, selectRootName, selectUncommitted } from "./gitSelectors";
+import { useCommand } from "./useCommand";
 import type { GitState } from "../../shared/protocol";
+
+/** "3m ago" / "2h ago" / "1d ago", for the fetch button's "refs as of …" freshness. */
+function ago(at: number): string {
+  const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
 
 export interface TabDescriptor {
   path: string;
@@ -50,10 +61,9 @@ interface TabBarProps {
   onSaveDraft: (path: string) => void;
   onRevert: (path: string) => void;
   onDelete: (path: string) => void;
-  /** Fetch from origin (`git fetch --prune`), refreshing remote-tracking refs and the warning. */
+  /** Fetch from origin (`git fetch --prune`): refs only, global, updates every post's behind/incoming
+   *  reactively via git.state. The spinner and "refs as of …" freshness read git.fetch, not a prop. */
   onFetch: () => void;
-  /** A fetch is in flight: the button spins and is disabled. */
-  fetching: boolean;
 }
 
 export function TabBar({
@@ -71,7 +81,6 @@ export function TabBar({
   onRevert,
   onDelete,
   onFetch,
-  fetching,
 }: TabBarProps) {
   // Path currently being renamed (any tab may enter rename mode via the menu; the active tab also
   // via double-click).
@@ -145,6 +154,16 @@ export function TabBar({
   }
 
   const root = selectRootName(git);
+  const { inFlight: fetching, at } = git.fetch;
+
+  useCommand({
+    id: "git.fetch",
+    chord: "mod+shift+f",
+    label: "Fetch from origin",
+    group: "Git",
+    when: () => status === "open",
+    run: onFetch,
+  });
 
   return (
     <header className="tabbar">
@@ -213,7 +232,7 @@ export function TabBar({
         className={`tabbar__fetch ${fetching ? "tabbar__fetch--busy" : ""}`}
         onClick={onFetch}
         disabled={fetching}
-        title="Fetch from origin"
+        title={fetching ? "Fetching…" : at != null ? `Fetch from origin (refs as of ${ago(at)})` : "Fetch from origin"}
         aria-label="Fetch from origin"
       >
         <span aria-hidden="true">↻</span>

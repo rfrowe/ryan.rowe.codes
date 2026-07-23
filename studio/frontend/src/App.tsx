@@ -545,8 +545,6 @@ export default function App() {
   // drive the tab bar and its menu instead).
   const [_dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
   const [_uncommittedPaths, setUncommittedPaths] = useState<Set<string>>(() => new Set());
-  // A git fetch is in flight (the tab bar's fetch button spins and disables while true).
-  const [fetching, setFetching] = useState(false);
 
   const socketRef = useRef<StudioSocket | null>(null);
   const editorRef = useRef<EditorHandle | null>(null);
@@ -931,19 +929,17 @@ export default function App() {
     socketRef.current?.send({ type: "mcp.setEnabled", requestId: nid(), server, enabled });
   }, []);
 
-  // Fetch from origin (the studio's one read from the remote). The sidecar broadcasts the refreshed
-  // divergence (and the reducer re-probes the dirty set off it), so nothing to reconcile here beyond
-  // the spinner and a failure notice.
+  // Fetch from origin (the studio's one read from the remote). The sidecar's own recompute-and-publish
+  // updates git.state.fetch and every post's behind/incoming, so nothing to reconcile here beyond a
+  // failure notice; the spinner and "refs as of" freshness read git.state.fetch directly in TabBar.
   const onFetch = useCallback(() => {
-    if (fetching) return;
-    setFetching(true);
+    if (state.git.fetch.inFlight) return;
     fetchRemote()
       .then((res) => {
         if (!res.ok) showNotice(`Fetch failed: ${res.error}`);
       })
-      .catch((e: unknown) => showNotice(e instanceof Error ? `Fetch failed: ${e.message}` : "Fetch failed."))
-      .finally(() => setFetching(false));
-  }, [fetching, showNotice]);
+      .catch((e: unknown) => showNotice(e instanceof Error ? `Fetch failed: ${e.message}` : "Fetch failed."));
+  }, [state.git.fetch.inFlight, showNotice]);
 
   // Switch the permission mode; the sidecar echoes mode.status back to the chip.
   const onSetMode = useCallback((mode: PermissionMode) => {
@@ -1074,7 +1070,6 @@ export default function App() {
           onRevert={onRevertPost}
           onDelete={onDeletePost}
           onFetch={onFetch}
-          fetching={fetching}
         />
 
         {notice && (
