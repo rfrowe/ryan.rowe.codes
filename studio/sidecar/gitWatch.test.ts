@@ -36,12 +36,12 @@ async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
 
 describe("createGitWatch", () => {
   let repo: string | undefined;
-  let watcher: GitWatcher;
+  let watcher: GitWatcher | undefined;
 
   afterEach(async () => {
-    await watcher.close();
-    // repo is unset if makeRepo() threw before assigning it; rm(undefined) would mask that
-    // real failure behind a TypeError.
+    // watcher/repo are unset if createGitWatch()/makeRepo() threw before assigning them;
+    // calling close()/rm() on undefined would mask that real failure behind a TypeError.
+    await watcher?.close();
     if (repo) await rm(repo, { recursive: true, force: true });
   });
 
