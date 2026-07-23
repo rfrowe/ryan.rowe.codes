@@ -912,11 +912,19 @@ export default function App() {
       .catch((e: unknown) => showNotice(e instanceof Error ? `Fetch failed: ${e.message}` : "Fetch failed."));
   }, [state.git.fetch.inFlight, showNotice]);
 
-  // Update/Pull (F3): fetch this post's base then rebase onto it. git.state reflects the outcome
-  // reactively (behind clears, or rebase.phase flips to "conflicted" for F4 to pick up); a notice
-  // here only covers a transport failure or the no-op "already up to date" result.
+  // Update/Pull (F3): flush first so the rebase carries the newest keystrokes rather than dropping them
+  // or rebasing against stale content, same as revert/delete/save-draft. git.state reflects the outcome
+  // reactively (behind clears, or rebase.phase flips to "conflicted" for F4 to pick up); a notice here
+  // only covers a transport failure or the no-op "already up to date" result.
   const onUpdate = useCallback(
-    (path: string) => {
+    async (path: string) => {
+      if (path === activePathRef.current) {
+        try {
+          await editorRef.current?.flush();
+        } catch {
+          /* proceed; edits still live in the worktree file and any conflict surfaces via the banner */
+        }
+      }
       update(path)
         .then((res) => {
           if (!res.ok) showNotice(`Update failed: ${res.error}`);
