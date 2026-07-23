@@ -44,4 +44,31 @@ export default [
     files: ["**/*.d.ts"],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
+  {
+    // studio/git-live is meant to be a drop-in extractable package: it must know nothing of
+    // posts, the store, the wire protocol, or the SPA.
+    files: ["studio/git-live/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "../sidecar",
+                "../sidecar/**",
+                "../state",
+                "../state/**",
+                "../shared",
+                "../shared/**",
+                "../frontend",
+                "../frontend/**",
+              ],
+              message: "studio/git-live is studio-agnostic; it must not import from other studio packages.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];
