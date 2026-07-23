@@ -9,7 +9,7 @@ import type { GitRunner } from "../shared/seams";
 import { makeFs, ok, type FakeFs } from "./fakeFs";
 import { deriveUrl } from "../preview/deriveUrl";
 import { sha256Hex } from "../sidecar/hash";
-import { createStore, type ActiveChangeInfo } from "./store";
+import { createStore, previewMatchesExpectation, resolveDestructiveConfirm, type ActiveChangeInfo } from "./store";
 
 const REPO = "/repo";
 const BLOG = `${REPO}/src/content/blog`;
@@ -86,12 +86,6 @@ interface GitConfig {
   localCherryMerged?: boolean;
   /** Override of `cherryMerged` for just the remote ref's `git cherry` call. */
   remoteCherryMerged?: boolean;
-  /** Stems returned by `for-each-ref refs/heads/blog` (local blog branches), for listBranchStatuses. */
-  localBranches?: string[];
-  /** Stems returned by `for-each-ref refs/remotes/origin/blog` (remote blog branches), for listBranchStatuses. */
-  remoteBranches?: string[];
-  /** `<ref>:<rel>` specs `git cat-file -e` reports as present (draft layout detection); default none. */
-  catFilePaths?: string[];
   /** Files a fresh `git worktree add` "checks out", written into the fake fs when handling the add.
    *  The fake otherwise only registers the `.git` link, so this is needed when a test can't pre-seed
    *  the file (e.g. a self-heal test that removes the whole worktree dir right before the add). */
@@ -138,16 +132,6 @@ function makeGit(fs: FakeFs, cfg: GitConfig = {}): { git: GitRunner; lines: () =
         // stands in for the fork's checkout.
         for (const [p, content] of Object.entries(cfg.originFiles ?? {})) fs.store.set(p, content);
         return ok;
-      }
-      if (args[0] === "for-each-ref") {
-        const pattern = args[args.length - 1];
-        const isRemote = pattern.startsWith("refs/remotes/origin/");
-        const stems = isRemote ? (cfg.remoteBranches ?? []) : (cfg.localBranches ?? []);
-        const prefix = isRemote ? "refs/remotes/origin/blog/" : "refs/heads/blog/";
-        return { ...ok, stdout: stems.map((s) => `${prefix}${s}`).join("\n") + (stems.length ? "\n" : "") };
-      }
-      if (args[0] === "cat-file" && args[1] === "-e") {
-        return { ...ok, code: (cfg.catFilePaths ?? []).includes(args[2]) ? 0 : 1 };
       }
       if (args[0] === "worktree" && args[1] === "move") {
         movePrefix(fs, args[2], args[3]);
@@ -317,61 +301,6 @@ describe("store.openPost (existing post)", () => {
   });
 });
 
-describe("store divergence (getActiveDivergence / publishActiveDivergence)", () => {
-  const SKYLINE_GIT = `${WT}/2026-07-10_aligning-a-skyline/.git`;
-  const HELLO_GIT = `${WT}/2022-03-11_hello/.git`;
-
-  it("getActiveDivergence is null when no post is active", async () => {
-    const { store } = newStore();
-    expect(await store.getActiveDivergence()).toBeNull();
-  });
-
-  it("tags the active post's canonical path with its ahead/behind vs origin/<sessionBranch>", async () => {
-    const { store } = newStore(
-      { [SKYLINE_GIT]: "gitdir", [SKYLINE_WT_FILE]: SKYLINE },
-      { remoteBranchExists: true, revListCountByRange: { "origin/main...HEAD": "2\t3\n" } },
-    );
-    await store.openPost(SKYLINE_CANON);
-    expect(await store.getActiveDivergence()).toEqual({ path: SKYLINE_CANON, behind: 2, ahead: 3 });
-  });
-
-  it("broadcasts post.divergence for the active post", async () => {
-    const { store, messages } = newStore(
-      { [SKYLINE_GIT]: "gitdir", [SKYLINE_WT_FILE]: SKYLINE },
-      { remoteBranchExists: true, revListCountByRange: { "origin/main...HEAD": "1\t0\n" } },
-    );
-    await store.openPost(SKYLINE_CANON);
-    await store.publishActiveDivergence();
-    const div = messages.filter((m) => m.type === "post.divergence");
-    expect(div.length).toBeGreaterThan(0);
-    expect(div.at(-1)).toEqual({ type: "post.divergence", path: SKYLINE_CANON, ahead: 0, behind: 1 });
-  });
-
-  it("drops a divergence result whose post is no longer active (a fast tab switch mid-read)", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    const { store, messages } = newStore(
-      {
-        [SKYLINE_GIT]: "gitdir",
-        [SKYLINE_WT_FILE]: SKYLINE,
-        [HELLO_GIT]: "gitdir",
-        [HELLO_WT_FILE]: HELLO,
-      },
-      { remoteBranchExists: true, revListCount: "5\t0\n", revListGate: gate },
-    );
-    // Each activation fires a gated divergence read; the second switch lands before either resolves.
-    await store.openPost(SKYLINE_CANON);
-    await store.openPost(HELLO_CANON);
-    release();
-    await new Promise((r) => setTimeout(r, 0));
-
-    const div = messages.filter((m) => m.type === "post.divergence");
-    // Only the still-active post is published; the stale read for the switched-away post is dropped.
-    expect(div.length).toBeGreaterThan(0);
-    expect(div.every((m) => m.type === "post.divergence" && m.path === HELLO_CANON)).toBe(true);
-  });
-});
-
 describe("store.getGitState / setGitState (git.state connect replay)", () => {
   const STATE: GitState = {
     primary: { sessionBranch: "main", head: "main", rootMoved: false, ref: "origin/main", onOrigin: true, ahead: 0, behind: 0, worktree: REPO },
@@ -500,7 +429,7 @@ describe("store.createPost", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const WT_X = `${REPO}/.worktrees/feat-x/blog`;
-    expect(store.getActive()?.branch).toBe("feat-x/blog/2026-07-10_aligning-a-skyline");
+    expect(store.getActiveWorktree()?.branch).toBe("feat-x/blog/2026-07-10_aligning-a-skyline");
     expect(fs.store.get(`${WT_X}/2026-07-10_aligning-a-skyline/src/content/blog/2026-07-10_aligning-a-skyline.mdx`)).toBeDefined();
   });
 
@@ -528,7 +457,6 @@ describe("store multi-tab: open / switch / close", () => {
     expect(store.getActive()).toEqual({
       path: HELLO_CANON,
       title: "Hello",
-      branch: "blog/2022-03-11_hello",
       worktreePath: `${WT}/2022-03-11_hello`,
     });
 
@@ -669,7 +597,7 @@ describe("store.renamePost", () => {
     const newWtFile = `${WT}/2022-03-11_goodbye/src/content/blog/2022-03-11_goodbye.mdx`;
     expect(result.path).toBe(newCanon);
 
-    // A post.renamed broadcast carries old-to-new (path, title, branch) so clients migrate the tab's
+    // A post.renamed broadcast carries old-to-new (path, title) so clients migrate the tab's
     // transcript/session, and it is published before the active/tabs rebuild that follows.
     const rename = messages.slice(before);
     const renamedAt = rename.findIndex((m) => m.type === "post.renamed");
@@ -679,7 +607,6 @@ describe("store.renamePost", () => {
       oldPath: HELLO_CANON,
       newPath: newCanon,
       title: "Hello",
-      branch: "blog/2022-03-11_goodbye",
     });
     const activeAt = rename.findIndex((m) => m.type === "active" && m.path === newCanon);
     expect(renamedAt).toBeLessThan(activeAt);
@@ -911,7 +838,14 @@ describe("store.postLossPreview", () => {
     await store.openPost(SKYLINE_CANON);
     const preview = await store.postLossPreview(SKYLINE_CANON, "delete");
     // Diff = tracked delta from the base + a synthesized add-diff for the untracked file.
-    expect(preview).toEqual({ dirty: true, changedFiles: 2, ahead: 2, diff: "TRACKED_DELTA\nUNTRACKED_ADD", scope: "all" });
+    expect(preview).toEqual({
+      dirty: true,
+      changedFiles: 2,
+      ahead: 2,
+      diff: "TRACKED_DELTA\nUNTRACKED_ADD",
+      status: " M src/content/blog/a.mdx\n?? src/content/blog/b.tsx\n",
+      scope: "all",
+    });
   });
 
   it("reports the HEAD diff (what restore discards) for a revert", async () => {
@@ -922,7 +856,14 @@ describe("store.postLossPreview", () => {
     );
     await store.openPost(SKYLINE_CANON);
     const preview = await store.postLossPreview(SKYLINE_CANON, "revert");
-    expect(preview).toEqual({ dirty: true, changedFiles: 1, ahead: 0, diff: DIFF, scope: "post" });
+    expect(preview).toEqual({
+      dirty: true,
+      changedFiles: 1,
+      ahead: 0,
+      diff: DIFF,
+      status: " M src/content/blog/2026-07-10_aligning-a-skyline.mdx\n",
+      scope: "post",
+    });
   });
 
   it("excludes an untracked file from a revert's count and diff (it has no HEAD state)", async () => {
@@ -932,14 +873,35 @@ describe("store.postLossPreview", () => {
     );
     await store.openPost(SKYLINE_CANON);
     const preview = await store.postLossPreview(SKYLINE_CANON, "revert");
-    expect(preview).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "post" });
+    expect(preview).toEqual({
+      dirty: false,
+      changedFiles: 0,
+      ahead: 0,
+      diff: "",
+      status: "?? src/content/blog/never-committed.mdx\n",
+      scope: "post",
+    });
   });
 
   it("reports clean for an untouched worktree (delete + revert)", async () => {
     const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE });
     await store.openPost(SKYLINE_CANON);
-    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "all" });
-    expect(await store.postLossPreview(SKYLINE_CANON, "revert")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "post" });
+    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({
+      dirty: false,
+      changedFiles: 0,
+      ahead: 0,
+      diff: "",
+      status: "",
+      scope: "all",
+    });
+    expect(await store.postLossPreview(SKYLINE_CANON, "revert")).toEqual({
+      dirty: false,
+      changedFiles: 0,
+      ahead: 0,
+      diff: "",
+      status: "",
+      scope: "post",
+    });
   });
 
   it("reports clean for a draft adopted from its own pushed remote, even though it's unmerged into the session branch", async () => {
@@ -953,7 +915,14 @@ describe("store.postLossPreview", () => {
       },
     );
     await store.openPost(SKYLINE_CANON);
-    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({ dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: "all" });
+    expect(await store.postLossPreview(SKYLINE_CANON, "delete")).toEqual({
+      dirty: false,
+      changedFiles: 0,
+      ahead: 0,
+      diff: "",
+      status: "",
+      scope: "all",
+    });
   });
 
   it("delete's preview covers the whole worktree (not just the blog dir) with -M, so a staged rename pairs instead of 'new file' and an outside change surfaces too", async () => {
@@ -1011,6 +980,7 @@ describe("store.postLossPreview", () => {
       changedFiles: 1,
       ahead: 0,
       diff: "diff --git a/astro.config.mjs b/astro.config.mjs\n+added a remark plugin\n",
+      status: " M astro.config.mjs\n",
       scope: "all",
     });
     expect(lines()).toContain("git -c core.quotePath=false status --short --untracked-files=all");
@@ -1045,69 +1015,113 @@ describe("store.postLossPreview", () => {
   });
 });
 
-describe("store.scanDirtyPosts (enumerates worktrees on disk, not just open tabs)", () => {
-  it("reports an open post with uncommitted work in both sets", async () => {
+describe("previewMatchesExpectation", () => {
+  const preview = { dirty: true, changedFiles: 2, ahead: 1, diff: "d", status: "s", scope: "post" as const };
+
+  it("matches when both counts agree", () => {
+    expect(previewMatchesExpectation(preview, { changedFiles: 2, ahead: 1 })).toBe(true);
+  });
+
+  it("mismatches on changedFiles alone", () => {
+    expect(previewMatchesExpectation(preview, { changedFiles: 3, ahead: 1 })).toBe(false);
+  });
+
+  it("mismatches on ahead alone", () => {
+    expect(previewMatchesExpectation(preview, { changedFiles: 2, ahead: 0 })).toBe(false);
+  });
+});
+
+describe("resolveDestructiveConfirm (TOCTOU guard for delete/revert confirm)", () => {
+  it("lets a clean delete proceed regardless of the echoed expectation — nothing at stake to guard", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }); // clean: cfg default
+    await store.openPost(SKYLINE_CANON);
+    const result = await resolveDestructiveConfirm(store, "delete", SKYLINE_CANON, undefined, { changedFiles: 99, ahead: 99 });
+    expect(result).toEqual({ ok: true, scope: "all" });
+  });
+
+  it("lets a no-op revert (nothing uncommitted) proceed regardless of the echoed expectation", async () => {
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }); // clean
+    await store.openPost(SKYLINE_CANON);
+    const result = await resolveDestructiveConfirm(store, "revert", SKYLINE_CANON, "post", { changedFiles: 99, ahead: 0 });
+    expect(result).toEqual({ ok: true, scope: "post" });
+  });
+
+  it("proceeds, echoing the resolved scope, when the fresh delete preview still matches what was shown", async () => {
     const { store } = newStore(
       { [SKYLINE_WT_FILE]: SKYLINE },
       { statusPorcelain: " M src/content/blog/2026-07-10_aligning-a-skyline.mdx\n" },
     );
     await store.openPost(SKYLINE_CANON);
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [SKYLINE_CANON] });
+    const shown = await store.postLossPreview(SKYLINE_CANON, "delete");
+    const result = await resolveDestructiveConfirm(store, "delete", SKYLINE_CANON, undefined, {
+      changedFiles: shown.changedFiles,
+      ahead: shown.ahead,
+    });
+    expect(result).toEqual({ ok: true, scope: "all" });
   });
 
-  it("excludes a clean worktree from both sets", async () => {
-    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }); // default cfg = clean
+  it("refuses a delete confirm when more work lands between the preview pull and the confirm", async () => {
+    const cfg = { statusPorcelain: " M src/content/blog/2026-07-10_aligning-a-skyline.mdx\n" };
+    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, cfg);
     await store.openPost(SKYLINE_CANON);
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
+
+    // The dialog's own preview pull: one uncommitted file.
+    const shown = await store.postLossPreview(SKYLINE_CANON, "delete");
+    expect(shown.changedFiles).toBe(1);
+
+    // An agent turn (or another editor) lands a second edit before the author confirms.
+    cfg.statusPorcelain = " M src/content/blog/2026-07-10_aligning-a-skyline.mdx\n M astro.config.mjs\n";
+
+    // Without the guard this would just delete; prove it refuses instead.
+    const result = await resolveDestructiveConfirm(store, "delete", SKYLINE_CANON, undefined, {
+      changedFiles: shown.changedFiles,
+      ahead: shown.ahead,
+    });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("changed") });
   });
 
-  it("marks a clean-but-ahead post dirty but not uncommitted (nothing to revert)", async () => {
-    // No uncommitted edits, but commits ahead of the base: unshipped work (dirty) with nothing for
-    // "Revert to clean" to discard (not uncommitted).
-    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { revListCount: "2\n" });
-    await store.openPost(SKYLINE_CANON);
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [] });
+  it("refuses a revert confirm when the tree changes between the preview pull and the confirm", async () => {
+    // diffBase must be non-empty too, or "atStake" (preview.diff non-empty) never triggers and the
+    // guard has nothing to check regardless of the changedFiles mismatch below.
+    const cfg = {
+      statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n",
+      diffBase: "diff --git a/x b/x\n-old\n+new\n",
+    };
+    const { store } = newStore({ [HELLO_WT_FILE]: HELLO }, cfg);
+    await store.openPost(HELLO_CANON);
+
+    const shown = await store.postLossPreview(HELLO_CANON, "revert", "post");
+    expect(shown.changedFiles).toBe(1);
+    expect(shown.diff.trim().length).toBeGreaterThan(0);
+
+    // An agent turn (or another editor) lands a second edit before the author confirms.
+    cfg.statusPorcelain = " M src/content/blog/2022-03-11_hello.mdx\n M astro.config.mjs\n";
+
+    // Without the guard this would just revert; prove it refuses instead.
+    const result = await resolveDestructiveConfirm(store, "revert", HELLO_CANON, "post", {
+      changedFiles: shown.changedFiles,
+      ahead: shown.ahead,
+    });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("changed") });
   });
 
-  it("excludes a draft that's ahead of the session branch but already matches its own pushed remote", async () => {
-    // Same fork-point-vs-remote distinction as postLossPreview's delete case: ahead of origin/main
-    // (unmerged), but exactly at origin/blog/<stem> (its own remote, just adopted). Nothing would be
-    // lost, so it must not carry the tab dot or offer "Delete draft"/"Save to remote".
+  it("echoes the auto-picked scope for a scope-less revert confirm", async () => {
     const { store } = newStore(
-      { [SKYLINE_WT_FILE]: SKYLINE },
+      { [HELLO_WT_FILE]: HELLO },
       {
-        remoteBranchExists: true,
-        revListCountByRange: { "origin/blog/2026-07-10_aligning-a-skyline..HEAD": "0", "origin/main..HEAD": "1" },
+        statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n",
+        statusPorcelainAll: " M src/content/blog/2022-03-11_hello.mdx\n M astro.config.mjs\n",
+        diffBase: "diff --git a/astro.config.mjs b/astro.config.mjs\n+added a remark plugin\n",
       },
     );
-    await store.openPost(SKYLINE_CANON);
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
-  });
-
-  it("finds a dirty worktree that was never opened this session", async () => {
-    // No `openPost`: seed the worktree directly, as if it were created outside the studio. The
-    // method reads `git worktree list`, not the open-tab map, so it still surfaces here.
-    const { store, fs } = newStore({}, { statusPorcelain: " M src/content/blog/2022-03-11_hello.mdx\n" });
-    fs.store.set(`${WT}/2022-03-11_hello/.git`, "gitdir");
-    fs.store.set(HELLO_WT_FILE, HELLO);
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [HELLO_CANON], uncommitted: [HELLO_CANON] });
-  });
-
-  it("dedupes and skips a worktree whose post file can't be resolved", async () => {
-    const { store, fs } = newStore({}, { statusPorcelain: " M src/content/blog/mystery.mdx\n" });
-    // A worktree dir with neither `<stem>.mdx` nor `<stem>/post.mdx` inside it: can't map back to
-    // a canonical path, so it's skipped rather than guessed at.
-    fs.store.set(`${WT}/mystery/.git`, "gitdir");
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [], uncommitted: [] });
-  });
-
-  it("marks a post dirty and uncommitted when only a file outside the blog dir is uncommitted", async () => {
-    // The post's own .mdx is clean, but the worktree carries an edit elsewhere (e.g. an agent change
-    // to astro.config.mjs). Unscoped, like delete/revert-all: it must still surface, or the tab menu
-    // disables "Revert to clean" and hides "Delete draft" for a worktree that isn't actually clean.
-    const { store } = newStore({ [SKYLINE_WT_FILE]: SKYLINE }, { statusPorcelain: " M astro.config.mjs\n" });
-    await store.openPost(SKYLINE_CANON);
-    expect(await store.scanDirtyPosts()).toEqual({ dirty: [SKYLINE_CANON], uncommitted: [SKYLINE_CANON] });
+    await store.openPost(HELLO_CANON);
+    const shown = await store.postLossPreview(HELLO_CANON, "revert");
+    expect(shown.scope).toBe("all"); // more to revert than just the post: auto-picked "all".
+    const result = await resolveDestructiveConfirm(store, "revert", HELLO_CANON, undefined, {
+      changedFiles: shown.changedFiles,
+      ahead: shown.ahead,
+    });
+    expect(result).toEqual({ ok: true, scope: "all" });
   });
 });
 
@@ -1240,88 +1254,6 @@ describe("ensureWorktree adopts an existing draft branch (open path)", () => {
     expect(active.text).toBe(SKYLINE);
     expect(lines()).toContain(`git branch -D ${BRANCH}`);
     expect(lines()).toContain(`git worktree add --track -b ${BRANCH} ${WTP} origin/${BRANCH}`);
-  });
-});
-
-describe("store.listBranchStatuses (every blog/* branch's local/remote/stale status)", () => {
-  it("enumerates local + remote blog branches, flagging local and remote independently", async () => {
-    const { store, fs } = newStore(
-      {},
-      {
-        localBranches: ["2026-05-01_local-only", "2026-05-02_both"],
-        remoteBranches: ["2026-05-02_both", "2026-05-03_remote-only"],
-        // A folder-post draft on origin only (no worktree, so this resolves via git history).
-        catFilePaths: ["origin/blog/2026-05-03_remote-only:src/content/blog/2026-05-03_remote-only/post.mdx"],
-      },
-    );
-    fs.store.set(`${WT}/2026-05-01_local-only/.git`, "gitdir");
-    fs.store.set(`${WT}/2026-05-01_local-only/src/content/blog/2026-05-01_local-only.mdx`, doc("Local Only", "local-only", "2026-05-01"));
-    fs.store.set(`${WT}/2026-05-02_both/.git`, "gitdir");
-    fs.store.set(`${WT}/2026-05-02_both/src/content/blog/2026-05-02_both.mdx`, doc("Both", "both", "2026-05-02"));
-    expect(await store.listBranchStatuses()).toEqual([
-      { path: `${BLOG}/2026-05-01_local-only.mdx`, stem: "2026-05-01_local-only", local: true, remote: false, stale: false },
-      { path: `${BLOG}/2026-05-02_both.mdx`, stem: "2026-05-02_both", local: true, remote: true, stale: false },
-      { path: `${BLOG}/2026-05-03_remote-only/post.mdx`, stem: "2026-05-03_remote-only", local: false, remote: true, stale: false },
-    ]);
-  });
-
-  it("includes a stem with a live worktree on disk, resolving the post from disk rather than git history — the crashed-sidecar/closed-tab recovery case", async () => {
-    const { store, fs } = newStore({}, { localBranches: ["2026-05-01_kept"] });
-    fs.store.set(`${WT}/2026-05-01_kept/.git`, "gitdir");
-    fs.store.set(`${WT}/2026-05-01_kept/src/content/blog/2026-05-01_kept.mdx`, doc("Kept", "kept", "2026-05-01"));
-    // No catFilePaths entry: nothing is committed to the branch yet, only autosaved to disk.
-    expect(await store.listBranchStatuses()).toEqual([
-      { path: `${BLOG}/2026-05-01_kept.mdx`, stem: "2026-05-01_kept", local: true, remote: false, stale: false },
-    ]);
-  });
-
-  it("falls back to git history when a registered worktree's post file is missing on disk (a stale worktree registration)", async () => {
-    const { store, fs } = newStore(
-      {},
-      {
-        localBranches: ["2026-05-06_orphaned"],
-        catFilePaths: ["blog/2026-05-06_orphaned:src/content/blog/2026-05-06_orphaned.mdx"],
-      },
-    );
-    // Registered as a worktree (e.g. via `git worktree list`) but its directory was removed
-    // out-of-band, so no post file exists on disk under it.
-    fs.store.set(`${WT}/2026-05-06_orphaned/.git`, "gitdir");
-    expect(await store.listBranchStatuses()).toEqual([
-      { path: `${BLOG}/2026-05-06_orphaned.mdx`, stem: "2026-05-06_orphaned", local: true, remote: false, stale: false },
-    ]);
-  });
-
-  it("includes a stem that's already an open tab too, so the palette can still show its local/remote chips while editing", async () => {
-    const { store } = newStore(
-      { [`${WT}/2022-03-11_hello/.git`]: "gitdir", [HELLO_WT_FILE]: HELLO },
-      { localBranches: ["2022-03-11_hello"], remoteBranches: ["2022-03-11_hello"] },
-    );
-    await store.openPost(HELLO_CANON);
-    expect(await store.listBranchStatuses()).toEqual([
-      { path: HELLO_CANON, stem: "2022-03-11_hello", local: true, remote: true, stale: false },
-    ]);
-  });
-
-  it("skips a branch that carries no post file, on disk or in git history", async () => {
-    // A blog/* branch with nothing under src/content/blog matching the stem: can't resolve a path.
-    const { store } = newStore({}, { localBranches: ["2026-05-04_empty"], catFilePaths: [] });
-    expect(await store.listBranchStatuses()).toEqual([]);
-  });
-
-  it("flags a branch already merged into main as stale, via the same check ensureWorktree uses", async () => {
-    const { store } = newStore(
-      {},
-      {
-        localBranches: ["2026-05-05_shipped"],
-        catFilePaths: ["blog/2026-05-05_shipped:src/content/blog/2026-05-05_shipped.mdx"],
-        cherryMerged: true,
-      },
-    );
-    // No worktree seeded: a fully-shipped branch with only its ref left behind, dead weight rather
-    // than something still checked out locally.
-    expect(await store.listBranchStatuses()).toEqual([
-      { path: `${BLOG}/2026-05-05_shipped.mdx`, stem: "2026-05-05_shipped", local: false, remote: false, stale: true },
-    ]);
   });
 });
 

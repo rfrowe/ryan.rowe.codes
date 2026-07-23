@@ -3,7 +3,6 @@
 
 import type {
   DiffResponse,
-  DirtyPostsResponse,
   FetchResponse,
   PostsResponse,
   PutDocRequest,
@@ -45,6 +44,16 @@ export async function getDiff(scope: "post" | "all" = "post", path?: string): Pr
   return asJson<DiffResponse>(res);
 }
 
+/** What a delete or revert would discard, for the destructive-confirm dialog. `scope` narrows a
+ *  revert preview; omitted, the sidecar picks one ("all" when there's more than just the post, else
+ *  "post") and echoes its choice back on `DiffResponse.scope`. Delete ignores scope entirely. */
+export async function getLossPreview(op: "delete" | "revert", path: string, scope?: "post" | "all"): Promise<DiffResponse> {
+  const query: Record<string, string> = { op, path };
+  if (scope) query.scope = scope;
+  const res = await fetch(endpoint("/diff", query), { headers: { ...authHeaders() } });
+  return asJson<DiffResponse>(res);
+}
+
 /** Prior Claude Code sessions for the picker. `scope: "post"` narrows to the active post's worktree. */
 export async function getSessions(scope: "post" | "all" = "post"): Promise<SessionsResponse> {
   const res = await fetch(endpoint("/sessions", { scope }), { headers: { ...authHeaders() } });
@@ -57,12 +66,6 @@ export async function getPosts(): Promise<PostsResponse> {
   return asJson<PostsResponse>(res);
 }
 
-/** Open posts with unshipped changes. */
-export async function getDirtyPosts(): Promise<DirtyPostsResponse> {
-  const res = await fetch(endpoint("/posts/dirty"), { headers: { ...authHeaders() } });
-  return asJson<DirtyPostsResponse>(res);
-}
-
 /** Studio-run ship flow (diff, branch, commit, push, PR). Requires `confirm`. */
 export async function ship(req: ShipRequest): Promise<ShipResponse> {
   const res = await fetch(endpoint("/ship"), {
@@ -73,7 +76,7 @@ export async function ship(req: ShipRequest): Promise<ShipResponse> {
   return asJson<ShipResponse>(res);
 }
 
-/** Fetch from origin (`git fetch --prune`); the sidecar republishes the active post's divergence. */
+/** Fetch from origin (`git fetch --prune`); the sidecar republishes git.state off the fetched refs. */
 export async function fetchRemote(): Promise<FetchResponse> {
   const res = await fetch(endpoint("/fetch"), { method: "POST", headers: { ...authHeaders() } });
   return asJson<FetchResponse>(res);

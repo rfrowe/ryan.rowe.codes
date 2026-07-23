@@ -6,9 +6,9 @@
 // and services the full tab lifecycle and mcp.setEnabled.
 
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
-import type { BranchStatus, ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage, SessionHistoryItem } from "../../shared/protocol";
+import type { ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage, SessionHistoryItem } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
-import type { FetchResponse, SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
+import type { DiffResponse, FetchResponse, SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
 import { isValidSlug, postStem } from "../../shared/slug";
 import { REST_BASE, WS_BASE } from "./config";
 
@@ -77,39 +77,11 @@ const CLOSED_POSTS: PostSummaryDTO[] = [
   },
 ];
 
-// Every blog/* branch's status, for the ⌘P palette's chips. One local-only, one remote-only, one
-// both-and-stale (already merged, so reopening would fork fresh rather than adopt it).
-const MOCK_BRANCHES: { summary: BranchStatus; title: string }[] = [
-  {
-    summary: {
-      path: postPath("2026-04-18", "a-half-written-idea"),
-      stem: "2026-04-18_a-half-written-idea",
-      local: true,
-      remote: false,
-      stale: false,
-    },
-    title: "A Half-Written Idea",
-  },
-  {
-    summary: {
-      path: postPath("2026-02-02", "notes-from-a-plane"),
-      stem: "2026-02-02_notes-from-a-plane",
-      local: false,
-      remote: true,
-      stale: false,
-    },
-    title: "Notes From a Plane",
-  },
-  {
-    summary: {
-      path: postPath("2026-01-05", "a-shipped-experiment"),
-      stem: "2026-01-05_a-shipped-experiment",
-      local: true,
-      remote: true,
-      stale: true,
-    },
-    title: "A Shipped Experiment",
-  },
+// Not-yet-open draft posts ⌘P can adopt (a branch pushed elsewhere, never opened in this session).
+const MOCK_BRANCHES: { path: string; title: string }[] = [
+  { path: postPath("2026-04-18", "a-half-written-idea"), title: "A Half-Written Idea" },
+  { path: postPath("2026-02-02", "notes-from-a-plane"), title: "Notes From a Plane" },
+  { path: postPath("2026-01-05", "a-shipped-experiment"), title: "A Shipped Experiment" },
 ];
 
 const SAMPLE_DIFF = `diff --git a/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx b/src/content/blog/2026-07-10_aligning-a-skyline/post.mdx
@@ -177,25 +149,20 @@ function branchFromPath(path: string): string {
 interface MockDoc {
   path: string;
   title: string;
-  branch: string;
   text: string;
   rev: DocRev;
   preview: PreviewState;
   agent: AgentState;
-  /** Divergence from the base ref, so ?mock can show the header's "behind" warning per post. */
-  divergence: { ahead: number; behind: number };
 }
 
 function makeDoc(path: string, title: string, text: string, preview: PreviewState): MockDoc {
   return {
     path,
     title,
-    branch: branchFromPath(path),
     text,
     rev: makeRev(1, text),
     preview,
     agent: { sessionId: null, mode: "new" },
-    divergence: { ahead: 0, behind: 0 },
   };
 }
 
@@ -230,9 +197,6 @@ class MockBackend {
       CACHE_MDX,
       { valid: true, url: previewUrl("2026-06-22", "the-shape-of-a-cache") },
     );
-    // The active post is behind its base (shows the header's divergence warning); the other is
-    // up-to-date (none), so switching tabs demonstrates the per-active-post behaviour.
-    skyline.divergence = { ahead: 1, behind: 3 };
     this.docs.set(skyline.path, skyline);
     this.docs.set(cache.path, cache);
     this.open = [skyline.path, cache.path];
@@ -245,8 +209,6 @@ class MockBackend {
     socket.deliver(this.tabsMsg());
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
-    // Label the status chip "mock" so it's obvious no real sidecar/git is behind this session.
-    socket.deliver({ type: "studio.branch", ref: "mock", worktree: "/repo/ryan.rowe.codes (mock)" });
     this.deliverActive(socket);
     const active = this.docs.get(this.activePath);
     if (active?.agent.sessionId) socket.deliver({ type: "session", sessionId: active.agent.sessionId, mode: active.agent.mode });
@@ -274,20 +236,13 @@ class MockBackend {
     const doc = this.docs.get(this.activePath);
     if (!doc) return;
     const send = (m: ServerMessage) => (target ? target.deliver(m) : this.broadcast(m));
-    send({ type: "active", path: doc.path, title: doc.title, branch: doc.branch, worktreePath: REPO });
+    send({ type: "active", path: doc.path, title: doc.title, worktreePath: REPO });
     send({ type: "file.changed", path: doc.path, text: doc.text, rev: doc.rev, origin: "external" });
     send({ type: "preview.url", preview: doc.preview });
     send(this.nameSyncMsg(doc));
-    // Divergence rides the activation like the sidecar's, so the warning follows the active post.
-    send({ type: "post.divergence", path: doc.path, ahead: doc.divergence.ahead, behind: doc.divergence.behind });
   }
 
-  /** Re-publish the active post's divergence, mirroring the sidecar republishing after a fetch. */
   fetchRemote(): FetchResponse {
-    const doc = this.docs.get(this.activePath);
-    if (doc) {
-      this.broadcast({ type: "post.divergence", path: doc.path, ahead: doc.divergence.ahead, behind: doc.divergence.behind });
-    }
     return { ok: true };
   }
 
@@ -327,7 +282,12 @@ class MockBackend {
     return { ok: true, rev: doc.rev };
   }
 
-  diff(): { status: string; diff: string; outsideCount: number } {
+  diff(op?: "delete" | "revert", path?: string): DiffResponse {
+    if (op) {
+      // The destructive-confirm preview: a synthesized loss diff (real diffs come from git in the
+      // sidecar), so the gate is demoable.
+      return { status: " M src/content/blog/mock.mdx", diff: this.lossDiff(path ?? ""), outsideCount: 0, scope: "all", changedFiles: 1, unpushed: 0 };
+    }
     return { status: " M src/content/blog/2026-07-10_aligning-a-skyline/post.mdx", diff: SAMPLE_DIFF, outsideCount: 0 };
   }
 
@@ -344,17 +304,6 @@ class MockBackend {
     });
     const openPaths = new Set(this.open);
     return [...openSummaries, ...CLOSED_POSTS.filter((p) => !openPaths.has(p.path))];
-  }
-
-  dirtyStatus(): { dirty: string[]; uncommitted: string[] } {
-    // Every open post carries unshipped work (exercises the dirty badge/dot); only the active post is
-    // treated as having uncommitted edits, so "Revert to clean" is enabled there and disabled on the
-    // other open tabs (exercises both states in dev).
-    return { dirty: [...this.open], uncommitted: this.open.includes(this.activePath) ? [this.activePath] : [] };
-  }
-
-  branchStatuses(): BranchStatus[] {
-    return MOCK_BRANCHES.map((d) => d.summary);
   }
 
   ship(req: ShipRequest): ShipResponse {
@@ -418,10 +367,10 @@ class MockBackend {
         this.revertUrl(msg.requestId, msg.path);
         break;
       case "post.delete":
-        this.deletePost(msg.requestId, msg.path, msg.confirm);
+        this.deletePost(msg.requestId, msg.path);
         break;
       case "post.revert":
-        this.revertPost(msg.requestId, msg.path, msg.scope ?? "post", msg.confirm);
+        this.revertPost(msg.requestId, msg.path);
         break;
       case "mcp.setEnabled":
         this.setMcpEnabled(msg.server, msg.enabled);
@@ -447,7 +396,7 @@ class MockBackend {
     // Adopt a known-but-closed post (or an existing draft branch) into docs on first open.
     if (!this.docs.has(path)) {
       const closed = CLOSED_POSTS.find((p) => p.path === path);
-      const draft = MOCK_BRANCHES.find((d) => d.summary.path === path);
+      const draft = MOCK_BRANCHES.find((d) => d.path === path);
       const known = closed ?? (draft ? { path, title: draft.title } : null);
       if (!known) {
         this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
@@ -560,7 +509,6 @@ class MockBackend {
       return;
     }
     doc.path = nextPath;
-    doc.branch = branchFromPath(nextPath);
     if (rewriteFrontmatter) doc.text = doc.text.replace(/^slug:.*$/m, `slug: ${slug}`);
     doc.rev = makeRev(doc.rev.n + 1, doc.text);
     doc.preview = { valid: true, url: previewUrl(date, slug) };
@@ -570,7 +518,7 @@ class MockBackend {
     if (this.activePath === oldPath) this.activePath = nextPath;
     // Announce the rename before the tabs/active rebuild so the client migrates the tab's transcript
     // + session onto the new path (doc.agent already moved with the doc object above).
-    this.broadcast({ type: "post.renamed", oldPath, newPath: nextPath, title: doc.title, branch: doc.branch });
+    this.broadcast({ type: "post.renamed", oldPath, newPath: nextPath, title: doc.title });
     this.broadcast(this.tabsMsg());
     this.deliverActive();
     this.broadcast({ type: "post.result", requestId, ok: true, path: nextPath });
@@ -591,13 +539,9 @@ class MockBackend {
     ].join("\n");
   }
 
-  private deletePost(requestId: string, path: string, confirm: boolean): void {
+  private deletePost(requestId: string, path: string): void {
     if (!this.docs.has(path)) {
       this.broadcast({ type: "post.result", requestId, ok: true, path });
-      return;
-    }
-    if (!confirm) {
-      this.broadcast({ type: "post.confirm", requestId, op: "delete", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path), scope: "all" });
       return;
     }
     const at = this.open.indexOf(path);
@@ -615,14 +559,10 @@ class MockBackend {
     this.broadcast({ type: "post.result", requestId, ok: true, path });
   }
 
-  private revertPost(requestId: string, path: string, scope: "post" | "all", confirm: boolean): void {
+  private revertPost(requestId: string, path: string): void {
     const doc = this.docs.get(path);
     if (!doc) {
       this.broadcast({ type: "post.result", requestId, ok: false, error: `unknown post: ${path}` });
-      return;
-    }
-    if (!confirm) {
-      this.broadcast({ type: "post.confirm", requestId, op: "revert", path, changedFiles: 1, ahead: 0, diff: this.lossDiff(path), scope });
       return;
     }
     // Restore to a clean baseline and push it (origin "agent", so the buffer is replaced, no banner).
@@ -888,17 +828,18 @@ export function installMock(): void {
 
     if (path === "/health") return ok({ ok: true });
     if (method === "PUT" && path === "/doc") return ok(backend.putDoc(body as PutDocRequest));
-    if (method === "GET" && path === "/diff") return ok(backend.diff());
+    if (method === "GET" && path === "/diff") {
+      const params = new URL(url).searchParams;
+      const op = params.get("op");
+      return ok(backend.diff(op === "delete" || op === "revert" ? op : undefined, params.get("path") ?? undefined));
+    }
     if (method === "GET" && path === "/sessions") {
       const scope = new URL(url).searchParams.get("scope") === "all" ? "all" : "post";
       return ok({ sessions: backend.sessions(scope) });
     }
     if (method === "GET" && path === "/posts") return ok({ posts: backend.posts() });
-    if (method === "GET" && path === "/posts/dirty") return ok(backend.dirtyStatus());
-    if (method === "GET" && path === "/posts/branches") return ok({ branches: backend.branchStatuses() });
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
     if (method === "POST" && path === "/save-draft") return ok(backend.saveDraft(body as SaveDraftRequest));
-    // No real remote offline; re-publish the active post's divergence (as the sidecar does), then succeed.
     if (method === "POST" && path === "/fetch") return ok(backend.fetchRemote());
 
     return ok({ error: `mock: no route for ${method} ${path}` }, 404);

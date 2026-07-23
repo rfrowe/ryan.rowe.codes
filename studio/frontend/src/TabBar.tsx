@@ -49,8 +49,6 @@ interface TabBarProps {
   status: SocketStatus;
   /** Per-component stack health (sidecar, LSP, preview, MCP…) for the connection-dot popover. */
   stackStatus: StackComponent[];
-  /** The studio's own branch/worktree, shown as a chip + in the popover; null until the sidecar reports it. */
-  studio: { ref: string; worktree: string } | null;
   /** Every git fact, for each tab's lifebar and the right-click menu's push/revert gating. */
   git: GitState;
   onSelect: (path: string) => void;
@@ -71,7 +69,6 @@ export function TabBar({
   activePath,
   status,
   stackStatus,
-  studio,
   git,
   onSelect,
   onClose,
@@ -242,9 +239,9 @@ export function TabBar({
         <div className="tabbar__statuspop" role="tooltip">
           <div className="statuspop__title statuspop__title--stack">
             Stack
-            {studio && (
-              <span className="statuspop__titleref" title={`${studio.ref} · ${studio.worktree}`}>
-                {studio.ref}
+            {git.primary.worktree && (
+              <span className="statuspop__titleref" title={`${git.primary.ref} · ${git.primary.worktree}`}>
+                {git.primary.ref}
               </span>
             )}
           </div>

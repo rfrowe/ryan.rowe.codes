@@ -36,13 +36,14 @@ export type ClientMessage =
   // the filename stem. An ordinary edit, not a git op.
   | { type: "post.revertUrl"; requestId: string; path: string }
   // Delete a draft (worktree + branch; never origin/main; always the whole worktree, so no scope), or
-  // revert uncommitted edits to HEAD (post-only, or the whole worktree for scope "all"). Both gated:
-  // with confirm:false the sidecar replies post.confirm when content is at risk. `scope` on a revert
-  // is the caller's preference; omitted (the first request for a post, before any dialog is open),
-  // the sidecar picks it ("all" if there's more than just the post, else "post") and echoes its
-  // choice back on post.confirm.
-  | { type: "post.delete"; requestId: string; path: string; confirm: boolean }
-  | { type: "post.revert"; requestId: string; path: string; scope?: "post" | "all"; confirm: boolean }
+  // revert uncommitted edits to HEAD (post-only, or the whole worktree for the caller's chosen scope).
+  // Both act immediately: the caller previews first via `GET /diff?op=delete|revert` (which also
+  // resolves revert's scope when the caller hasn't picked one yet) and echoes back that preview's own
+  // changedFiles/unpushed as `expected*`, so the sidecar can refuse a confirm whose tree has moved on
+  // since the preview (an agent turn landing more edits, say) instead of silently discarding more
+  // than the caller reviewed.
+  | { type: "post.delete"; requestId: string; path: string; expectedChangedFiles: number; expectedUnpushed: number }
+  | { type: "post.revert"; requestId: string; path: string; scope: "post" | "all"; expectedChangedFiles: number }
   | { type: "mcp.setEnabled"; requestId: string; server: string; enabled: boolean }
   // Set the permission mode (takes effect next turn); the sidecar echoes it back as mode.status.
   | { type: "mode.set"; mode: PermissionMode }
@@ -134,58 +135,32 @@ export type ServerMessage =
   | { type: "done"; promptId: string; stopReason: string }
   // Result of any post.* request (by requestId).
   | { type: "post.result"; requestId: string; ok: boolean; path?: string; error?: string }
-  // A confirm:false destructive op would lose work: what would be lost, so the SPA can confirm.
-  // changedFiles counts uncommitted files; ahead counts commits not yet safe anywhere else (its own
-  // remote branch if pushed, else the primary branch); diff is the unified diff the op would discard.
-  // scope is the effective scope this preview reflects: always
-  // "all" for delete (never partial); for revert, the caller's choice or the sidecar's own pick when
-  // the request omitted one.
-  | {
-      type: "post.confirm";
-      requestId: string;
-      op: "delete" | "revert";
-      path: string;
-      changedFiles: number;
-      ahead: number;
-      diff: string;
-      scope: "post" | "all";
-    }
   // A post was renamed (slug and/or date). Carries old-to-new so the client migrates the tab's
   // transcript, session, and pending permissions before the tabs/active/file.changed rebuild that
   // follows; without it the tab is rebuilt fresh and the conversation + SDK session are lost.
-  | { type: "post.renamed"; oldPath: string; newPath: string; title: string; branch: string }
+  | { type: "post.renamed"; oldPath: string; newPath: string; title: string }
   // Frontmatter/filename name-sync for the active post (no path, like preview.url). synced:false means
   // the frontmatter stem `${date}_${slug}` differs from the filename stem: the editor banners and ship
   // is blocked. Mutually exclusive with a preview error (requires a valid derivation). canComplete/reason
   // say whether Complete-rename can proceed (false e.g. when the target stem is already open). Always
   // synced:true when there is no active post.
   | { type: "post.namesync"; synced: boolean; expectedStem?: string; currentStem?: string; canComplete?: boolean; reason?: string }
-  // The active post's divergence from origin/<sessionBranch> (the base it forked from), recomputed on
-  // activation and after a fetch. `behind` > 0 means origin's base carries commits this post isn't
-  // built on (fetch, then rebase); `ahead` is the post's own commits, never a reason to warn. Carries
-  // `path` so a result for a since-switched tab can be dropped rather than mislabel the active one.
-  | { type: "post.divergence"; path: string; ahead: number; behind: number }
-  // The active post changed (open/create/switch/rename); file.changed and preview.url follow. branch is
-  // the post's isolation branch (`blog/<date>_<slug>`), shown read-only. worktreePath is the absolute
-  // dir tool-call paths get shown relative to, so the transcript doesn't repeat it on every file path.
-  | { type: "active"; path: string; title: string; branch: string; worktreePath: string }
+  // The active post changed (open/create/switch/rename); file.changed and preview.url follow.
+  // worktreePath is the absolute dir tool-call paths get shown relative to, so the transcript
+  // doesn't repeat it on every file path.
+  | { type: "active"; path: string; title: string; worktreePath: string }
   // Authoritative open-tab set (so agent-initiated creates update the bar too).
   | { type: "tabs"; open: { path: string; title: string }[] }
   | { type: "mcp.status"; servers: { name: string; status: string; enabled: boolean }[] }
   // Authoritative permission mode, broadcast on connect and whenever it changes.
   | { type: "mode.status"; mode: PermissionMode }
-  // The studio's own branch/worktree (the "primary" branch new posts fork from and ship targets),
-  // for the status popover. `ref` is a display label: `origin/<branch>` when the local branch is in
-  // sync with (or behind) origin, else the bare `<branch>` when it carries commits origin doesn't
-  // have (or has no origin ref). `worktree` is the absolute repo root the studio launched from.
-  | { type: "studio.branch"; ref: string; worktree: string }
   // The agent wants to run a tool the current mode won't auto-approve. promptId routes the card to the
   // owning tab; title/description/reason are the SDK's prompt text. toolUseId matches the tool.start
   // for the same call, if any, so the client can attach the human's answer back onto that transcript
   // entry once resolved (used for AskUserQuestion).
   | { type: "permission.request"; promptId: string; requestId: string; toolName: string; input: unknown; title?: string; description?: string; reason?: string; toolUseId?: string }
   // Every git fact in one push: reactive, fired whenever a ref or HEAD moves (or on connect, from
-  // the cached snapshot). Supersedes studio.branch/post.divergence for anything driven off it.
+  // the cached snapshot).
   | { type: "git.state"; state: GitState }
   // A server-composed system prompt was dispatched into path's session (a rebase conflict handed to
   // the agent): insert a visible system bubble, register the prompt's owner, and latch the turn like
@@ -207,8 +182,18 @@ export interface DiffResponse {
   status: string;
   diff: string;
   /** Changed paths (tracked or untracked) outside the blog dir, regardless of the requested scope:
-   *  what a "post"-scoped ship/save-draft would leave behind. Powers the nudge toward scope "all". */
+   *  what a "post"-scoped ship/save-draft would leave behind. Powers the nudge toward scope "all".
+   *  Always 0 for `op=delete|revert` below, which have no such nudge. */
   outsideCount: number;
+  /** Present only for `?op=delete` or `?op=revert` (the destructive-confirm preview, straight from
+   *  postLossPreview so the counts a caller echoes back on confirm can never drift from what confirm
+   *  itself re-checks): the resolved scope (revert auto-picks one when the request left it
+   *  unspecified) and what the op would discard. changedFiles counts uncommitted files; unpushed
+   *  counts commits not safe anywhere else (its own remote branch if pushed, else the primary
+   *  branch) and is always 0 for revert. Distinct from git.state's differently-scoped ahead/unpushed. */
+  scope?: "post" | "all";
+  changedFiles?: number;
+  unpushed?: number;
 }
 
 export interface SessionsResponse {
@@ -222,33 +207,6 @@ export interface PostSummaryDTO {
 }
 export interface PostsResponse {
   posts: PostSummaryDTO[];
-}
-
-// Post status across every worktree on disk (not just this session's open tabs). `dirty` = unshipped
-// work (uncommitted edits, or commits not yet safe anywhere else), powering the ⌘P palette badge and
-// tab dot. `uncommitted` ⊆ `dirty` = posts with uncommitted edits, so the UI can gate "Revert to
-// clean" (which only discards uncommitted edits) off a clean-but-ahead post.
-export interface DirtyPostsResponse {
-  dirty: string[];
-  uncommitted: string[];
-}
-
-// A `blog/<stem>` branch's status, covering every stem regardless of whether it's open or
-// published (including one left by a sidecar that died or a tab that was closed), otherwise
-// invisible to both the open-tabs set and the main-tree /posts listing. path is the canonical path
-// to reopen it at; stem is its date-qualified identity; local means a worktree already exists for
-// it on disk; remote means it's been pushed to origin (via ship or save-draft); stale means the
-// branch is already merged into the default branch, so reopening forks a fresh one over it instead
-// of adopting its (shipped) content.
-export interface BranchStatus {
-  path: string;
-  stem: string;
-  local: boolean;
-  remote: boolean;
-  stale: boolean;
-}
-export interface BranchesResponse {
-  branches: BranchStatus[];
 }
 
 export interface ShipRequest {
@@ -284,6 +242,6 @@ export type SaveDraftResponse =
   | { ok: false; error: string };
 
 // Result of the persistent git-fetch button: `git fetch --prune origin` (the one place the studio
-// pulls from origin — it's otherwise offline by design), after which the sidecar republishes the
-// active post's divergence so its warning reflects the newly-fetched refs.
+// pulls from origin — it's otherwise offline by design), after which the sidecar republishes
+// git.state so every post's behind/incoming reflects the newly-fetched refs.
 export type FetchResponse = { ok: true } | { ok: false; error: string };

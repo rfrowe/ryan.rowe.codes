@@ -8,7 +8,7 @@
 
 import path from "node:path";
 
-import type { BranchStatus, GitState, ServerMessage } from "../shared/protocol";
+import type { GitState, ServerMessage } from "../shared/protocol";
 import type { Fs, GitRunner } from "../shared/seams";
 import type { Store } from "../shared/services";
 import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/types";
@@ -17,7 +17,7 @@ import { FRONTMATTER_BLOCK, FRONTMATTER_LINE, frontmatterTitle } from "../../src
 import { isValidSlug, postStem, slugFromPath, stemParts } from "../shared/slug";
 import { revsEqual } from "./applyEdits";
 import { DEFAULT_PREVIEW_BASE, deriveUrl } from "../preview/deriveUrl";
-import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeDivergence, computeWorkingTreeDiff, type DiffScope } from "../sidecar/diffService";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, type DiffScope } from "../sidecar/diffService";
 import { sha256Hex } from "../sidecar/hash";
 
 /** Serializes async mutations so a rev-check and its write can't be interleaved. */
@@ -112,11 +112,15 @@ export interface PostLossPreview {
   dirty: boolean;
   /** Count of uncommitted files. */
   changedFiles: number;
-  /** Commits on the post's branch not yet in origin/<default>. */
+  /** Commits not yet safe anywhere else: its own remote branch if pushed, else the primary branch.
+   *  Always 0 for revert, which never discards committed history. */
   ahead: number;
   /** Unified diff the op would discard. Revert: `git diff HEAD`. Delete: the full delta from the
    *  published base plus synthesized diffs for untracked files. */
   diff: string;
+  /** `git status` output backing `changedFiles`, so a caller can re-derive or display the raw
+   *  per-file listing without a second git round-trip. */
+  status: string;
   /** The scope this preview reflects: always "all" for delete (never partial); for revert, the
    *  caller's requested scope, or the sidecar's own pick when the request left it unspecified. */
   scope: DiffScope;
@@ -128,6 +132,37 @@ export interface PostLossPreview {
  */
 export function postWouldLoseWork(preview: PostLossPreview): boolean {
   return preview.dirty || preview.ahead > 0;
+}
+
+/**
+ * Whether a fresh loss preview still matches what a client saw before confirming a destructive op
+ * (TOCTOU guard): the tree can change between the `/diff` preview pull and the confirm, e.g. an
+ * agent turn landing more edits. Only the counts matter here, not the rendered diff text.
+ */
+export function previewMatchesExpectation(preview: PostLossPreview, expected: { changedFiles: number; ahead: number }): boolean {
+  return preview.changedFiles === expected.changedFiles && preview.ahead === expected.ahead;
+}
+
+/**
+ * Re-preview a destructive op and decide whether its confirm may proceed: nothing at stake (a clean
+ * delete, or a revert with no diff) always proceeds, since there's nothing the guard protects; once
+ * something is at stake, the fresh preview must still match what the caller reviewed before
+ * confirming, or the confirm is refused. `scope` is the resolved scope to act on (the caller's
+ * request, or the preview's own auto-pick), echoed back so the caller doesn't have to re-derive it.
+ */
+export async function resolveDestructiveConfirm(
+  store: StudioStore,
+  op: "delete" | "revert",
+  canonicalPath: string,
+  scope: DiffScope | undefined,
+  expected: { changedFiles: number; ahead: number },
+): Promise<{ ok: true; scope: DiffScope } | { ok: false; error: string }> {
+  const preview = await store.postLossPreview(canonicalPath, op, scope);
+  const atStake = op === "delete" ? postWouldLoseWork(preview) : preview.diff.trim().length > 0;
+  if (atStake && !previewMatchesExpectation(preview, expected)) {
+    return { ok: false, error: "this post changed since it was last reviewed; reopen the dialog and try again" };
+  }
+  return { ok: true, scope: preview.scope };
 }
 
 /** deletePost outcome. */
@@ -335,19 +370,6 @@ export interface StudioStore extends Store {
    */
   postLossPreview(canonicalPath: string, op: "delete" | "revert", scope?: DiffScope): Promise<PostLossPreview>;
   /**
-   * Scan the on-disk worktrees (not the in-memory `open` map, so strays from a failed boot or the CLI
-   * are covered) for two overlapping sets of canonical paths: `dirty` = any unshipped work (uncommitted
-   * edits or commits ahead of the base; mirrors {@link postWouldLoseWork}), and `uncommitted` = only
-   * those with uncommitted edits (the ones "Revert to clean" can actually discard).
-   */
-  scanDirtyPosts(): Promise<{ dirty: string[]; uncommitted: string[] }>;
-  /**
-   * Every `blog/*` branch's local/remote/stale status, for every stem whether open, published,
-   * or neither (a closed tab, or a sidecar that exited without a clean shutdown, still leaves a
-   * findable stem). Offline-safe (reads refs on disk, never fetches); powers the ⌘P palette's chips.
-   */
-  listBranchStatuses(): Promise<BranchStatus[]>;
-  /**
    * Delete a draft post: remove its worktree and force-delete its branch (never touches origin),
    * re-focusing another open post like close. The preview daemon is stopped first so it can't hold
    * the port.
@@ -359,8 +381,8 @@ export interface StudioStore extends Store {
   revertPost(canonicalPath: string, scope: DiffScope): Promise<RevertPostResult>;
   /** Persist exact text to the post at `canonicalPath` (autosave); returns new rev or stale-rev. */
   writeByPath(canonicalPath: string, text: string, baseRev: DocRev): Promise<WriteResult>;
-  /** The active post as { path, title, branch } (path = canonical) for the tab bar / snapshot; null if none. */
-  getActive(): { path: string; title: string; branch: string; worktreePath: string } | null;
+  /** The active post as { path, title } (path = canonical) for the tab bar / snapshot; null if none. */
+  getActive(): { path: string; title: string; worktreePath: string } | null;
   /**
    * The active post's frontmatter/filename name-sync status: `synced:false` with the expected/current
    * stems when they differ. The ship flow reads it to refuse a desynced post.
@@ -373,17 +395,6 @@ export interface StudioStore extends Store {
   /** The worktree of the open post at `canonicalPath` (not necessarily active); null if not open.
    *  Resolves the owning worktree even during a switch race. */
   getWorktreeFor(canonicalPath: string): ActiveWorktree | null;
-  /**
-   * The active post's origin-divergence (`ahead`/`behind` origin/<sessionBranch>), tagged with its
-   * canonical path; null when no post is active. Backs the header's "this post is behind its base"
-   * warning. Offline-safe (reads on-disk refs, never fetches).
-   */
-  getActiveDivergence(): Promise<{ path: string; ahead: number; behind: number } | null>;
-  /**
-   * Recompute the active post's divergence and broadcast `post.divergence` (dropping a result the
-   * active post changed out from under). Called on tab switch and after a git fetch.
-   */
-  publishActiveDivergence(): Promise<void>;
   /**
    * This session's branch-namespace segment (`""` for a primary session, else the sanitized session
    * branch) every post branch/worktree is namespaced under. Lets git.state derive post branch names
@@ -590,9 +601,7 @@ export function createStore(deps: StoreDeps): StudioStore {
    * draft. A branch already merged into the default branch doesn't count: this repo doesn't
    * delete-on-merge, so a shipped PR's branch can linger on origin as dead weight, not a draft
    * still being worked on. Offline-safe: reads refs on disk, never fetches, so `remote` may be
-   * stale. Used to adopt an existing draft and to refuse forking over one. Not the same shape as
-   * {@link BranchStatus}'s `local`/`remote`: those track worktree-on-disk/pushed regardless of
-   * merge status, with staleness broken out into its own field.
+   * stale. Used to adopt an existing draft and to refuse forking over one.
    */
   async function branchRefs(stem: string): Promise<{ local: boolean; remote: boolean }> {
     const branch = await branchFor(stem);
@@ -670,64 +679,6 @@ export function createStore(deps: StoreDeps): StudioStore {
     return { worktreePath, branch };
   }
 
-  /**
-   * Absolute paths of every git worktree registered under `worktreesRoot` (excludes the main
-   * checkout). Parses `git worktree list --porcelain`. Shared by the dirty-scan and draft enumeration.
-   */
-  async function worktreePathsOnDisk(): Promise<string[]> {
-    const root = await worktreesRoot();
-    const listRes = await git.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
-    const wtPaths: string[] = [];
-    for (const block of listRes.stdout.split(/\r?\n\r?\n/)) {
-      const m = /^worktree (.+)$/m.exec(block);
-      if (!m) continue;
-      const wtPath = m[1].trim();
-      if (wtPath === root || wtPath.startsWith(root + path.sep)) wtPaths.push(wtPath);
-    }
-    return wtPaths;
-  }
-
-  /** Repo-relative candidates for `stem`'s post file, simple layout before folder layout. */
-  function postUnitCandidates(stem: string): string[] {
-    return [`${BLOG_CONTENT_DIR}/${stem}.mdx`, `${BLOG_CONTENT_DIR}/${stem}/post.mdx`];
-  }
-
-  /**
-   * The post file path (repo-relative) for `stem` on git `ref`, checking the simple then folder
-   * layout via `git cat-file -e`, or null when the branch carries no post file. Lets draft
-   * enumeration build the canonical path before any worktree exists.
-   */
-  async function draftUnitRel(ref: string, stem: string): Promise<string | null> {
-    for (const rel of postUnitCandidates(stem)) {
-      if ((await git.git(["cat-file", "-e", `${ref}:${rel}`], { cwd: repoRoot })).code === 0) return rel;
-    }
-    return null;
-  }
-
-  /**
-   * The post file path (repo-relative) for `stem`'s on-disk worktree, checking the simple then
-   * folder layout via `fs.exists`. Reads disk rather than git history so an autosaved-but-never-
-   * committed post (nothing on its branch's HEAD yet) still resolves for draft enumeration.
-   */
-  async function worktreeUnitRel(stem: string): Promise<string | null> {
-    const worktreePath = await worktreePathFor(stem);
-    for (const rel of postUnitCandidates(stem)) {
-      if (await fs.exists(path.join(worktreePath, rel))) return rel;
-    }
-    return null;
-  }
-
-  /** Run a `for-each-ref` and return the set of stems, stripping `prefix` from each refname. */
-  async function refStems(args: string[], prefix: string): Promise<Set<string>> {
-    const res = await git.git(args, { cwd: repoRoot });
-    const stems = new Set<string>();
-    for (const line of res.stdout.split(/\r?\n/)) {
-      const ref = line.trim();
-      if (ref.startsWith(prefix)) stems.add(ref.slice(prefix.length));
-    }
-    return stems;
-  }
-
   function computePreview(doc: OpenDoc | null): PreviewState {
     if (!doc) return NO_ACTIVE_PREVIEW;
     const result = deriveUrl(doc.text, { base: previewBase });
@@ -779,29 +730,6 @@ export function createStore(deps: StoreDeps): StudioStore {
   }
 
   /**
-   * The active post's origin-divergence, tagged with its canonical path; null when no post is active.
-   * Measured for the active worktree's HEAD vs origin/<sessionBranch> (its fork base): `behind` > 0
-   * means origin's base has commits this post isn't built on, while its own commits only ever count
-   * as `ahead`. Offline-safe (reads on-disk refs, never fetches).
-   */
-  async function getActiveDivergence(): Promise<{ path: string; ahead: number; behind: number } | null> {
-    const doc = activeDoc();
-    if (!doc) return null;
-    const { ahead, behind } = await computeDivergence(git, doc.worktreePath, sessionBranch);
-    return { path: doc.canonicalPath, ahead, behind };
-  }
-
-  /**
-   * Recompute the active post's divergence and broadcast it, unless the active post changed while the
-   * git read was in flight (a fast tab switch): a stale result would mislabel the now-active tab.
-   */
-  async function publishActiveDivergence(): Promise<void> {
-    const d = await getActiveDivergence();
-    if (!d || d.path !== activePath) return;
-    publish({ type: "post.divergence", path: d.path, ahead: d.ahead, behind: d.behind });
-  }
-
-  /**
    * Announce a just-focused active doc in an order the SPA can bootstrap from: tab bar first (tabs,
    * active) so the target tab exists, then its buffer (file.changed), since the client drops a
    * file.changed for a path it has no tab for. Then refresh the preview and notify active-change
@@ -810,10 +738,7 @@ export function createStore(deps: StoreDeps): StudioStore {
   function publishActivation(doc: OpenDoc): void {
     activePath = doc.canonicalPath;
     publishTabs();
-    publish({ type: "active", path: doc.canonicalPath, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath });
-    // Fire-and-forget: divergence is a git round-trip, so don't hold up activation on it; its own
-    // guard drops the result if the active post changes before the read resolves.
-    void publishActiveDivergence();
+    publish({ type: "active", path: doc.canonicalPath, title: doc.title, worktreePath: doc.worktreePath });
     publish({ type: "file.changed", path: doc.canonicalPath, text: doc.text, rev: doc.rev, origin: "external" });
     refreshPreview();
     const info: ActiveChangeInfo = {
@@ -963,7 +888,7 @@ export function createStore(deps: StoreDeps): StudioStore {
     // Announce the rename before publishActivation rebuilds tabs, so clients migrate the tab's
     // transcript/session onto the new path first (else the conversation is lost). Server-side
     // session re-key is the caller's job.
-    publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title, branch: doc.branch });
+    publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title });
     publishActivation(doc);
     return { ok: true, path: newCanonical };
   }
@@ -1030,7 +955,7 @@ export function createStore(deps: StoreDeps): StudioStore {
 
     getActive() {
       const doc = activeDoc();
-      return doc ? { path: doc.canonicalPath, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath } : null;
+      return doc ? { path: doc.canonicalPath, title: doc.title, worktreePath: doc.worktreePath } : null;
     },
 
     getActiveNameSync() {
@@ -1058,10 +983,6 @@ export function createStore(deps: StoreDeps): StudioStore {
       const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
       return doc ? worktreeOf(doc) : null;
     },
-
-    getActiveDivergence,
-
-    publishActiveDivergence,
 
     sessionNamespaceSeg: prefixSeg,
 
@@ -1253,15 +1174,15 @@ export function createStore(deps: StoreDeps): StudioStore {
     async postLossPreview(canonicalPath, op, scope) {
       const jailed = resolveJailed(canonicalPath) ?? canonicalPath;
       const doc = open.get(jailed);
-      if (!doc) return { dirty: false, changedFiles: 0, ahead: 0, diff: "", scope: scope ?? "post" };
+      if (!doc) return { dirty: false, changedFiles: 0, ahead: 0, diff: "", status: "", scope: scope ?? "post" };
       const cwd = doc.worktreePath;
 
       if (op === "revert") {
         // Revert restores tracked files to HEAD; untracked files have no HEAD state and are left to
         // delete, so they're excluded from both the diff and the count.
         if (scope) {
-          const { diff, changedFiles } = await computeWorkingTreeDiff(git, cwd, scope);
-          return { dirty: changedFiles > 0, changedFiles, ahead: 0, diff, scope };
+          const { status, diff, changedFiles } = await computeWorkingTreeDiff(git, cwd, scope);
+          return { dirty: changedFiles > 0, changedFiles, ahead: 0, diff, status, scope };
         }
         // No scope requested (the first preview for this post, before any dialog is open): default to
         // "all" when there's more to revert than just the post, else "post", the narrower, more
@@ -1269,82 +1190,22 @@ export function createStore(deps: StoreDeps): StudioStore {
         const [all, post] = await Promise.all([computeWorkingTreeDiff(git, cwd, "all"), computeWorkingTreeDiff(git, cwd, "post")]);
         const resolved: DiffScope = all.changedFiles > post.changedFiles ? "all" : "post";
         const chosen = resolved === "all" ? all : post;
-        return { dirty: chosen.changedFiles > 0, changedFiles: chosen.changedFiles, ahead: 0, diff: chosen.diff, scope: resolved };
+        return {
+          dirty: chosen.changedFiles > 0,
+          changedFiles: chosen.changedFiles,
+          ahead: 0,
+          diff: chosen.diff,
+          status: chosen.status,
+          scope: resolved,
+        };
       }
 
       // delete: destroys the whole worktree (git worktree remove + branch -D), so the preview always
       // covers everything in it: uncommitted and untracked files, plus commits the base doesn't have
       // yet, never just this post. `scope` is a revert-only choice; delete has nothing to choose.
       const { ahead, base } = await countAhead(doc.branch, cwd);
-      const { diff, changedFiles } = await computeDiffAgainstRef(git, cwd, base, "all");
-      return { dirty: changedFiles > 0, changedFiles, ahead, diff, scope: "all" };
-    },
-
-    async scanDirtyPosts() {
-      // Enumerate the worktrees actually on disk (not the in-memory `open` map), so open tabs, stray
-      // worktrees from a failed boot, and worktrees created outside the studio are all covered.
-      const wtPaths = await worktreePathsOnDisk();
-
-      const dirty: string[] = [];
-      const uncommitted: string[] = [];
-      for (const wtPath of wtPaths) {
-        // The worktree's dir name is its post's stem, which also derives its branch (below) and, on
-        // a match, its canonical path.
-        const stem = path.basename(wtPath);
-
-        // Uncommitted, unscoped like postLossPreview's delete/revert-all check: a change outside the
-        // blog dir (e.g. an agent edit to astro.config.mjs) must still mark the post dirty, or the tab
-        // menu disables "Revert to clean" and hides "Delete draft" for a worktree that isn't clean.
-        const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: wtPath });
-        const uncommittedNonEmpty = statusRes.stdout.trim().length > 0;
-
-        // Ahead of the post's own loss base, offline-safe like postLossPreview (any error means 0).
-        const { ahead } = await countAhead(await branchFor(stem), wtPath);
-
-        if (!uncommittedNonEmpty && ahead === 0) continue;
-
-        // Map the dirty worktree to its post's canonical path via its stem; null if it can't be
-        // resolved (nothing matching the stem under the blog dir), so skip it.
-        const rel = await worktreeUnitRel(stem);
-        if (!rel) continue;
-        const canonical = path.join(repoRoot, rel);
-        dirty.push(canonical);
-        // Only posts with uncommitted edits are revertable; a clean-but-ahead post has nothing for
-        // "Revert to clean" to discard.
-        if (uncommittedNonEmpty) uncommitted.push(canonical);
-      }
-      return { dirty: [...new Set(dirty)], uncommitted: [...new Set(uncommitted)] };
-    },
-
-    async listBranchStatuses() {
-      // Scoped to this session's own namespace (`[<seg>/]blog/*`) so a non-primary session never
-      // lists or adopts another session's drafts. `stale` reuses isMergedIntoDefault, the same check
-      // ensureWorktree uses to decide whether to adopt.
-      const seg = await prefixSeg();
-      const localRoot = seg ? `refs/heads/${seg}/blog` : "refs/heads/blog";
-      const remoteRoot = seg ? `refs/remotes/origin/${seg}/blog` : "refs/remotes/origin/blog";
-      const localStems = await refStems(["for-each-ref", "--format=%(refname)", localRoot], `${localRoot}/`);
-      const remoteStems = await refStems(["for-each-ref", "--format=%(refname)", remoteRoot], `${remoteRoot}/`);
-      const worktreeStems = new Set((await worktreePathsOnDisk()).map((p) => path.basename(p)));
-
-      // Every stem's status is an independent read, so resolve them concurrently.
-      const results = await Promise.all(
-        [...new Set([...localStems, ...remoteStems, ...worktreeStems])].map(async (stem): Promise<BranchStatus | null> => {
-          const local = worktreeStems.has(stem);
-          const remote = remoteStems.has(stem);
-          const ref = localStems.has(stem) ? await branchFor(stem) : `origin/${await branchFor(stem)}`;
-          // Prefer the worktree's own disk state over git history (catches an autosaved-but-never-
-          // committed post), falling back to history when the worktree registration is stale (its
-          // directory was removed without `git worktree remove`/prune).
-          let rel = local ? await worktreeUnitRel(stem) : null;
-          if (!rel) rel = await draftUnitRel(ref, stem);
-          if (!rel) return null;
-          return { path: path.join(repoRoot, rel), stem, local, remote, stale: await isMergedIntoDefault(ref) };
-        }),
-      );
-      const statuses = results.filter((s): s is BranchStatus => s !== null);
-      statuses.sort((a, b) => a.stem.localeCompare(b.stem));
-      return statuses;
+      const { status, diff, changedFiles } = await computeDiffAgainstRef(git, cwd, base, "all");
+      return { dirty: changedFiles > 0, changedFiles, ahead, diff, status, scope: "all" };
     },
 
     async deletePost(canonicalPath) {
@@ -1448,10 +1309,10 @@ export function createStore(deps: StoreDeps): StudioStore {
         // Migrate the tab (transcript/session/permissions) onto the new path before the tabs +
         // file.changed that re-seed its buffer, exactly like renameInternal. No worktree moved, so
         // nothing retargets: astro already serves this worktree and the watch set covers both layouts.
-        publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title, branch: doc.branch });
+        publish({ type: "post.renamed", oldPath: oldCanonical, newPath: newCanonical, title: doc.title });
         publishTabs();
         if (wasActive) {
-          publish({ type: "active", path: newCanonical, title: doc.title, branch: doc.branch, worktreePath: doc.worktreePath });
+          publish({ type: "active", path: newCanonical, title: doc.title, worktreePath: doc.worktreePath });
         }
         publish({ type: "file.changed", path: newCanonical, text: doc.text, rev: doc.rev, origin });
         if (wasActive) refreshPreview();

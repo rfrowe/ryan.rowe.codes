@@ -21,7 +21,6 @@ import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
 import { createGitWatch } from "./gitWatch";
 import { createGitStatusService } from "./gitStatus";
-import { originRefExists } from "./diffService";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
 import { createStudioTools } from "../mcp/tools";
@@ -201,8 +200,6 @@ async function main(): Promise<void> {
     webPort: WEB_PORT,
     spaPort: SPA_PORT,
     lspConnect: (ws) => lspBridge.connect(ws),
-    // Computed fresh per connection so a reload reflects new commits/pushes without a restart.
-    getStudioBranch: () => resolveStudioBranch(git, sessionBranch),
     fetchRemote: () => gitStatus.fetch(),
   });
   await web.listen();
@@ -404,23 +401,6 @@ async function resolveSessionBranch(git: ReturnType<typeof createGitRunner>): Pr
   if (head.code === 0 && name && name !== "HEAD") return name;
   const sha = await git.git(["rev-parse", "--short", "HEAD"], { cwd: REPO_ROOT });
   return sha.stdout.trim() || "HEAD";
-}
-
-/**
- * The studio's branch label for the status popover: `origin/<branch>` when the local session branch
- * is in sync with (or behind) its origin counterpart, else the bare `<branch>` when it carries commits
- * origin doesn't have or has no origin ref at all. Offline-safe: reads refs on disk, never fetches.
- */
-async function resolveStudioBranch(
-  git: ReturnType<typeof createGitRunner>,
-  sessionBranch: string,
-): Promise<{ ref: string; worktree: string }> {
-  const worktree = REPO_ROOT;
-  const onOrigin = await originRefExists(git, REPO_ROOT, sessionBranch);
-  if (!onOrigin) return { ref: sessionBranch, worktree };
-  const counted = await git.git(["rev-list", "--count", `origin/${sessionBranch}..${sessionBranch}`], { cwd: REPO_ROOT });
-  const ahead = Number.parseInt(counted.stdout.trim() || "0", 10) || 0;
-  return { ref: ahead > 0 ? sessionBranch : `origin/${sessionBranch}`, worktree };
 }
 
 /** Parse `--post <path>` or `--post=<path>` from argv. */

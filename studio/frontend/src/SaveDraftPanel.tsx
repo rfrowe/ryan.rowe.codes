@@ -4,25 +4,28 @@
 // elsewhere. The sidecar (never the agent) runs git. Surfaces the pushed branch, or the error.
 
 import { useEffect, useRef, useState } from "react";
-import type { SaveDraftResponse } from "../../shared/protocol";
+import type { GitState, SaveDraftResponse } from "../../shared/protocol";
 import { saveDraft } from "./api";
 import { DiffReviewSection, useDiffReview } from "./DiffReview";
 import { ScopeSelector } from "./ScopeSelector";
+import { selectPost } from "./gitSelectors";
 import { slugFromPath } from "./slug";
 
 interface SaveDraftPanelProps {
   /** Canonical path of the post to save (any open tab, not only the active one). */
   path: string;
-  /** The post's isolation branch, display-only (the sidecar pushes its own regardless). */
-  branch: string | null;
+  /** Every git fact; the post's isolation branch (display-only, the sidecar pushes its own
+   *  regardless) comes from here. */
+  git: GitState;
   onClose: () => void;
 }
 
 type Phase = "editing" | "saving" | "result";
 
-export function SaveDraftPanel({ path, branch, onClose }: SaveDraftPanelProps) {
+export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
   const review = useDiffReview(path);
   const { scope, setScope } = review;
+  const branch = selectPost(git, path)?.branch ?? null;
 
   const [subject, setSubject] = useState(`blog(${slugFromPath(path)}): draft`);
   const [body, setBody] = useState("");
