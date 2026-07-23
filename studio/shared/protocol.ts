@@ -126,7 +126,10 @@ export type ServerMessage =
   | { type: "assistant.message"; promptId: string; text: string }
   | { type: "tool.start"; promptId: string; toolUseId: string; name: string; input: unknown }
   | { type: "tool.end"; promptId: string; toolUseId: string; isError: boolean; exitCode?: number; resultPreview?: string }
-  | { type: "file.changed"; path: string; text: string; rev: DocRev; origin: "agent" | "self" | "external" }
+  // "git" is an external change docSync traced to a checkout/commit/reset moving the worktree's HEAD
+  // (vs an out-of-band editor write); the SPA treats it like "external" for buffer safety but renders
+  // calmer copy.
+  | { type: "file.changed"; path: string; text: string; rev: DocRev; origin: "agent" | "self" | "external" | "git" }
   | { type: "preview.url"; preview: PreviewState }
   | { type: "done"; promptId: string; stopReason: string }
   // Result of any post.* request (by requestId).

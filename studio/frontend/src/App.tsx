@@ -60,8 +60,9 @@ interface TabState {
   chat: ChatItem[];
   /** In-flight permission prompts for this tab's turn. */
   permissions: PendingPermission[];
-  /** Pending disk change from an external writer, awaiting the reload banner. */
-  externalChange: { text: string; rev: DocRev } | null;
+  /** Pending disk change from an external writer, awaiting the reload banner. `origin` picks the
+   *  banner copy: "git" traces to a checkout/commit/reset, "external" to an out-of-band editor. */
+  externalChange: { text: string; rev: DocRev; origin: "external" | "git" } | null;
   nameSync: NameSync;
   /** Divergence from origin's base (from `post.divergence`); `behind` > 0 drives the header warning. */
   divergence: { ahead: number; behind: number };
@@ -285,15 +286,16 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
           remoteUpdate: { text: msg.text, version: (t.remoteUpdate?.version ?? 0) + 1, kind },
         }));
       }
-      // external: a rev not strictly newer is a duplicate/hydrate snapshot (e.g. a replay after a
-      // WS reconnect). Nothing changed on disk, so no-op.
+      // external/git: a rev not strictly newer is a duplicate/hydrate snapshot (e.g. a replay after
+      // a WS reconnect). Nothing changed on disk, so no-op.
       if (msg.rev.n <= tab.doc.rev.n) return state;
-      // A strictly-newer disk rev is a real external write. Don't clobber the buffer, but advance the
-      // base rev so autosave keeps working, and surface the reload banner.
+      // A strictly-newer disk rev is a real write from outside the studio. Don't clobber the buffer,
+      // but advance the base rev so autosave keeps working, and surface the reload banner.
+      const origin = msg.origin;
       return patchTab(state, msg.path, (t) => ({
         ...t,
         doc: { ...t.doc!, rev: msg.rev },
-        externalChange: { text: msg.text, rev: msg.rev },
+        externalChange: { text: msg.text, rev: msg.rev, origin },
       }));
     }
 
@@ -1070,7 +1072,11 @@ export default function App() {
 
       {activeTab?.externalChange && (
         <div className="banner">
-          <span>The file changed on disk outside the studio.</span>
+          <span>
+            {activeTab.externalChange.origin === "git"
+              ? "This post was reloaded from a git operation (checkout, commit, or reset)."
+              : "The file changed on disk outside the studio."}
+          </span>
           <button className="btn btn--primary" onClick={() => dispatch({ type: "applyExternal", path: activeTab.path })}>
             Reload
           </button>

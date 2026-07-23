@@ -157,7 +157,7 @@ async function main(): Promise<void> {
   let docSync: DocSync | null = null;
   store.onActiveChange((info) => {
     if (docSync) docSync.retarget(info.worktreeFilePath);
-    else docSync = createDocSync(store, { filePath: info.worktreeFilePath });
+    else docSync = createDocSync(store, { filePath: info.worktreeFilePath, git, poke: () => gitWatcher.poke() });
     lspWatcher.retarget(info.worktreePath);
     void astro.switchTo(info.worktreePath);
   });

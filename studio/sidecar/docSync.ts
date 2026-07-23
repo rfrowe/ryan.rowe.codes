@@ -9,8 +9,10 @@
 // writes it didn't make. The agent edits its worktree with native tools rather than mutating
 // through the store, so an unrecognized change during a locked agent turn is the agent's write
 // (surfaced as file.changed{agent}, applied live into the editor); the same change outside a turn
-// is a genuinely external editor (surfaced as file.changed{external}, gated behind the reload
-// banner). Either way disk wins.
+// is either a genuinely external editor or a terminal git operation (checkout/commit/reset) landing
+// under the buffer, told apart by one HEAD rev-parse against the sha seen at the last such change
+// (surfaced as file.changed{external} or {git}, both gated behind the reload banner). Either way
+// disk wins.
 //
 // A server-side copy of the pure docSyncMachine is driven alongside so lifecycle events
 // (prompt dispatch through agent-turn end) flip its `locked` flag, which is exactly the signal
@@ -22,7 +24,7 @@ import { watch, type FSWatcher } from "chokidar";
 
 import { sha256Hex } from "./hash";
 import { nodeFs } from "./fsImpl";
-import type { Fs } from "../shared/seams";
+import type { Fs, GitRunner } from "../shared/seams";
 import type { StudioStore } from "../state/store";
 import {
   initialSyncState,
@@ -51,6 +53,11 @@ export interface DocSyncDeps {
   /** File to watch; defaults to the store's active-post worktree file. */
   filePath?: string;
   fs?: Fs;
+  /** Classifies an external change against HEAD; omitted, every external change reads as "external". */
+  git?: GitRunner;
+  /** Git-live's manual doorbell, rung on every settled working-file event so `uncommitted` recomputes
+   *  without waiting on a ref to move (the doorbell otherwise only watches `.git`). */
+  poke?: () => void;
   /** Invoked for each effect a transition produces (banner/reload hints for the caller). */
   onEffect?: (effect: SyncEffect) => void;
 }
@@ -85,6 +92,8 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   if (!active) throw new Error("createDocSync: store has no active document");
 
   const fs = deps.fs ?? nodeFs;
+  const git = deps.git;
+  const poke = deps.poke ?? (() => {});
   let syncState = initialSyncState(active.rev);
   // Both mutable so retarget can swap the watched file when the active post switches.
   let filePath = initialPath;
@@ -92,6 +101,36 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   // A retarget requested while a turn holds the lock is deferred to here and applied at turn end,
   // so the turn keeps watching (and applying to) its own file instead of losing those writes.
   let pendingRetarget: string | null = null;
+  // HEAD as of the last external classification, so the next one can tell a checkout/reset apart
+  // from a plain editor write.
+  let lastKnownHead: string | null = null;
+
+  /** One rev-parse HEAD for the currently-watched worktree, seeding `lastKnownHead`. Kicked off
+   *  eagerly (construction and every retarget) rather than lazily on the first classification, so a
+   *  terminal git op run right after opening or switching to a post still has a real baseline to
+   *  move away from instead of reading as unmoved by default. */
+  async function seedHead(): Promise<void> {
+    if (!git) return;
+    const target = filePath; // snapshot: a retarget before this resolves must not let a stale seed win.
+    const res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(target) });
+    if (res.code === 0 && filePath === target) lastKnownHead = res.stdout.trim();
+  }
+  let headReady = seedHead();
+
+  /** External-path classification: a rev-parse against `lastKnownHead`, only ever run off the lock.
+   *  `cwd` just needs to sit inside the worktree; git resolves it upward to the right one. */
+  async function classifyExternalOrigin(cwd: string): Promise<"external" | "git"> {
+    if (!git) return "external";
+    await headReady; // never classify against a baseline that hasn't landed yet.
+    const res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(cwd) });
+    if (res.code !== 0) return "external"; // detached/unborn HEAD or a mid-op race; don't block on it.
+    const head = res.stdout.trim();
+    const moved = lastKnownHead !== null && head !== lastKnownHead;
+    // A retarget mid-await already reseeded lastKnownHead for its own post; a stale write here would
+    // clobber that with this call's post instead (same staleness class as seedHead's own guard).
+    if (filePath === cwd) lastKnownHead = head;
+    return moved ? "git" : "external";
+  }
 
   function drive(event: SyncEvent): SyncEffect[] {
     const result = transition(syncState, event);
@@ -129,14 +168,17 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   }
 
   async function handle(): Promise<void> {
-    // Resolve the post's current on-disk file. Normally `filePath`; a flip between file and folder
+    // Snapshot: filePath is mutable and a retarget can reassign it while this call is suspended on
+    // an await below, so everything from here on reads watchedPath, never the live field.
+    const watchedPath = filePath;
+    // Resolve the post's current on-disk file. Normally `watchedPath`; a flip between file and folder
     // layout (the agent adding/removing a co-located component) moves the post to its alternate layout.
-    let current = filePath;
+    let current = watchedPath;
     let text: string;
     try {
-      text = await fs.readFile(filePath);
+      text = await fs.readFile(watchedPath);
     } catch {
-      const alt = alternateLayout(filePath);
+      const alt = alternateLayout(watchedPath);
       try {
         text = await fs.readFile(alt);
       } catch {
@@ -146,14 +188,17 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
       current = alt;
     }
 
-    if (current !== filePath) {
+    poke(); // a working file just settled; ring git-live's doorbell so `uncommitted` recomputes.
+
+    if (current !== watchedPath) {
       // Layout flipped. Repoint the store's doc to the new file (same post/stem/worktree); the SPA
       // follows via post.renamed + a buffer re-seed. Under a locked turn it's the agent's write.
-      const origin: "agent" | "external" = syncState.locked ? "agent" : "external";
-      const migrated = await store.relayout(filePath, current, origin);
+      const origin: "agent" | "external" | "git" = syncState.locked ? "agent" : await classifyExternalOrigin(current);
+      const migrated = await store.relayout(watchedPath, current, origin);
       if (migrated) {
-        filePath = current;
-        drive({ type: "disk.changed", origin, rev: migrated.rev });
+        // A retarget during the awaits above already moved on to a different post; don't clobber it.
+        if (filePath === watchedPath) filePath = current;
+        drive({ type: "disk.changed", origin: origin === "git" ? "external" : origin, rev: migrated.rev });
       }
       return;
     }
@@ -163,7 +208,7 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     // Reconcile against the post that owns the watched file, not "the active doc". A tab switch can
     // out-live an agent turn (retarget is deferred while locked), so the watched file may belong to
     // a now-background post; its writes must still land on that post, not on whatever is active.
-    const owner = store.getDocByWatchPath(filePath);
+    const owner = store.getDocByWatchPath(watchedPath);
     // Identical to what the store already holds: nothing to reconcile. Consume any
     // matching guard entry so it doesn't linger.
     if (owner && hash === owner.rev.hash) {
@@ -180,10 +225,11 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     }
 
     // Not a store write. During a locked agent turn it's the agent's native-tool write (live-
-    // apply); otherwise a genuinely external editor (reload banner). Disk wins either way.
-    const origin: "agent" | "external" = syncState.locked ? "agent" : "external";
-    const doc = await store.reloadByWatchPath(filePath, text, origin);
-    drive({ type: "disk.changed", origin, rev: doc?.rev ?? owner?.rev ?? syncState.baseRev });
+    // apply); otherwise a genuinely external editor or a git operation (reload banner either way).
+    // Disk wins regardless.
+    const origin: "agent" | "external" | "git" = syncState.locked ? "agent" : await classifyExternalOrigin(watchedPath);
+    const doc = await store.reloadByWatchPath(watchedPath, text, origin);
+    drive({ type: "disk.changed", origin: origin === "git" ? "external" : origin, rev: doc?.rev ?? owner?.rev ?? syncState.baseRev });
   }
 
   function retarget(nextPath: string): void {
@@ -214,6 +260,9 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     filePath = nextPath;
     syncState = initialSyncState(current?.rev ?? syncState.baseRev);
     watcher = makeWatcher(filePath);
+    // A different post means a different worktree; the old HEAD baseline doesn't apply to it.
+    lastKnownHead = null;
+    headReady = seedHead();
   }
 
   return {
