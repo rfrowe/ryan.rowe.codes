@@ -19,6 +19,7 @@ import { nodeFs } from "./fsImpl";
 import { createStore, type StudioStore } from "../state/store";
 import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
+import { createGitWatch } from "./gitWatch";
 import { originRefExists } from "./diffService";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
@@ -69,6 +70,9 @@ async function main(): Promise<void> {
 
   // ---- construct concretes ----
   const git = createGitRunner({ cwd: REPO_ROOT });
+  // Watches the repo's common .git dir once for the whole sidecar lifetime; no consumer yet
+  // (the status service that reacts to it is a later bead).
+  const gitWatcher = createGitWatch(REPO_ROOT);
   // The branch the studio launched on: the fork base for new post worktrees and the ship target.
   const sessionBranch = await resolveSessionBranch(git);
 
@@ -212,6 +216,7 @@ async function main(): Promise<void> {
     await Promise.allSettled([
       docSync?.close() ?? Promise.resolve(),
       lspWatcher.close(),
+      gitWatcher.close(),
       web.close(),
       mcp.close(),
       astro.close(),
