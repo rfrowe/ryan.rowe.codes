@@ -6,11 +6,13 @@
 // is removed.
 
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { createDocSync, type DocSync } from "./docSync";
+import { createGitRunner } from "./gitRunner";
 import { sha256Hex } from "./hash";
 import { SelfWriteGuard } from "../state/store";
 import type { StudioStore } from "../state/store";
@@ -19,13 +21,20 @@ import type { ActiveDoc, DocRev } from "../shared/types";
 interface RelayoutCall {
   oldPath: string;
   newPath: string;
-  origin: "external" | "agent";
+  origin: "external" | "agent" | "git";
 }
 
-/** A stand-in store exposing only what docSync touches, recording every relayout it's asked to do. */
+interface ReloadCall {
+  path: string;
+  origin: "external" | "agent" | "git";
+}
+
+/** A stand-in store exposing only what docSync touches, recording every relayout/reload it's asked
+ *  to do (including the origin the watcher classified it as). */
 function makeFakeStore(watchPath: string, text: string) {
   const guard = new SelfWriteGuard();
   const relayoutCalls: RelayoutCall[] = [];
+  const reloadCalls: ReloadCall[] = [];
   let current = watchPath;
   let rev: DocRev = { n: 1, hash: sha256Hex(text) };
 
@@ -34,7 +43,8 @@ function makeFakeStore(watchPath: string, text: string) {
     getActiveDoc: () => ({ path: current, text, rev }),
     getActiveWatchPath: () => current,
     getDocByWatchPath: (p) => (p === current ? { path: p, rev } : null),
-    reloadByWatchPath: async (p, next): Promise<ActiveDoc | null> => {
+    reloadByWatchPath: async (p, next, origin): Promise<ActiveDoc | null> => {
+      reloadCalls.push({ path: p, origin });
       rev = { n: rev.n + 1, hash: sha256Hex(next) };
       return { path: p, text: next, rev };
     },
@@ -45,7 +55,26 @@ function makeFakeStore(watchPath: string, text: string) {
       return { path: newPath, text: "migrated", rev };
     },
   };
-  return { store: fake as StudioStore, relayoutCalls };
+  return { store: fake as StudioStore, relayoutCalls, reloadCalls };
+}
+
+/** Real git plumbing (mirrors gitStatus.test.ts) so the HEAD-moved classification is proven against
+ *  actual checkout/reset behavior, not a hand-rolled fake. */
+function runGit(args: string[], cwd: string): void {
+  execFileSync("git", args, { cwd });
+}
+
+/** A repo with a committed post file, ready for a second branch to diverge from. */
+async function makeRepo(stemFile: string): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "docsync-git-"));
+  runGit(["init", "-q", "-b", "main"], dir);
+  runGit(["config", "user.email", "test@example.com"], dir);
+  runGit(["config", "user.name", "Test"], dir);
+  await mkdir(path.dirname(path.join(dir, stemFile)), { recursive: true });
+  await writeFile(path.join(dir, stemFile), "v1\n");
+  runGit(["add", "."], dir);
+  runGit(["commit", "-q", "-m", "init"], dir);
+  return dir;
 }
 
 /** Poll until `pred` holds or the deadline passes (fs-watch events are inherently async). */
@@ -156,5 +185,77 @@ describe("docSync layout-flip detection", () => {
     // Give the watcher ample time to process the add; the assertion is that nothing flipped.
     await new Promise((r) => setTimeout(r, 400));
     expect(relayoutCalls).toEqual([]);
+  });
+});
+
+describe("docSync git-op classification", () => {
+  let dir: string;
+  let sync: DocSync | null = null;
+
+  afterEach(async () => {
+    await sync?.close();
+    sync = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  const STEM_FILE = "src/content/blog/2026-07-14_hello.mdx";
+
+  it("classifies an ordinary editor write as external and pokes git-live", async () => {
+    dir = await makeRepo(STEM_FILE);
+    const filePath = path.join(dir, STEM_FILE);
+    const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
+    let pokes = 0;
+    sync = createDocSync(store, { filePath, git: createGitRunner(), poke: () => pokes++ });
+
+    await writeFile(filePath, "v2\n");
+
+    await waitFor(() => reloadCalls.length > 0);
+    expect(reloadCalls.at(-1)?.origin).toBe("external");
+    expect(pokes).toBeGreaterThan(0);
+  });
+
+  it("classifies a checkout/reset that moves HEAD as a git operation", async () => {
+    dir = await makeRepo(STEM_FILE);
+    const filePath = path.join(dir, STEM_FILE);
+    // Diverge a second branch's commit in its own linked worktree, so preparing it never touches
+    // the file this test's watcher follows.
+    runGit(["branch", "other"], dir);
+    const otherWt = await mkdtemp(path.join(tmpdir(), "docsync-other-"));
+    runGit(["worktree", "add", "-q", otherWt, "other"], dir);
+    await writeFile(path.join(otherWt, STEM_FILE), "v3\n");
+    runGit(["add", "."], otherWt);
+    runGit(["commit", "-q", "-m", "diverge"], otherWt);
+
+    const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
+    sync = createDocSync(store, { filePath, git: createGitRunner() });
+
+    // An ordinary edit first, so the watcher has a HEAD baseline to compare the reset against.
+    await writeFile(filePath, "v2\n");
+    await waitFor(() => reloadCalls.length > 0);
+    expect(reloadCalls[0]?.origin).toBe("external");
+
+    // A single git command moves HEAD and rewrites the file in one stroke, exactly like a terminal
+    // checkout/reset landing under the buffer.
+    runGit(["reset", "--hard", "other"], dir);
+
+    await waitFor(() => reloadCalls.length > 1);
+    expect(reloadCalls.at(-1)?.origin).toBe("git");
+
+    await rm(otherWt, { recursive: true, force: true });
+  });
+
+  it("never classifies as git when no GitRunner is given", async () => {
+    dir = await makeRepo(STEM_FILE);
+    const filePath = path.join(dir, STEM_FILE);
+    const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
+    sync = createDocSync(store, { filePath }); // no `git` dep.
+
+    await writeFile(filePath, "v2\n");
+    await waitFor(() => reloadCalls.length > 0);
+    runGit(["commit", "-q", "--allow-empty", "-m", "noop"], dir); // HEAD moves; nothing to detect it with.
+    await writeFile(filePath, "v3\n");
+
+    await waitFor(() => reloadCalls.length > 1);
+    expect(reloadCalls.every((c) => c.origin === "external")).toBe(true);
   });
 });

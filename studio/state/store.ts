@@ -413,7 +413,7 @@ export interface StudioStore extends Store {
    * file.changed{origin}; null if no open post backs it. Lets an agent turn's writes land on the
    * turn's post even after a mid-turn tab switch.
    */
-  reloadByWatchPath(worktreeFilePath: string, text: string, origin: "external" | "agent"): Promise<ActiveDoc | null>;
+  reloadByWatchPath(worktreeFilePath: string, text: string, origin: "external" | "agent" | "git"): Promise<ActiveDoc | null>;
   /**
    * Adopt an in-worktree layout flip for the open post backing `oldWorktreeFilePath`: the agent
    * restructured a simple `<stem>.mdx` post into a folder `<stem>/post.mdx` (or back) to co-locate a
@@ -422,7 +422,7 @@ export interface StudioStore extends Store {
    * tab (with its transcript/session) follows. Null when no open post backs the old path, nothing
    * flipped, or the new file isn't readable.
    */
-  relayout(oldWorktreeFilePath: string, newWorktreeFilePath: string, origin: "external" | "agent"): Promise<ActiveDoc | null>;
+  relayout(oldWorktreeFilePath: string, newWorktreeFilePath: string, origin: "external" | "agent" | "git"): Promise<ActiveDoc | null>;
   /** Register a callback fired whenever the active post switches; returns an unsubscribe fn. */
   onActiveChange(listener: (info: ActiveChangeInfo) => void): () => void;
   /**
@@ -979,7 +979,7 @@ export function createStore(deps: StoreDeps): StudioStore {
   function reloadByWatchPathImpl(
     worktreeFilePath: string,
     text: string,
-    origin: "external" | "agent",
+    origin: "external" | "agent" | "git",
   ): Promise<ActiveDoc | null> {
     return mutex.runExclusive(async () => {
       const doc = docByWatchPath(worktreeFilePath);
