@@ -20,6 +20,12 @@ function chordGlyph(chord: string): string {
     .join(isMac ? "" : "+");
 }
 
+/** Whether a command's when() permits it to run right now; absent when() defaults to enabled.
+ *  Shared by the row's disabled styling and choose()'s guard, so the two can't drift apart. */
+export function commandEnabled(c: Command): boolean {
+  return c.when?.() ?? true;
+}
+
 interface ShortcutsPanelProps {
   /** Read by commands' own `when()` closures elsewhere; threaded through purely so this panel
    *  re-renders on every git.state push instead of only on register/unregister (a disabled
@@ -56,16 +62,31 @@ export function ShortcutsPanel({ git: _git }: ShortcutsPanelProps) {
   }
 
   function choose(c: Command): void {
+    if (!commandEnabled(c)) return;
     close();
     c.run();
   }
 
   return (
     <div className="shortcuts__scrim" onClick={close}>
-      <div className="shortcuts" role="dialog" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="shortcuts"
+        role="dialog"
+        aria-label="Keyboard shortcuts"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          // Catches Escape from a focused row button; the input below handles its own case
+          // directly (and stops it here) so this is purely the fallback for the rest of the dialog.
+          if (e.key === "Escape") {
+            e.preventDefault();
+            close();
+          }
+        }}
+      >
         <input
           autoFocus
           className="shortcuts__input"
+          aria-label="Filter shortcuts"
           placeholder="Filter shortcuts…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -83,11 +104,12 @@ export function ShortcutsPanel({ git: _git }: ShortcutsPanelProps) {
             <div key={group} className="shortcuts__group">
               <h3 className="shortcuts__group-label">{group}</h3>
               {cmds.map((c) => {
-                const enabled = c.when?.() ?? true;
+                const enabled = commandEnabled(c);
                 return (
                   <button
                     key={c.id}
                     type="button"
+                    disabled={!enabled}
                     className={`shortcuts__row ${enabled ? "" : "shortcuts__row--disabled"}`}
                     onClick={() => choose(c)}
                   >
