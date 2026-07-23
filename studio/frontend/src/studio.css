@@ -405,15 +405,6 @@ body {
   text-align: left;
   cursor: pointer;
 }
-/* Solid dot next to the post name for a tab with unshipped work (see dirtyPaths in App.tsx). */
-.tab__dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  margin-right: 2px;
-  border-radius: 50%;
-  background: var(--accent);
-}
 .tab__rename {
   flex: 1 1 auto;
   min-width: 0;
@@ -516,7 +507,8 @@ body {
 .tabbar__fetch:disabled {
   cursor: default;
 }
-.tabbar__fetch--busy svg {
+.tabbar__fetch--busy span {
+  display: inline-block;
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin {
@@ -525,14 +517,6 @@ body {
   }
 }
 
-/* The active post's worktree is behind the base it forked from; sits just left of the fetch button. */
-.tabbar__diverged {
-  align-self: center;
-  display: flex;
-  align-items: center;
-  margin-right: 8px;
-  color: var(--warn);
-}
 .tabbar__conn {
   align-self: center;
   flex: 0 0 auto;
@@ -683,6 +667,57 @@ body {
   text-transform: none;
   letter-spacing: normal;
   color: var(--fg-faint);
+}
+
+/* ---- lifebar (per-post git status: tab bar compact form, ⌘P full form) ---- */
+.lifebar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.lifebar--compact {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.lifebar--full {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.lifebar__cap--in-root {
+  color: var(--ok);
+}
+.lifebar__cap--net-new {
+  color: var(--fg-faint);
+}
+.lifebar__dot--pushed {
+  color: var(--ok);
+}
+.lifebar__dot--unpushed {
+  color: var(--fg-dim);
+}
+.lifebar__dot--incoming {
+  color: var(--accent);
+}
+.lifebar__overflow {
+  color: var(--fg-faint);
+}
+.lifebar__target--pending {
+  color: var(--fg-dim);
+}
+.lifebar__target--synced {
+  color: var(--ok);
+}
+.lifebar__adorn--uncommitted {
+  color: var(--accent);
+}
+.lifebar__adorn--unknown {
+  color: var(--fg-faint);
+}
+.lifebar__behind {
+  color: var(--warn);
 }
 
 /* ---- editor ---- */
@@ -2299,44 +2334,6 @@ body {
   font-size: 11px;
   color: var(--fg-faint);
   white-space: nowrap;
-}
-.palette__badge {
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 10px;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 700;
-  padding: 3px 6px;
-  border-radius: 3px;
-  color: var(--on-accent);
-  background: var(--accent);
-  border: 0;
-}
-/* A draft branch already merged into main: dead weight, not work in progress. */
-.palette__badge--stale {
-  background: var(--warn);
-}
-/* Outline status chip: local/remote/published are informational, so they stay understated. */
-.palette__chip {
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 10px;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 3px 6px;
-  border-radius: 3px;
-  color: var(--fg-faint);
-  background: transparent;
-  border: 1px solid var(--border-strong);
-}
-/* Dirty means action is needed (save draft or ship), so it's filled like the Stale badge. */
-.palette__chip--dirty {
-  color: var(--on-accent);
-  background: var(--accent);
-  border: 0;
 }
 .palette__foot {
   padding: 8px 12px;

@@ -2,7 +2,6 @@
 // wire protocol (studio/shared/protocol.ts); this module invents no shapes.
 
 import type {
-  BranchesResponse,
   DiffResponse,
   DirtyPostsResponse,
   FetchResponse,
@@ -58,16 +57,10 @@ export async function getPosts(): Promise<PostsResponse> {
   return asJson<PostsResponse>(res);
 }
 
-/** Open posts with unshipped changes, for the ⌘P palette's dirty badge. */
+/** Open posts with unshipped changes. */
 export async function getDirtyPosts(): Promise<DirtyPostsResponse> {
   const res = await fetch(endpoint("/posts/dirty"), { headers: { ...authHeaders() } });
   return asJson<DirtyPostsResponse>(res);
-}
-
-/** Every blog/* branch's local/remote/stale status, for the ⌘P palette's status chips. */
-export async function getBranchStatuses(): Promise<BranchesResponse> {
-  const res = await fetch(endpoint("/posts/branches"), { headers: { ...authHeaders() } });
-  return asJson<BranchesResponse>(res);
 }
 
 /** Studio-run ship flow (diff, branch, commit, push, PR). Requires `confirm`. */

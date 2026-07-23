@@ -536,10 +536,10 @@ export default function App() {
   const [pendingConfirm, setPendingConfirm] = useState<DestructiveConfirmData | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
-  // Open posts that are drafts (unshipped work), for the tab bar's dot; refreshed via refreshDirty.
-  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
-  // Posts with uncommitted edits (⊆ dirtyPaths); gates the tab menu's "Revert to clean".
-  const [uncommittedPaths, setUncommittedPaths] = useState<Set<string>>(() => new Set());
+  // Refreshed via refreshDirty; unread for now (git.state's selectPushable/selectUncommitted
+  // drive the tab bar and its menu instead).
+  const [_dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
+  const [_uncommittedPaths, setUncommittedPaths] = useState<Set<string>>(() => new Set());
   // A git fetch is in flight (the tab bar's fetch button spins and disables while true).
   const [fetching, setFetching] = useState(false);
 
@@ -1050,9 +1050,7 @@ export default function App() {
         status={status}
         stackStatus={stackStatus}
         studio={state.studio}
-        behind={activeTab?.divergence.behind ?? 0}
-        dirtyPaths={dirtyPaths}
-        uncommittedPaths={uncommittedPaths}
+        git={state.git}
         onSelect={openPost}
         onClose={onCloseTab}
         onNewPost={() => openNewPost("")}
@@ -1189,6 +1187,7 @@ export default function App() {
             <CommandPalette
               openTabs={tabDescriptors}
               activePath={state.activePath}
+              git={state.git}
               onSelect={openPost}
               onCreate={openNewPost}
               onClose={() => setShowPalette(false)}

@@ -3,59 +3,41 @@
 // the New Post dialog seeded with the search term. Type to filter, ↑/↓ to move, Enter, Esc.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getBranchStatuses, getDirtyPosts, getPosts } from "./api";
+import { getPosts } from "./api";
 import { slugFromPath } from "./slug";
+import { Lifebar } from "./Lifebar";
+import { selectPost, selectRootName } from "./gitSelectors";
 import type { TabDescriptor } from "./TabBar";
-import type { BranchStatus } from "../../shared/protocol";
+import type { GitState } from "../../shared/protocol";
 
 interface PaletteEntry {
   path: string;
   title: string;
   open: boolean;
-  /** A worktree already exists for this post on disk. */
-  local: boolean;
-  /** This post's branch has been pushed to origin (via ship or save draft). */
-  remote: boolean;
-  /** Has changes not yet persisted by save-draft or ship. */
-  dirty: boolean;
-  /** Present in the studio's root worktree (already live). */
-  published: boolean;
-  /** Its branch is already merged into the default branch, so reopening forks a fresh one over it
-   *  instead of adopting its (shipped) content. */
-  stale: boolean;
 }
 
 /** A navigable palette row: an existing post to open, or the create-new-post command. */
 type PaletteRow = { kind: "post"; entry: PaletteEntry } | { kind: "create"; title: string };
 
 function emptyEntry(path: string, title = ""): PaletteEntry {
-  return { path, title, open: false, local: false, remote: false, dirty: false, published: false, stale: false };
+  return { path, title, open: false };
 }
 
 /**
- * Every row keyed by canonical path, with each source (open tabs, main-tree posts, branch statuses,
- * the dirty scan) layering its own fields onto whatever's already there instead of one source
- * winning outright, so a post known to more than one source accumulates chips from all of them.
+ * Every row keyed by canonical path: open tabs first (carrying their live title), then every post
+ * in the main tree layered on top (a post known to both keeps the open tab's title). Each row's
+ * git facts (the lifebar) are looked up separately at render time from `git.state`, not merged in
+ * here, since not every post in the main tree has a matching entry there.
  */
 export function mergePaletteEntries(
   openTabs: readonly TabDescriptor[],
   posts: readonly { path: string; title: string }[] | null,
-  branches: readonly BranchStatus[],
-  dirty: ReadonlySet<string>,
 ): PaletteEntry[] {
   const byPath = new Map<string, PaletteEntry>();
   for (const t of openTabs) byPath.set(t.path, { ...emptyEntry(t.path, t.title), open: true });
   for (const p of posts ?? []) {
     const existing = byPath.get(p.path);
-    byPath.set(p.path, { ...(existing ?? emptyEntry(p.path)), title: existing?.open ? existing.title : p.title, published: true });
-  }
-  for (const b of branches) {
-    const existing = byPath.get(b.path) ?? emptyEntry(b.path);
-    byPath.set(b.path, { ...existing, local: b.local, remote: b.remote, stale: b.stale });
-  }
-  for (const p of dirty) {
-    const existing = byPath.get(p);
-    if (existing) byPath.set(p, { ...existing, dirty: true });
+    byPath.set(p.path, { ...(existing ?? emptyEntry(p.path)), title: existing?.open ? existing.title : p.title });
   }
   return [...byPath.values()];
 }
@@ -63,6 +45,7 @@ export function mergePaletteEntries(
 interface CommandPaletteProps {
   openTabs: TabDescriptor[];
   activePath: string | null;
+  git: GitState;
   onSelect: (path: string) => void;
   /** Open the New Post dialog, seeding its title with the current search term (may be empty). */
   onCreate: (title: string) => void;
@@ -82,32 +65,14 @@ function fuzzyMatch(text: string, q: string): boolean {
   return true;
 }
 
-export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClose }: CommandPaletteProps) {
+export function CommandPalette({ openTabs, activePath, git, onSelect, onCreate, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [posts, setPosts] = useState<{ path: string; title: string }[] | null>(null);
-  // Every blog/* branch's local/remote/stale status, merged in as chips below.
-  const [branches, setBranches] = useState<BranchStatus[]>([]);
-  // Posts with unshipped changes, driving the "dirty" chip. Best-effort probe on open.
-  const [dirty, setDirty] = useState<Set<string>>(() => new Set());
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    let live = true;
-    getDirtyPosts()
-      .then((res) => {
-        if (live) setDirty(new Set(res.dirty));
-      })
-      .catch(() => {
-        /* best-effort: leave the chip set empty */
-      });
-    return () => {
-      live = false;
-    };
   }, []);
 
   // Pull the full post inventory; open tabs are always available even if the fetch fails.
@@ -125,22 +90,8 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
     };
   }, []);
 
-  // Pull every blog/* branch's status so a draft (open, published, or neither) shows its chips.
-  useEffect(() => {
-    let live = true;
-    getBranchStatuses()
-      .then((res) => {
-        if (live) setBranches(res.branches);
-      })
-      .catch(() => {
-        /* best-effort: no branch chips */
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  const entries = useMemo(() => mergePaletteEntries(openTabs, posts, branches, dirty), [openTabs, posts, branches, dirty]);
+  const root = selectRootName(git);
+  const entries = useMemo(() => mergePaletteEntries(openTabs, posts), [openTabs, posts]);
 
   const filtered = useMemo(
     () => entries.filter((e) => fuzzyMatch(`${e.title} ${slugFromPath(e.path)}`, query.trim())),
@@ -214,6 +165,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
             );
           }
           const { entry } = row;
+          const post = selectPost(git, entry.path);
           return (
             <li
               key={entry.path}
@@ -222,34 +174,7 @@ export function CommandPalette({ openTabs, activePath, onSelect, onCreate, onClo
               onClick={() => choose(row)}
             >
               <span className="palette__title">{entry.title || slugFromPath(entry.path)}</span>
-              {entry.stale && (
-                <span
-                  className="palette__badge palette__badge--stale"
-                  title="Stale — already merged; reopening forks a fresh branch instead of adopting this one"
-                >
-                  Stale
-                </span>
-              )}
-              {entry.local && (
-                <span className="palette__chip" title="Has a worktree on disk, on this machine">
-                  local
-                </span>
-              )}
-              {entry.remote && (
-                <span className="palette__chip" title="Pushed to origin, via ship or save draft">
-                  remote
-                </span>
-              )}
-              {entry.dirty && (
-                <span className="palette__chip palette__chip--dirty" title="Has changes not yet persisted by save draft or ship">
-                  dirty
-                </span>
-              )}
-              {entry.published && (
-                <span className="palette__chip" title="Present in the studio's root worktree">
-                  published
-                </span>
-              )}
+              {post && <Lifebar post={post} root={root} variant="full" />}
               <span className="palette__meta">
                 {entry.open && (entry.path === activePath ? "active · " : "open · ")}
                 {slugFromPath(entry.path)}
