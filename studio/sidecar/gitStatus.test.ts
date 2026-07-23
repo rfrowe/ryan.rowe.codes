@@ -79,6 +79,22 @@ function countingRunner(inner: GitRunner): { git: GitRunner; countOf: (sub: stri
   };
 }
 
+/** Wraps a real GitRunner, rejecting the first call to `failOnSub` (simulating a transient git
+ *  failure, e.g. a mid-op index lock) and behaving normally on every call after. */
+function rejectOnceRunner(inner: GitRunner, failOnSub: string): GitRunner {
+  let failed = false;
+  return {
+    git: async (args, opts) => {
+      if (!failed && args[0] === failOnSub) {
+        failed = true;
+        throw new Error(`simulated ${failOnSub} failure`);
+      }
+      return inner.git(args, opts);
+    },
+    gh: (args, opts) => inner.gh(args, opts),
+  };
+}
+
 describe("createGitStatusService — snapshot", () => {
   let repo: string | undefined;
 
@@ -127,6 +143,8 @@ describe("createGitStatusService — snapshot", () => {
     // A different clone pushes blog/foo without this repo ever checking it out.
     const other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
     git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
     git(["checkout", "-q", "-b", "blog/foo"], other);
     await writeFile(path.join(other, "src", "content", "blog", "foo.mdx"), "# foo\n");
     git(["add", "."], other);
@@ -224,6 +242,27 @@ describe("createGitStatusService — start()", () => {
     git(["checkout", "-q", "main"], repo);
     ring();
     await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
+  });
+
+  it("recovers on the next ring after a rejected recompute, instead of wedging for good", async () => {
+    repo = await makeRepo();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const flaky = rejectOnceRunner(createGitRunner(), "rev-parse");
+    const store = newStore(repo, flaky);
+    const { watcher, ring } = fakeWatcher();
+    const publish = vi.fn();
+    const service = createGitStatusService({ git: flaky, store, repoRoot: repo, sessionBranch: "main", watcher, publish });
+
+    // The initial pass fails (computePrimary's first call is a rev-parse) and must not publish.
+    service.start();
+    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalledTimes(1));
+    expect(publish).not.toHaveBeenCalled();
+
+    // A later ring recomputes cleanly now that the fake has stopped failing: the doorbell survived.
+    ring();
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+
+    errorSpy.mockRestore();
   });
 });
 

@@ -225,7 +225,13 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
     queued = true;
     pending = pending.then(async () => {
       queued = false;
-      await recomputeAndPublish();
+      try {
+        await recomputeAndPublish();
+      } catch (err) {
+        // A rejected pass (a transient git failure) must not leave `pending` permanently rejected:
+        // every later schedule() would chain onto it with no handler and never run again.
+        console.error("[gitStatus] recompute failed:", err instanceof Error ? err.message : err);
+      }
     });
   }
 
