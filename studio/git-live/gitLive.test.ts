@@ -43,12 +43,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 describe("resolveCommonGitDir", () => {
-  let repo: string;
-  let worktreeDir: string;
+  let repo: string | undefined;
+  let worktreeDir: string | undefined;
 
   afterEach(async () => {
-    await rm(worktreeDir, { recursive: true, force: true });
-    await rm(repo, { recursive: true, force: true });
+    // repo/worktreeDir are unset if makeRepo() or worktree add threw before assigning them;
+    // rm(undefined) would mask that real failure behind a TypeError.
+    if (worktreeDir) await rm(worktreeDir, { recursive: true, force: true });
+    if (repo) await rm(repo, { recursive: true, force: true });
   });
 
   it("resolves the same common dir from the main worktree and a linked worktree", async () => {
@@ -64,15 +66,17 @@ describe("resolveCommonGitDir", () => {
 });
 
 describe("createGitLive — fired vs ignored paths", () => {
-  let repo: string;
+  let repo: string | undefined;
   let live: GitLive;
 
   afterEach(async () => {
     await live.close();
-    await rm(repo, { recursive: true, force: true });
+    // repo is unset if makeRepo() threw before assigning it; rm(undefined) would mask that
+    // real failure behind a TypeError.
+    if (repo) await rm(repo, { recursive: true, force: true });
   });
 
-  async function setup(): Promise<{ gitCommonDir: string; onChange: ReturnType<typeof vi.fn> }> {
+  async function setup(): Promise<{ repo: string; gitCommonDir: string; onChange: ReturnType<typeof vi.fn> }> {
     repo = await makeRepo();
     const gitCommonDir = resolveCommonGitDir(repo);
     live = createGitLive({ repoRoot: repo, gitCommonDir, debounceMs: 20, maxWaitMs: 100 });
@@ -80,23 +84,23 @@ describe("createGitLive — fired vs ignored paths", () => {
     live.onChange(onChange);
     // Let the initial chokidar scan settle before making the change under test.
     await sleep(150);
-    return { gitCommonDir, onChange };
+    return { repo, gitCommonDir, onChange };
   }
 
   it("fires when HEAD's own content changes (a detached checkout, no ref touched)", async () => {
-    const { onChange } = await setup();
+    const { repo, onChange } = await setup();
     git(["checkout", "-q", "--detach"], repo);
     await waitFor(() => onChange.mock.calls.length > 0);
   });
 
   it("fires when packed-refs is (re)written", async () => {
-    const { onChange } = await setup();
+    const { repo, onChange } = await setup();
     git(["pack-refs", "--all"], repo);
     await waitFor(() => onChange.mock.calls.length > 0);
   });
 
   it("fires on a loose ref create and its later unlink", async () => {
-    const { onChange } = await setup();
+    const { repo, onChange } = await setup();
     git(["branch", "feature"], repo);
     await waitFor(() => onChange.mock.calls.length > 0);
     onChange.mockClear();
@@ -106,7 +110,7 @@ describe("createGitLive — fired vs ignored paths", () => {
   });
 
   it("fires when a linked worktree's HEAD is created", async () => {
-    const { onChange } = await setup();
+    const { repo, onChange } = await setup();
     const worktreeDir = path.join(tmpdir(), `git-live-wt-${Date.now()}`);
     try {
       git(["worktree", "add", "-q", "-b", "feature", worktreeDir], repo);
@@ -140,14 +144,16 @@ describe("createGitLive — fired vs ignored paths", () => {
 });
 
 describe("createGitLive — no self-trigger on an index writeback", () => {
-  let repo: string;
-  let worktreeDir: string;
+  let repo: string | undefined;
+  let worktreeDir: string | undefined;
   let live: GitLive;
 
   afterEach(async () => {
     await live.close();
-    await rm(worktreeDir, { recursive: true, force: true });
-    await rm(repo, { recursive: true, force: true });
+    // repo/worktreeDir are unset if makeRepo() or worktree add threw before assigning them;
+    // rm(undefined) would mask that real failure behind a TypeError.
+    if (worktreeDir) await rm(worktreeDir, { recursive: true, force: true });
+    if (repo) await rm(repo, { recursive: true, force: true });
   });
 
   it("does not fire when git status rewrites a worktree's index", async () => {
