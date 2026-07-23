@@ -2276,7 +2276,7 @@ body {
 .palette {
   display: flex;
   flex-direction: column;
-  width: min(560px, 92vw);
+  width: min(760px, 94vw);
   max-height: 62vh;
   overflow: hidden;
   background: var(--bg-2);
