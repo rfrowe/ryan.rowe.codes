@@ -12,13 +12,17 @@
 // edit with no git operation alongside it.
 
 import path from "node:path";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 
 import type { GitRunner, GitWatcher } from "../shared/seams";
-import type { GitPostState, GitPrimaryState, GitState } from "../shared/protocol";
+import type { FetchResponse, GitPostState, GitPrimaryState, GitState } from "../shared/protocol";
 import type { StudioStore } from "../state/store";
 import { BLOG_CONTENT_DIR, originRefExists } from "./diffService";
 import { postStem } from "../shared/slug";
+
+// git fetch is the one place the sidecar reaches origin over the network; give it more headroom
+// than a local git call (mirrors ship's push timeout).
+const NETWORK_TIMEOUT_MS = 120_000;
 
 export interface GitStatusServiceDeps {
   git: GitRunner;
@@ -34,6 +38,10 @@ export interface GitStatusService {
   snapshot(): Promise<GitState>;
   /** Publish an initial snapshot, then one more on every doorbell ring (publish-on-change). */
   start(): void;
+  /** `git fetch --prune origin` (refs only, global; F2), then one recompute-and-publish so every
+   *  post's behind/incoming reflects the fetched refs with no per-post follow-up call. A fetch
+   *  already in flight makes this a no-op rather than running two overlapping fetches. */
+  fetch(): Promise<FetchResponse>;
 }
 
 interface WorktreeEntry {
@@ -85,6 +93,22 @@ async function postRelPath(git: GitRunner, cwd: string, ref: string, stem: strin
 
 export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusService {
   const { git, store, repoRoot, sessionBranch, watcher, publish } = deps;
+
+  // A fetch this service itself kicked off; guards against two overlapping `git fetch`s and backs
+  // the button's spinner (git.state.fetch.inFlight) reactively, with no client-side flag needed.
+  let inFlight = false;
+
+  /** FETCH_HEAD's mtime (git.state.fetch.at): null before this repo has ever fetched. Read fresh
+   *  every snapshot, not just after fetch(), so a prior session's fetch still shows on restart. */
+  async function fetchHeadMtime(): Promise<number | null> {
+    const res = await git.git(["rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD"], { cwd: repoRoot });
+    if (res.code !== 0) return null;
+    try {
+      return (await stat(res.stdout.trim())).mtimeMs;
+    } catch {
+      return null; // never fetched: FETCH_HEAD doesn't exist yet.
+    }
+  }
 
   // No memoization: a plain unstaged edit moves neither HEAD nor the index, so any cache keyed on
   // those would go stale the moment someone types. Every invocation already runs with
@@ -189,8 +213,8 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
 
   async function snapshot(): Promise<GitState> {
     const base = await rootBase();
-    const [primary, posts] = await Promise.all([computePrimary(), computePosts(base)]);
-    return { primary, posts, fetch: { inFlight: false, at: null } };
+    const [primary, posts, at] = await Promise.all([computePrimary(), computePosts(base), fetchHeadMtime()]);
+    return { primary, posts, fetch: { inFlight, at } };
   }
 
   let lastPublished: string | null = null;
@@ -221,11 +245,33 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
     });
   }
 
+  async function fetchOrigin(): Promise<FetchResponse> {
+    if (inFlight) return { ok: true }; // already running; the caller's button/shortcut was a no-op.
+    inFlight = true;
+    let result: FetchResponse;
+    try {
+      await recomputeAndPublish(); // the spinner (git.state.fetch.inFlight) shows before the network call.
+      const res = await git.git(["fetch", "--prune", "origin"], { cwd: repoRoot, timeoutMs: NETWORK_TIMEOUT_MS });
+      result = res.code === 0 ? { ok: true } : { ok: false, error: res.stderr.trim() || `git fetch exited ${res.code}` };
+    } catch (err) {
+      result = { ok: false, error: err instanceof Error ? err.message : "git fetch failed" };
+    }
+    inFlight = false;
+    try {
+      await recomputeAndPublish(); // refs may have moved; every post's behind/incoming and `at` follow.
+    } catch (err) {
+      // A failed recompute here must not mask the fetch's own result; log it instead (mirrors schedule()).
+      console.error("[gitStatus] post-fetch recompute failed:", err instanceof Error ? err.message : err);
+    }
+    return result;
+  }
+
   return {
     snapshot,
     start() {
       watcher.onChange(schedule);
       schedule();
     },
+    fetch: fetchOrigin,
   };
 }

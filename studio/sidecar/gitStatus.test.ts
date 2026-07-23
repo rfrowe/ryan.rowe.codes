@@ -243,6 +243,100 @@ describe("createGitStatusService — start()", () => {
   });
 });
 
+describe("createGitStatusService — fetch", () => {
+  let repo: string | undefined;
+  let origin: string | undefined;
+  let other: string | undefined;
+
+  afterEach(async () => {
+    if (other) await rm(other, { recursive: true, force: true });
+    if (origin) await rm(origin, { recursive: true, force: true });
+    if (repo) await rm(repo, { recursive: true, force: true });
+    repo = origin = other = undefined;
+  });
+
+  it("pulls a root advance from origin and republishes so primary.behind reflects it, with one call", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    // A different clone advances main and pushes, without `repo` ever fetching it until service.fetch().
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "root-change.txt"), "x\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "root advances"], other);
+    git(["push", "-q", "origin", "main"], other);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const publish = vi.fn();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish });
+
+    const before = await service.snapshot();
+    expect(before.primary.behind).toBe(0);
+    expect(before.fetch).toEqual({ inFlight: false, at: null });
+
+    const result = await service.fetch();
+    expect(result).toEqual({ ok: true });
+
+    const after = await service.snapshot();
+    expect(after.primary.behind).toBe(1);
+    expect(after.fetch.inFlight).toBe(false);
+    expect(after.fetch.at).not.toBeNull();
+
+    // The fetch call itself already republished reactively; a caller needs no follow-up snapshot.
+    const publishedStates = publish.mock.calls.map((c) => c[0] as { fetch: { inFlight: boolean }; primary: { behind: number } });
+    expect(publishedStates.some((s) => s.fetch.inFlight)).toBe(true);
+    expect(publishedStates.at(-1)?.primary.behind).toBe(1);
+  });
+
+  it("reports a git-level failure without leaving inFlight stuck true", async () => {
+    repo = await makeRepo(); // no `origin` remote configured: `git fetch --prune origin` fails offline-safe.
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.fetch();
+    expect(result.ok).toBe(false);
+
+    const after = await service.snapshot();
+    expect(after.fetch.inFlight).toBe(false);
+  });
+
+  it("is a no-op, not a second git fetch, while one is already running", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    const inner = createGitRunner();
+    let fetchCalls = 0;
+    const counting: GitRunner = {
+      git: (args, opts) => {
+        if (args[0] === "fetch") fetchCalls += 1;
+        return inner.git(args, opts);
+      },
+      gh: (args, opts) => inner.gh(args, opts),
+    };
+    const store = newStore(repo, counting);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: counting, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const [first, second] = await Promise.all([service.fetch(), service.fetch()]);
+    expect(first).toEqual({ ok: true });
+    expect(second).toEqual({ ok: true });
+    expect(fetchCalls).toBe(1);
+  });
+});
+
 describe("createGitStatusService — primary", () => {
   let repo: string | undefined;
 
