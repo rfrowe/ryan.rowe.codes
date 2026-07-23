@@ -13,6 +13,9 @@ import { SaveDraftPanel } from "./SaveDraftPanel";
 import { TabBar, type StackComponent } from "./TabBar";
 import { NewPostDialog, type NewPostFields } from "./NewPostDialog";
 import { CommandPalette } from "./CommandPalette";
+import { KeymapProvider } from "./keymap";
+import { useCommand } from "./useCommand";
+import { ShortcutsPanel } from "./ShortcutsPanel";
 import { McpStatusBar, type McpServerStatus } from "./McpStatusBar";
 import { ModeChip } from "./ModeChip";
 import { Modal } from "./Modal";
@@ -1042,225 +1045,236 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
+  // Listed in the ⌘? panel so it's discoverable there too; the capture-phase listener above
+  // already owns ⌘P's actual key handling and always runs first, so the registry's own dispatcher
+  // (bubble-phase, and deferring to an already-prevented event) never double-fires this.
+  useCommand({ id: "nav.palette", chord: "mod+p", label: "Open or create a post", group: "Navigation", run: () => setShowPalette((o) => !o) });
+  // Mirrors nav.palette: the editor's own Mod-k CodeMirror binding keeps doing the real key
+  // handling; this registration is for the panel, and for running it from outside the editor.
+  useCommand({ id: "agent.directive", chord: "mod+k", label: "Agent directive", group: "Agent", run: () => editorRef.current?.openPrompt() });
+
   const tabDescriptors = useMemo(() => state.tabs.map((t) => ({ path: t.path, title: t.title })), [state.tabs]);
 
   return (
-    <div className="studio">
-      <TabBar
-        tabs={tabDescriptors}
-        activePath={state.activePath}
-        status={status}
-        stackStatus={stackStatus}
-        studio={state.studio}
-        git={state.git}
-        onSelect={openPost}
-        onClose={onCloseTab}
-        onNewPost={() => openNewPost("")}
-        onRename={onRename}
-        onSaveDraft={onSaveDraft}
-        onRevert={onRevertPost}
-        onDelete={onDeletePost}
-        onFetch={onFetch}
-        fetching={fetching}
-      />
+    <KeymapProvider>
+      <div className="studio">
+        <ShortcutsPanel git={state.git} />
+        <TabBar
+          tabs={tabDescriptors}
+          activePath={state.activePath}
+          status={status}
+          stackStatus={stackStatus}
+          studio={state.studio}
+          git={state.git}
+          onSelect={openPost}
+          onClose={onCloseTab}
+          onNewPost={() => openNewPost("")}
+          onRename={onRename}
+          onSaveDraft={onSaveDraft}
+          onRevert={onRevertPost}
+          onDelete={onDeletePost}
+          onFetch={onFetch}
+          fetching={fetching}
+        />
 
-      {notice && (
-        <div className="studio__notice" role="status">
-          {notice}
-        </div>
-      )}
-
-      {activeTab?.externalChange && (
-        <div className="banner">
-          <span>
-            {activeTab.externalChange.origin === "git"
-              ? "This post was reloaded from a git operation (checkout, commit, or reset)."
-              : "The file changed on disk outside the studio."}
-          </span>
-          <button className="btn btn--primary" onClick={() => dispatch({ type: "applyExternal", path: activeTab.path })}>
-            Reload
-          </button>
-          <button className="btn btn--ghost" onClick={() => dispatch({ type: "dismissExternal", path: activeTab.path })}>
-            Keep mine
-          </button>
-        </div>
-      )}
-
-      {activeTab && !activeTab.nameSync.synced && (
-        <div className="banner banner--warn">
-          <WarnIcon size={16} className="banner__icon" />
-          <span>
-            This post's deployed URL has changed to <code>{activeTab.nameSync.expectedStem}</code>.
-          </span>
-          <button
-            className="btn btn--primary"
-            style={{ marginLeft: "auto" }}
-            disabled={activeTab.nameSync.canComplete === false}
-            title={activeTab.nameSync.canComplete === false ? activeTab.nameSync.reason : undefined}
-            onClick={() => onCompleteRename(activeTab.path)}
-          >
-            Rename worktree
-          </button>
-          <button className="btn btn--ghost" onClick={() => onRevertUrl(activeTab.path)}>
-            Revert URL
-          </button>
-        </div>
-      )}
-
-      <div className="studio__main">
-        <section className="pane pane--editor">
-          {activeDoc && activeTab ? (
-            <Editor
-              key={activeDoc.path}
-              ref={editorRef}
-              path={activeDoc.path}
-              initialText={activeDoc.text}
-              rev={activeDoc.rev}
-              remoteUpdate={activeTab.remoteUpdate}
-              promptInFlight={turnOnActive}
-              suspendSave={activeTab.externalChange != null}
-              onRev={onRev}
-              onPrompt={onEditorPrompt}
-              onEditorState={onEditorState}
-            />
-          ) : (
-            <div className="pane__empty">
-              {state.tabs.length === 0 ? "No open posts — create one or press ⌘P." : "Waiting for the active document…"}
-            </div>
-          )}
-        </section>
-
-        <section className="pane pane--preview">
-          <Preview key={state.activePath ?? "none"} preview={activeTab?.preview ?? WAITING_PREVIEW} />
-        </section>
-
-        <section className="pane pane--chat">
-          <Chat
-            key={state.activePath ?? "none"}
-            items={activeTab?.chat ?? []}
-            promptInFlight={turnOnActive}
-            connected={connected}
-            pendingPermissions={activeTab?.permissions ?? []}
-            onPermission={onPermission}
-            onAnswerQuestion={onAnswerQuestion}
-            cwd={activeTab?.worktreePath ?? undefined}
-            onSend={onChatSend}
-            onCancel={onCancel}
-          />
-        </section>
-      </div>
-
-      <footer className="studio__footer">
-        <button className="btn btn--ghost" onClick={() => setShowPicker(true)}>
-          Session: {activeTab?.session.mode ?? "new"}
-          {activeTab?.session.sessionId ? " ●" : ""}
-        </button>
-        <button
-          className="btn btn--ghost"
-          onClick={async () => {
-            // Flush so the ship diff reflects the newest keystrokes, not just the last autosave.
-            try {
-              await editorRef.current?.flush();
-            } catch {
-              /* the diff may lag the newest edits; open the panel anyway */
-            }
-            setShowShip(true);
-          }}
-        >
-          Ship…
-        </button>
-        <button
-          className="btn btn--ghost"
-          disabled={!state.activePath}
-          title="Commit and push this draft to origin (no PR), so it can be resumed later"
-          onClick={() => {
-            if (state.activePath) void onSaveDraft(state.activePath);
-          }}
-        >
-          Save draft…
-        </button>
-        <button className="btn btn--ghost" onClick={() => setShowPalette(true)}>
-          Open… <kbd className="kbd">⌘P</kbd>
-        </button>
-        <span className="studio__spacer" />
-        <ModeChip mode={state.mode} onSetMode={onSetMode} />
-        <McpStatusBar servers={state.mcp} onToggle={onMcpToggle} />
-      </footer>
-
-      {showPalette && (
-        <div className="palette__scrim" onClick={() => setShowPalette(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <CommandPalette
-              openTabs={tabDescriptors}
-              activePath={state.activePath}
-              git={state.git}
-              onSelect={openPost}
-              onCreate={openNewPost}
-              onClose={() => setShowPalette(false)}
-            />
+        {notice && (
+          <div className="studio__notice" role="status">
+            {notice}
           </div>
-        </div>
-      )}
-      {showNewPost && (
-        <Modal size="narrow" onClose={() => !creating && setShowNewPost(false)}>
-          <NewPostDialog
-            creating={creating}
-            error={createError}
-            initialTitle={newPostTitle}
-            onSubmit={onCreatePost}
-            onClose={() => setShowNewPost(false)}
-          />
-        </Modal>
-      )}
-      {showPicker && (
-        <Modal onClose={() => setShowPicker(false)}>
-          <SessionPicker
-            current={activeTab?.session ?? { sessionId: null, mode: "new" }}
-            onSelect={onSelectSession}
-            onClose={() => setShowPicker(false)}
-          />
-        </Modal>
-      )}
-      {showShip && (
-        <Modal size="wide" onClose={() => setShowShip(false)}>
-          <ShipPanel
-            branch={activeTab?.branch ?? null}
-            slug={activeTab ? slugFromPath(activeTab.path) : null}
-            path={activeTab?.path ?? null}
-            git={state.git}
-            nameSync={activeTab?.nameSync ?? SYNCED}
-            onClose={() => setShowShip(false)}
-          />
-        </Modal>
-      )}
-      {saveDraftFor &&
-        (() => {
-          const tab = state.tabs.find((t) => t.path === saveDraftFor);
-          if (!tab) return null;
-          return (
-            <Modal size="wide" onClose={() => setSaveDraftFor(null)}>
-              <SaveDraftPanel
-                path={tab.path}
-                branch={tab.branch}
-                onClose={() => setSaveDraftFor(null)}
+        )}
+
+        {activeTab?.externalChange && (
+          <div className="banner">
+            <span>
+              {activeTab.externalChange.origin === "git"
+                ? "This post was reloaded from a git operation (checkout, commit, or reset)."
+                : "The file changed on disk outside the studio."}
+            </span>
+            <button className="btn btn--primary" onClick={() => dispatch({ type: "applyExternal", path: activeTab.path })}>
+              Reload
+            </button>
+            <button className="btn btn--ghost" onClick={() => dispatch({ type: "dismissExternal", path: activeTab.path })}>
+              Keep mine
+            </button>
+          </div>
+        )}
+
+        {activeTab && !activeTab.nameSync.synced && (
+          <div className="banner banner--warn">
+            <WarnIcon size={16} className="banner__icon" />
+            <span>
+              This post's deployed URL has changed to <code>{activeTab.nameSync.expectedStem}</code>.
+            </span>
+            <button
+              className="btn btn--primary"
+              style={{ marginLeft: "auto" }}
+              disabled={activeTab.nameSync.canComplete === false}
+              title={activeTab.nameSync.canComplete === false ? activeTab.nameSync.reason : undefined}
+              onClick={() => onCompleteRename(activeTab.path)}
+            >
+              Rename worktree
+            </button>
+            <button className="btn btn--ghost" onClick={() => onRevertUrl(activeTab.path)}>
+              Revert URL
+            </button>
+          </div>
+        )}
+
+        <div className="studio__main">
+          <section className="pane pane--editor">
+            {activeDoc && activeTab ? (
+              <Editor
+                key={activeDoc.path}
+                ref={editorRef}
+                path={activeDoc.path}
+                initialText={activeDoc.text}
+                rev={activeDoc.rev}
+                remoteUpdate={activeTab.remoteUpdate}
+                promptInFlight={turnOnActive}
+                suspendSave={activeTab.externalChange != null}
+                onRev={onRev}
+                onPrompt={onEditorPrompt}
+                onEditorState={onEditorState}
               />
-            </Modal>
-          );
-        })()}
-      {pendingConfirm && (
-        <Modal size="wide" onClose={onCancelDestructive}>
-          <DestructiveConfirm
-            data={pendingConfirm}
-            title={state.tabs.find((t) => t.path === pendingConfirm.path)?.title || pendingConfirm.path}
-            busy={confirmBusy}
-            error={confirmError}
-            onConfirm={onConfirmDestructive}
-            onSaveAndDelete={onSaveThenDelete}
-            onScopeChange={onRevertScopeChange}
-            onCancel={onCancelDestructive}
-          />
-        </Modal>
-      )}
-    </div>
+            ) : (
+              <div className="pane__empty">
+                {state.tabs.length === 0 ? "No open posts — create one or press ⌘P." : "Waiting for the active document…"}
+              </div>
+            )}
+          </section>
+
+          <section className="pane pane--preview">
+            <Preview key={state.activePath ?? "none"} preview={activeTab?.preview ?? WAITING_PREVIEW} />
+          </section>
+
+          <section className="pane pane--chat">
+            <Chat
+              key={state.activePath ?? "none"}
+              items={activeTab?.chat ?? []}
+              promptInFlight={turnOnActive}
+              connected={connected}
+              pendingPermissions={activeTab?.permissions ?? []}
+              onPermission={onPermission}
+              onAnswerQuestion={onAnswerQuestion}
+              cwd={activeTab?.worktreePath ?? undefined}
+              onSend={onChatSend}
+              onCancel={onCancel}
+            />
+          </section>
+        </div>
+
+        <footer className="studio__footer">
+          <button className="btn btn--ghost" onClick={() => setShowPicker(true)}>
+            Session: {activeTab?.session.mode ?? "new"}
+            {activeTab?.session.sessionId ? " ●" : ""}
+          </button>
+          <button
+            className="btn btn--ghost"
+            onClick={async () => {
+              // Flush so the ship diff reflects the newest keystrokes, not just the last autosave.
+              try {
+                await editorRef.current?.flush();
+              } catch {
+                /* the diff may lag the newest edits; open the panel anyway */
+              }
+              setShowShip(true);
+            }}
+          >
+            Ship…
+          </button>
+          <button
+            className="btn btn--ghost"
+            disabled={!state.activePath}
+            title="Commit and push this draft to origin (no PR), so it can be resumed later"
+            onClick={() => {
+              if (state.activePath) void onSaveDraft(state.activePath);
+            }}
+          >
+            Save draft…
+          </button>
+          <button className="btn btn--ghost" onClick={() => setShowPalette(true)}>
+            Open… <kbd className="kbd">⌘P</kbd>
+          </button>
+          <span className="studio__spacer" />
+          <ModeChip mode={state.mode} onSetMode={onSetMode} />
+          <McpStatusBar servers={state.mcp} onToggle={onMcpToggle} />
+        </footer>
+
+        {showPalette && (
+          <div className="palette__scrim" onClick={() => setShowPalette(false)}>
+            <div onClick={(e) => e.stopPropagation()}>
+              <CommandPalette
+                openTabs={tabDescriptors}
+                activePath={state.activePath}
+                git={state.git}
+                onSelect={openPost}
+                onCreate={openNewPost}
+                onClose={() => setShowPalette(false)}
+              />
+            </div>
+          </div>
+        )}
+        {showNewPost && (
+          <Modal size="narrow" onClose={() => !creating && setShowNewPost(false)}>
+            <NewPostDialog
+              creating={creating}
+              error={createError}
+              initialTitle={newPostTitle}
+              onSubmit={onCreatePost}
+              onClose={() => setShowNewPost(false)}
+            />
+          </Modal>
+        )}
+        {showPicker && (
+          <Modal onClose={() => setShowPicker(false)}>
+            <SessionPicker
+              current={activeTab?.session ?? { sessionId: null, mode: "new" }}
+              onSelect={onSelectSession}
+              onClose={() => setShowPicker(false)}
+            />
+          </Modal>
+        )}
+        {showShip && (
+          <Modal size="wide" onClose={() => setShowShip(false)}>
+            <ShipPanel
+              branch={activeTab?.branch ?? null}
+              slug={activeTab ? slugFromPath(activeTab.path) : null}
+              path={activeTab?.path ?? null}
+              git={state.git}
+              nameSync={activeTab?.nameSync ?? SYNCED}
+              onClose={() => setShowShip(false)}
+            />
+          </Modal>
+        )}
+        {saveDraftFor &&
+          (() => {
+            const tab = state.tabs.find((t) => t.path === saveDraftFor);
+            if (!tab) return null;
+            return (
+              <Modal size="wide" onClose={() => setSaveDraftFor(null)}>
+                <SaveDraftPanel
+                  path={tab.path}
+                  branch={tab.branch}
+                  onClose={() => setSaveDraftFor(null)}
+                />
+              </Modal>
+            );
+          })()}
+        {pendingConfirm && (
+          <Modal size="wide" onClose={onCancelDestructive}>
+            <DestructiveConfirm
+              data={pendingConfirm}
+              title={state.tabs.find((t) => t.path === pendingConfirm.path)?.title || pendingConfirm.path}
+              busy={confirmBusy}
+              error={confirmError}
+              onConfirm={onConfirmDestructive}
+              onSaveAndDelete={onSaveThenDelete}
+              onScopeChange={onRevertScopeChange}
+              onCancel={onCancelDestructive}
+            />
+          </Modal>
+        )}
+      </div>
+    </KeymapProvider>
   );
 }
