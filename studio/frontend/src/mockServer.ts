@@ -358,7 +358,7 @@ class MockBackend {
   }
 
   ship(req: ShipRequest): ShipResponse {
-    if (!req.confirm) return { ok: false, error: "confirmation required" };
+    if (!req.confirm) return { ok: false, error: "confirmation required", behind: undefined };
     return { ok: true, prUrl: "https://github.com/rfrowe/ryan.rowe.codes/pull/42" };
   }
 

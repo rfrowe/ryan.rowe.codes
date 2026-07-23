@@ -55,7 +55,7 @@ export function ShipPanel({ branch, slug, path, git, nameSync, onClose }: ShipPa
       const res = await ship({ branch: branch ?? "", subject: subject.trim(), body, scope, confirm: true });
       setResult(res);
     } catch (e: unknown) {
-      setResult({ ok: false, error: e instanceof Error ? e.message : "ship request failed" });
+      setResult({ ok: false, error: e instanceof Error ? e.message : "ship request failed", behind: undefined });
     }
     setPhase("result");
   }
@@ -145,7 +145,7 @@ export function ShipPanel({ branch, slug, path, git, nameSync, onClose }: ShipPa
               <div className="ship__fail">
                 <p>
                   Ship failed:{" "}
-                  {"behind" in result
+                  {result.behind !== undefined
                     ? `${result.behind} behind ${rootName}. Fetch and rebase onto ${rootName} before shipping.`
                     : result.error}
                 </p>

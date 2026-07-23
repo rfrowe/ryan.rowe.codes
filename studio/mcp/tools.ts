@@ -96,6 +96,7 @@ export function createStudioTools(deps: StudioToolsDeps): StudioTools {
           error:
             "open_pr requires human confirmation. Review the diff out-of-band, then call again with " +
             "confirm=true. The studio (not the agent) runs the git/gh ship flow.",
+          behind: undefined,
         };
       }
       return ship.openPr(input);
