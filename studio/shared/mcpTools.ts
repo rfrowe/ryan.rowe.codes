@@ -59,7 +59,7 @@ export interface OpenPrInput {
 }
 export type OpenPrResult =
   | { ok: true; prUrl: string; previewUrl?: string }
-  | { ok: false; error: string; violations?: string[] }
+  | { ok: false; error: string; violations?: string[]; behind: undefined }
   // Ship gate (F7): the post is behind origin/<sessionBranch>. A structured error, not a message, so
   // the client can point at Update (F3) instead of just displaying text.
-  | { ok: false; error: "behind"; behind: number };
+  | { ok: false; error: "behind"; behind: number; violations?: undefined };

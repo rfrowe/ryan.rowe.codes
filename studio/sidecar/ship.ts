@@ -104,12 +104,12 @@ export function createShipService(deps: ShipDeps): ShipService {
   async function openPr(input: OpenPrInput): Promise<OpenPrResult> {
     // Confirmation gate. Never touch git/gh without explicit human sign-off.
     if (!input.confirm) {
-      return { ok: false, error: "confirmation required" };
+      return { ok: false, error: "confirmation required", behind: undefined };
     }
     // The PR branch is the worktree's own branch; `input.branch` from the SPA is ignored.
     const wt = getActiveWorktree();
     if (!wt) {
-      return { ok: false, error: "no active post to ship" };
+      return { ok: false, error: "no active post to ship", behind: undefined };
     }
     // Refuse a frontmatter/filename desync before any side effect: the post's live URL wouldn't
     // match where it deploys. The author resolves it first via Complete-rename or Revert.
@@ -121,6 +121,7 @@ export function createShipService(deps: ShipDeps): ShipService {
           `refusing to ship: the post's frontmatter (slug/date) doesn't match its filename/branch ` +
           `(frontmatter → "${nameSync.expectedStem}", file → "${nameSync.currentStem}"). ` +
           `Complete the rename or revert the frontmatter first.`,
+        behind: undefined,
       };
     }
     const cwd = wt.worktreePath;
@@ -136,6 +137,7 @@ export function createShipService(deps: ShipDeps): ShipService {
         return {
           ok: false,
           error: `refusing to ship: the worktree is on "${head}", expected the post's branch "${wt.branch}".`,
+          behind: undefined,
         };
       }
 
@@ -158,6 +160,7 @@ export function createShipService(deps: ShipDeps): ShipService {
         return {
           ok: false,
           error: input.scope === "all" ? "no changes to ship" : `no changes under ${BLOG_CONTENT_DIR} to ship`,
+          behind: undefined,
         };
       }
 
@@ -171,6 +174,7 @@ export function createShipService(deps: ShipDeps): ShipService {
           error:
             `refusing to ship: the primary branch "${base}" isn't on origin yet, so a PR can't target it. ` +
             `Push it first (git push -u origin ${base}) or run the studio on the default branch.`,
+          behind: undefined,
         };
       }
 
@@ -207,6 +211,7 @@ export function createShipService(deps: ShipDeps): ShipService {
           error:
             `identity assertion failed: HEAD is authored by "${author}", expected "${PINNED_IDENTITY}". ` +
             `The commit was NOT pushed.`,
+          behind: undefined,
         };
       }
 
@@ -232,6 +237,7 @@ export function createShipService(deps: ShipDeps): ShipService {
               `refusing to push: the branch diff vs ${base} includes ${prOutside.length} path(s) outside ` +
               `${BLOG_CONTENT_DIR}: ${prOutside.join(", ")}. The branch must contain only the post. The commit ` +
               `exists locally but was NOT pushed.`,
+            behind: undefined,
           };
         }
       }
@@ -242,10 +248,10 @@ export function createShipService(deps: ShipDeps): ShipService {
       try {
         const pushRes = await git.git(["push", "-u", "origin", remoteBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
         if (pushRes.code !== 0) {
-          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)) };
+          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)), behind: undefined };
         }
       } catch (e) {
-        return { ok: false, error: pushFailedMessage(errorMessage(e)) };
+        return { ok: false, error: pushFailedMessage(errorMessage(e)), behind: undefined };
       }
 
       // Predict the post's own Cloudflare preview URL and append it to the PR body only (the commit
@@ -264,21 +270,22 @@ export function createShipService(deps: ShipDeps): ShipService {
           { cwd, timeoutMs: NETWORK_TIMEOUT_MS },
         );
         if (prRes.code !== 0) {
-          return { ok: false, error: prFailedMessage(remoteBranch, detail(prRes.stderr, prRes.code)) };
+          return { ok: false, error: prFailedMessage(remoteBranch, detail(prRes.stderr, prRes.code)), behind: undefined };
         }
         const prUrl = extractUrl(prRes.stdout);
         if (!prUrl) {
           return {
             ok: false,
             error: `gh pr create returned no PR URL (branch "${remoteBranch}" is pushed; verify with \`gh pr view\`)`,
+            behind: undefined,
           };
         }
         return { ok: true, prUrl, previewUrl };
       } catch (e) {
-        return { ok: false, error: prFailedMessage(remoteBranch, errorMessage(e)) };
+        return { ok: false, error: prFailedMessage(remoteBranch, errorMessage(e)), behind: undefined };
       }
     } catch (e) {
-      return { ok: false, error: `ship failed: ${errorMessage(e)}` };
+      return { ok: false, error: `ship failed: ${errorMessage(e)}`, behind: undefined };
     }
   }
 
@@ -402,8 +409,9 @@ function detail(stderr: string, code: number): string {
 }
 
 // The failure shape common to OpenPrResult and SaveDraftResponse, so `fail` serves both flows.
-function fail(step: string, stderr: string, code: number): { ok: false; error: string } {
-  return { ok: false, error: `${step} failed: ${detail(stderr, code)}` };
+// `behind: undefined` only matters to OpenPrResult's discriminant; SaveDraftResponse ignores it.
+function fail(step: string, stderr: string, code: number): { ok: false; error: string; behind: undefined } {
+  return { ok: false, error: `${step} failed: ${detail(stderr, code)}`, behind: undefined };
 }
 
 function pushFailedMessage(why: string): string {
