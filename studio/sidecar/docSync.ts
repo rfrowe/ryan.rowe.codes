@@ -126,7 +126,9 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     if (res.code !== 0) return "external"; // detached/unborn HEAD or a mid-op race; don't block on it.
     const head = res.stdout.trim();
     const moved = lastKnownHead !== null && head !== lastKnownHead;
-    lastKnownHead = head;
+    // A retarget mid-await already reseeded lastKnownHead for its own post; a stale write here would
+    // clobber that with this call's post instead (same staleness class as seedHead's own guard).
+    if (filePath === cwd) lastKnownHead = head;
     return moved ? "git" : "external";
   }
 

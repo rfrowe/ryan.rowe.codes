@@ -78,30 +78,35 @@ async function makeRepo(stemFile: string): Promise<string> {
   return dir;
 }
 
-/** Wraps a real GitRunner so the `nth` `rev-parse HEAD` call blocks until `release()` is called,
- *  letting a test suspend `handle()` mid-classification and act while it's paused there.
- *  `waitUntilPaused` resolves the instant that call is reached, before it actually blocks. */
-function gateNthRevParse(real: GitRunner, nth: number): { git: GitRunner; waitUntilPaused: () => Promise<void>; release: () => void } {
+/** Wraps a real GitRunner so each `rev-parse HEAD` call whose position is in `gateOn` blocks until
+ *  `release(nth)` is called, letting a test suspend `handle()`/`seedHead()` mid-flight and act while
+ *  it's paused there. `waitUntilPaused(nth)` resolves the instant that call is reached, before it
+ *  actually blocks, so a test can sequence releases deterministically instead of guessing timing. */
+function gateRevParses(real: GitRunner, gateOn: number[]): {
+  git: GitRunner;
+  waitUntilPaused: (nth: number) => Promise<void>;
+  release: (nth: number) => void;
+} {
   let seen = 0;
-  let releaseFn: (() => void) | null = null;
-  let pausedResolve: (() => void) | null = null;
-  const paused = new Promise<void>((resolve) => (pausedResolve = resolve));
+  const releaseFns = new Map<number, () => void>();
+  const pausedResolves = new Map<number, () => void>();
+  const paused = new Map<number, Promise<void>>(gateOn.map((n) => [n, new Promise<void>((resolve) => pausedResolves.set(n, resolve))]));
   return {
     git: {
       async git(args, opts) {
         if (args[0] === "rev-parse" && args[1] === "HEAD") {
           seen += 1;
-          if (seen === nth) {
-            pausedResolve?.();
-            await new Promise<void>((resolve) => (releaseFn = resolve));
+          if (gateOn.includes(seen)) {
+            pausedResolves.get(seen)?.();
+            await new Promise<void>((resolve) => releaseFns.set(seen, resolve));
           }
         }
         return real.git(args, opts);
       },
       gh: real.gh,
     },
-    waitUntilPaused: () => paused,
-    release: () => releaseFn?.(),
+    waitUntilPaused: (nth) => paused.get(nth) ?? Promise.resolve(),
+    release: (nth) => releaseFns.get(nth)?.(),
   };
 }
 
@@ -348,20 +353,58 @@ describe("docSync handle() path stability under a mid-flight retarget", () => {
 
     // The 1st rev-parse is construction's seed for A; the 2nd is the classification this event's
     // handle() call makes. Gate that one so the test can retarget while it's still in flight.
-    const gated = gateNthRevParse(createGitRunner(), 2);
+    const gated = gateRevParses(createGitRunner(), [2]);
     const { store, reloadCalls } = makeFakeStore(fileA, "v1\n");
     sync = createDocSync(store, { filePath: fileA, git: gated.git });
     await new Promise((r) => setTimeout(r, 100)); // let chokidar attach to A (see sibling tests' note).
 
     await writeFile(fileA, "v2\n");
-    await gated.waitUntilPaused(); // handle() is suspended inside classifyExternalOrigin for A's event.
+    await gated.waitUntilPaused(2); // handle() is suspended inside classifyExternalOrigin for A's event.
 
     sync.retarget(fileB); // switches the watched post while A's write is still being classified.
-    gated.release();
+    gated.release(2);
 
     await waitFor(() => reloadCalls.length > 0);
     // A's write must land on A, carrying A's own text, however far filePath has since moved on.
     expect(reloadCalls.at(-1)?.path).toBe(fileA);
     expect(reloadCalls.some((c) => c.path === fileB)).toBe(false);
+  });
+
+  it("doesn't let a stale classification for the previous post corrupt the next post's HEAD baseline", async () => {
+    dir = await makeRepo(STEM_FILE);
+    dir2 = await makeRepo(STEM_FILE);
+    // Two freshly-initialized repos with the same content, message, and author commit in the same
+    // second hash identically (git commits are content-addressed); a second commit here guarantees
+    // A's and B's HEAD shas actually differ, or the corruption this test targets would be undetectable.
+    runGit(["commit", "-q", "--allow-empty", "-m", "second"], dir2);
+    const fileA = path.join(dir, STEM_FILE);
+    const fileB = path.join(dir2, STEM_FILE);
+
+    // 1st rev-parse: construction's seed for A. 2nd: A's classification for the write below, gated
+    // and released last. 3rd: B's seed on retarget, gated and released first so its write to the
+    // shared lastKnownHead lands before A's stale classification would otherwise clobber it.
+    const gated = gateRevParses(createGitRunner(), [2, 3]);
+    const { store, reloadCalls } = makeFakeStore(fileA, "v1\n");
+    sync = createDocSync(store, { filePath: fileA, git: gated.git });
+    await new Promise((r) => setTimeout(r, 100)); // let chokidar attach to A.
+
+    await writeFile(fileA, "v2\n");
+    await gated.waitUntilPaused(2);
+
+    sync.retarget(fileB); // kicks off B's own seed as the 3rd rev-parse call.
+    await gated.waitUntilPaused(3);
+    gated.release(3); // B's seed resolves and correctly sets lastKnownHead to B's real HEAD.
+    await new Promise((r) => setTimeout(r, 50)); // let that write land before A's stale one resumes.
+    gated.release(2); // A's classification resumes and resolves last.
+
+    await waitFor(() => reloadCalls.length > 0); // A's own write settling; its origin isn't asserted.
+    reloadCalls.length = 0;
+
+    // A plain edit on B, HEAD unmoved, must still read as external, not "git" from a baseline A's
+    // stale write clobbered with its own (unrelated) HEAD sha.
+    await new Promise((r) => setTimeout(r, 100)); // let chokidar attach to B (retarget swapped watchers).
+    await writeFile(fileB, "v1-plain-edit\n");
+    await waitFor(() => reloadCalls.length > 0);
+    expect(reloadCalls.at(-1)?.origin).toBe("external");
   });
 });
