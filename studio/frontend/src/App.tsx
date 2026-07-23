@@ -187,6 +187,13 @@ function ownerOf(state: StudioState, promptId: string): string | null {
   return state.promptOwners[promptId] ?? state.activePath;
 }
 
+/** Whether a revert-scope /diff response is still the one most recently requested. A rapid
+ *  Post-only/Everything double-toggle can let an older response resolve after a newer one; only
+ *  the response matching the current sequence should ever reach the dialog. */
+export function isLatestRevertScopeRequest(requestSeq: number, latestSeq: number): boolean {
+  return requestSeq === latestSeq;
+}
+
 function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
   switch (msg.type) {
     case "session":
@@ -525,6 +532,9 @@ export default function App() {
 
   const socketRef = useRef<StudioSocket | null>(null);
   const editorRef = useRef<EditorHandle | null>(null);
+  // Bumped on every onRevertScopeChange call; its resolved /diff response is dropped once a later
+  // toggle has moved this past the sequence the response was requested under.
+  const revertScopeSeqRef = useRef(0);
   // Synchronous single-turn latch, needed to reject a second dispatch during the pre-flush await
   // before the state-driven re-render lands. Reconciled from `turn` so done/error always releases it.
   const turnInFlightRef = useRef(false);
@@ -749,8 +759,10 @@ export default function App() {
     (scope: Scope) => {
       if (!pendingConfirm || pendingConfirm.op !== "revert") return;
       const { path } = pendingConfirm;
+      const seq = ++revertScopeSeqRef.current;
       getLossPreview("revert", path, scope)
         .then((preview) => {
+          if (!isLatestRevertScopeRequest(seq, revertScopeSeqRef.current)) return;
           if (preview.diff.trim().length === 0) {
             setPendingConfirm(null);
             return;
@@ -764,7 +776,10 @@ export default function App() {
             scope: preview.scope ?? scope,
           });
         })
-        .catch((e: unknown) => showNotice(e instanceof Error ? e.message : "Failed to preview the change."));
+        .catch((e: unknown) => {
+          if (!isLatestRevertScopeRequest(seq, revertScopeSeqRef.current)) return;
+          showNotice(e instanceof Error ? e.message : "Failed to preview the change.");
+        });
     },
     [pendingConfirm, showNotice],
   );
