@@ -14,7 +14,7 @@ import { createGitRunner } from "./gitRunner";
 import { createGitStatusService } from "./gitStatus";
 import { createStore, type StudioStore } from "../state/store";
 import { nodeFs } from "./fsImpl";
-import type { GitRunner, GitWatcher, RunResult } from "../shared/seams";
+import type { GitRunner, GitWatcher } from "../shared/seams";
 
 function git(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd });
@@ -57,25 +57,6 @@ function fakeWatcher(): { watcher: GitWatcher; ring: () => void } {
     ring() {
       for (const l of listeners) l();
     },
-  };
-}
-
-/** Wraps a real GitRunner, counting invocations by subcommand so memoization can be asserted on
- *  call counts rather than re-deriving git's own output. */
-function countingRunner(inner: GitRunner): { git: GitRunner; countOf: (sub: string) => number } {
-  const counts = new Map<string, number>();
-  const record = (sub: string): void => {
-    counts.set(sub, (counts.get(sub) ?? 0) + 1);
-  };
-  return {
-    git: {
-      git: async (args, opts): Promise<RunResult> => {
-        record(args[0]);
-        return inner.git(args, opts);
-      },
-      gh: (args, opts) => inner.gh(args, opts),
-    },
-    countOf: (sub) => counts.get(sub) ?? 0,
   };
 }
 
@@ -181,11 +162,10 @@ describe("createGitStatusService — snapshot", () => {
     await rm(other, { recursive: true, force: true });
   });
 
-  it("memoizes uncommitted status by (HEAD sha, index mtime): an unchanged worktree skips a second status call", async () => {
+  it("detects a plain unstaged edit as uncommitted on the next snapshot, no index-touching op needed", async () => {
     repo = await makeRepo();
-    const inner = createGitRunner();
-    const { git: counted, countOf } = countingRunner(inner);
-    const store = newStore(repo, counted);
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
     const created = await store.createPost({ title: "A", slug: "a", headline: "h", created_at: "2026-07-10" });
     if (!created.ok) throw new Error(created.error);
     const worktree = store.getWorktreeFor(created.path);
@@ -194,19 +174,16 @@ describe("createGitStatusService — snapshot", () => {
     git(["commit", "-q", "-m", "first draft"], worktree.worktreePath);
 
     const { watcher } = fakeWatcher();
-    const service = createGitStatusService({ git: counted, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
 
-    await service.snapshot();
-    const afterFirst = countOf("status");
-    await service.snapshot();
-    expect(countOf("status")).toBe(afterFirst); // nothing moved: the second pass reused the memo.
+    const before = await service.snapshot();
+    expect(before.posts.find((p) => p.stem === "2026-07-10_a")?.uncommitted).toBe(false);
 
-    // A real commit moves HEAD, so the memo must miss and re-run status.
-    await writeFile(path.join(worktree.worktreePath, "extra.txt"), "x\n");
-    git(["add", "."], worktree.worktreePath);
-    git(["commit", "-q", "-m", "second commit"], worktree.worktreePath);
-    await service.snapshot();
-    expect(countOf("status")).toBe(afterFirst + 1);
+    // A plain edit: no `git add`, no commit, nothing that moves HEAD or touches the index.
+    await writeFile(worktree.worktreeFilePath, "# A\n\nan edit with no git operation alongside it\n");
+
+    const after = await service.snapshot();
+    expect(after.posts.find((p) => p.stem === "2026-07-10_a")?.uncommitted).toBe(true);
   });
 });
 
