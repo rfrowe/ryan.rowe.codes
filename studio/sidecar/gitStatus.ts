@@ -6,12 +6,13 @@
 // and origin), so a closed, branch-only post (pushed from another session, never checked out here)
 // still reports real ahead/unpushed/incoming/behind; only uncommitted needs a worktree.
 //
-// Per-worktree memoization by (HEAD sha, index mtime) skips re-running `git status` for a worktree
-// untouched since the last snapshot. This doesn't catch a plain unstaged edit with no git operation
-// alongside it (the doorbell only watches .git); GitWatcher.poke() exists for that, wired elsewhere.
+// uncommitted always re-runs `git status`, never memoized by ref/index state: a plain unstaged
+// edit moves neither, so any such cache would report clean forever once first computed that way.
+// The doorbell only watches .git, so this still needs a poke() (wired elsewhere) to react to an
+// edit with no git operation alongside it.
 
 import path from "node:path";
-import { realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 
 import type { GitRunner, GitWatcher } from "../shared/seams";
 import type { GitPostState, GitPrimaryState, GitState } from "../shared/protocol";
@@ -85,28 +86,13 @@ async function postRelPath(git: GitRunner, cwd: string, ref: string, stem: strin
 export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusService {
   const { git, store, repoRoot, sessionBranch, watcher, publish } = deps;
 
-  // headSha/indexMtime gate the expensive `git status` call; a worktree untouched since the last
-  // snapshot (neither moved) reuses its cached uncommitted flag.
-  const uncommittedMemo = new Map<string, { headSha: string; indexMtime: number; uncommitted: boolean }>();
-
-  async function indexMtime(worktreePath: string): Promise<number> {
-    const res = await git.git(["rev-parse", "--path-format=absolute", "--git-path", "index"], { cwd: worktreePath });
-    if (res.code !== 0) return 0;
-    try {
-      return (await stat(res.stdout.trim())).mtimeMs;
-    } catch {
-      return 0; // no index written yet (a worktree before its first status/add).
-    }
-  }
-
-  async function computeUncommitted(worktreePath: string, headSha: string): Promise<boolean> {
-    const mtime = await indexMtime(worktreePath);
-    const memo = uncommittedMemo.get(worktreePath);
-    if (memo && memo.headSha === headSha && memo.indexMtime === mtime) return memo.uncommitted;
+  // No memoization: a plain unstaged edit moves neither HEAD nor the index, so any cache keyed on
+  // those would go stale the moment someone types. Every invocation already runs with
+  // GIT_OPTIONAL_LOCKS=0 (see gitRunner.ts), so this read never writes back to worktrees/*/index
+  // and can't re-ring the doorbell.
+  async function computeUncommitted(worktreePath: string): Promise<boolean> {
     const res = await git.git(["status", "--porcelain=v2", "--branch"], { cwd: worktreePath });
-    const uncommitted = res.stdout.split(/\r?\n/).some((line) => line.length > 0 && !line.startsWith("#"));
-    uncommittedMemo.set(worktreePath, { headSha, indexMtime: mtime, uncommitted });
-    return uncommitted;
+    return res.stdout.split(/\r?\n/).some((line) => line.length > 0 && !line.startsWith("#"));
   }
 
   async function rootBase(): Promise<string> {
@@ -176,7 +162,7 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
         if (localTip && onRemote) [incoming, unpushed] = await leftRightCount(git, repoRoot, `origin/${branch}`, localTip);
         else if (localTip) unpushed = ahead; // never pushed: every ahead commit is unpushed.
 
-        const uncommitted = hasWorktree ? await computeUncommitted(worktree.path, worktree.headSha) : null;
+        const uncommitted = hasWorktree ? await computeUncommitted(worktree.path) : null;
 
         const rel = openPath ? path.relative(repoRoot, openPath) : await postRelPath(git, repoRoot, tip, stem);
         if (!rel) return null; // no commit has touched the post file yet on any resolvable ref.
