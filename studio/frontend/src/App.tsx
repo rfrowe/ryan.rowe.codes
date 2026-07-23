@@ -1226,6 +1226,8 @@ export default function App() {
           <ShipPanel
             branch={activeTab?.branch ?? null}
             slug={activeTab ? slugFromPath(activeTab.path) : null}
+            path={activeTab?.path ?? null}
+            git={state.git}
             nameSync={activeTab?.nameSync ?? SYNCED}
             onClose={() => setShowShip(false)}
           />
