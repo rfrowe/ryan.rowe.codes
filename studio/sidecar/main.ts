@@ -21,6 +21,7 @@ import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
 import { createGitWatch } from "./gitWatch";
 import { createGitStatusService } from "./gitStatus";
+import { createGitOpsService } from "./gitOps";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
 import { createStudioTools } from "../mcp/tools";
@@ -122,6 +123,7 @@ async function main(): Promise<void> {
     getActiveNameSync: () => store.getActiveNameSync(),
     pagesProject: CF_PAGES_PROJECT,
   });
+  const gitOps = createGitOpsService({ git, store, sessionBranch });
   const sessions = createSessionsService({
     blogRepoDir: REPO_ROOT,
     getActiveWorktreePath: () => store.getActiveWorktree()?.worktreePath ?? null,
@@ -192,7 +194,7 @@ async function main(): Promise<void> {
     console.error(`[sidecar] no .mdx post found under ${BLOG_CONTENT_ROOT}; starting with no active post.`);
   }
 
-  const services: StudioServices = { store, agentHost, tools, ship, sessions };
+  const services: StudioServices = { store, agentHost, tools, ship, sessions, gitOps };
 
   // ---- start faces ----
   const web = createServer(services, {

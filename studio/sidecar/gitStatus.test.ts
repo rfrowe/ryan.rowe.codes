@@ -185,6 +185,55 @@ describe("createGitStatusService — snapshot", () => {
     const after = await service.snapshot();
     expect(after.posts.find((p) => p.stem === "2026-07-10_a")?.uncommitted).toBe(true);
   });
+
+  it("reports rebase.phase conflicted with conflictedFiles for a worktree left mid-rebase", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const created = await store.createPost({ title: "A", slug: "a", headline: "h", created_at: "2026-07-10" });
+    if (!created.ok) throw new Error(created.error);
+    const worktree = store.getWorktreeFor(created.path);
+    if (!worktree) throw new Error("expected a worktree for the new post");
+    git(["add", "."], worktree.worktreePath);
+    git(["commit", "-q", "-m", "first draft"], worktree.worktreePath);
+
+    // The post's own commit and main both touch README.md, in conflicting ways.
+    await writeFile(path.join(worktree.worktreePath, "README.md"), "post change\n");
+    git(["add", "."], worktree.worktreePath);
+    git(["commit", "-q", "-m", "post edit"], worktree.worktreePath);
+    await writeFile(path.join(repo, "README.md"), "root change\n");
+    git(["add", "."], repo);
+    git(["commit", "-q", "-m", "root edit"], repo);
+
+    try {
+      git(["rebase", "main"], worktree.worktreePath);
+    } catch {
+      // expected: the rebase conflicts and exits non-zero, leaving the worktree mid-rebase.
+    }
+
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+    const state = await service.snapshot();
+
+    const post = state.posts.find((p) => p.stem === "2026-07-10_a");
+    expect(post?.rebase).toEqual({ phase: "conflicted", conflictedFiles: ["README.md"] });
+  });
+
+  it("reports rebase.phase idle for an ordinary (non-rebasing) worktree", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const created = await store.createPost({ title: "A", slug: "a", headline: "h", created_at: "2026-07-10" });
+    if (!created.ok) throw new Error(created.error);
+    git(["add", "."], store.getWorktreeFor(created.path)!.worktreePath);
+    git(["commit", "-q", "-m", "first draft"], store.getWorktreeFor(created.path)!.worktreePath);
+
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+    const state = await service.snapshot();
+
+    expect(state.posts.find((p) => p.stem === "2026-07-10_a")?.rebase).toEqual({ phase: "idle", conflictedFiles: [] });
+  });
 });
 
 describe("createGitStatusService — start()", () => {

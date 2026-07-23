@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getPosts } from "./api";
 import { slugFromPath } from "./slug";
 import { Lifebar } from "./Lifebar";
-import { selectPost, selectRootName } from "./gitSelectors";
+import { selectPost, selectRootName, selectUpdatable } from "./gitSelectors";
 import type { TabDescriptor } from "./TabBar";
 import type { GitState } from "../../shared/protocol";
 
@@ -49,6 +49,8 @@ interface CommandPaletteProps {
   onSelect: (path: string) => void;
   /** Open the New Post dialog, seeding its title with the current search term (may be empty). */
   onCreate: (title: string) => void;
+  /** Update/Pull (F3) a behind row in place, without opening it via `onSelect`. */
+  onUpdate: (path: string) => void;
   onClose: () => void;
 }
 
@@ -65,7 +67,7 @@ function fuzzyMatch(text: string, q: string): boolean {
   return true;
 }
 
-export function CommandPalette({ openTabs, activePath, git, onSelect, onCreate, onClose }: CommandPaletteProps) {
+export function CommandPalette({ openTabs, activePath, git, onSelect, onCreate, onUpdate, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [posts, setPosts] = useState<{ path: string; title: string }[] | null>(null);
   const [cursor, setCursor] = useState(0);
@@ -166,6 +168,7 @@ export function CommandPalette({ openTabs, activePath, git, onSelect, onCreate, 
           }
           const { entry } = row;
           const post = selectPost(git, entry.path);
+          const updatable = post && selectUpdatable(git, entry.path);
           return (
             <li
               key={entry.path}
@@ -175,6 +178,20 @@ export function CommandPalette({ openTabs, activePath, git, onSelect, onCreate, 
             >
               <span className="palette__title">{entry.title || slugFromPath(entry.path)}</span>
               {post && <Lifebar post={post} root={root} variant="full" />}
+              {updatable && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  title={`Update: fetch ${root} and rebase onto it`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose();
+                    onUpdate(entry.path);
+                  }}
+                >
+                  Update
+                </button>
+              )}
               <span className="palette__meta">
                 {entry.open && (entry.path === activePath ? "active · " : "open · ")}
                 {slugFromPath(entry.path)}

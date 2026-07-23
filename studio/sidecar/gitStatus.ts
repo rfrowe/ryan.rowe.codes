@@ -15,9 +15,10 @@ import path from "node:path";
 import { realpath, stat } from "node:fs/promises";
 
 import type { GitRunner, GitWatcher } from "../shared/seams";
-import type { FetchResponse, GitPostState, GitPrimaryState, GitState } from "../shared/protocol";
+import type { FetchResponse, GitPostState, GitPrimaryState, GitState, RebaseState } from "../shared/protocol";
 import type { StudioStore } from "../state/store";
 import { BLOG_CONTENT_DIR, originRefExists } from "./diffService";
+import { parseConflictedPaths } from "./gitOps";
 import { postStem } from "../shared/slug";
 
 // git fetch is the one place the sidecar reaches origin over the network; give it more headroom
@@ -119,6 +120,25 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
     return res.stdout.split(/\r?\n/).some((line) => line.length > 0 && !line.startsWith("#"));
   }
 
+  /** Whether `worktreePath` is mid-rebase: `rebase-merge`/`rebase-apply` under its own git-dir (a
+   *  linked worktree's own, never the shared common dir). gitOps.update() only ever leaves one of
+   *  these behind on a genuine conflict (any other failure aborts before returning), so finding one
+   *  here always means "conflicted" — F4 (dgb.12) owns advancing conflicted -> resolving -> idle. */
+  async function computeRebaseState(worktreePath: string): Promise<RebaseState> {
+    for (const marker of ["rebase-merge", "rebase-apply"]) {
+      const res = await git.git(["rev-parse", "--path-format=absolute", "--git-path", marker], { cwd: worktreePath });
+      if (res.code !== 0) continue;
+      try {
+        await stat(res.stdout.trim());
+      } catch {
+        continue; // marker path doesn't exist on disk: not mid-rebase via this backend.
+      }
+      const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: worktreePath });
+      return { phase: "conflicted", conflictedFiles: parseConflictedPaths(statusRes.stdout) };
+    }
+    return { phase: "idle", conflictedFiles: [] };
+  }
+
   async function rootBase(): Promise<string> {
     return (await originRefExists(git, repoRoot, sessionBranch)) ? `origin/${sessionBranch}` : sessionBranch;
   }
@@ -187,6 +207,7 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
         else if (localTip) unpushed = ahead; // never pushed: every ahead commit is unpushed.
 
         const uncommitted = hasWorktree ? await computeUncommitted(worktree.path) : null;
+        const rebase = hasWorktree ? await computeRebaseState(worktree.path) : { phase: "idle" as const, conflictedFiles: [] };
 
         const rel = openPath ? path.relative(repoRoot, openPath) : await postRelPath(git, repoRoot, tip, stem);
         if (!rel) return null; // no commit has touched the post file yet on any resolvable ref.
@@ -204,7 +225,7 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
           incoming,
           behind,
           uncommitted,
-          rebase: { phase: "idle", conflictedFiles: [] },
+          rebase,
         };
       }),
     );

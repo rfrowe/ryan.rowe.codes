@@ -27,12 +27,16 @@ import type {
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
+  RebaseAbortRequest,
+  RebaseAbortResponse,
   SaveDraftRequest,
   SaveDraftResponse,
   ServerMessage,
   SessionsResponse,
   ShipRequest,
   ShipResponse,
+  UpdateRequest,
+  UpdateResponse,
 } from "../shared/protocol";
 
 const HOST = process.env.STUDIO_BIND_HOST ?? "127.0.0.1";
@@ -215,10 +219,24 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       case "POST /fetch": {
-        // The one route that reaches origin to read (the studio is otherwise offline): fetch, then
-        // the active post's divergence is republished so its header warning updates.
+        // The global refs-only pull (⌘⇧F): fetch, then git.state republishes so every post's
+        // behind/incoming reflects it. POST /update below is the per-post fetch-then-rebase.
         const result = (await opts.fetchRemote?.()) ?? { ok: false, error: "fetch is unavailable" };
         return sendJson(res, 200, result satisfies FetchResponse);
+      }
+
+      case "POST /update": {
+        // F3: fetch this post's base (targeted, not the global --prune above) then rebase onto it.
+        const body = await readJson<UpdateRequest>(req);
+        const result = await services.gitOps.update(body.path);
+        return sendJson(res, 200, result satisfies UpdateResponse);
+      }
+
+      case "POST /rebase-abort": {
+        // F6: abort an in-progress rebase, returning the post to its pre-update tip.
+        const body = await readJson<RebaseAbortRequest>(req);
+        const result = await services.gitOps.rebaseAbort(body.path);
+        return sendJson(res, 200, result satisfies RebaseAbortResponse);
       }
 
       case "POST /save-draft": {
