@@ -51,9 +51,13 @@ export function lifebarParts(post: GitPostState, root: string, variant: LifebarV
   // Nothing to show: no unlanded work, nothing incoming from its own remote, working tree clean.
   const collapsed = inSync && post.incoming === 0 && post.uncommitted === false;
 
+  // Compact lives in the tab strip, one per open tab, all sharing the same <root> — spelling it out
+  // on every tab is pure repetition that crowds out the post title, the thing that tells tabs apart.
+  // The full variant (⌘P) shows one row per post at a time, so the label earns its place there.
+  const targetLabel = variant === "compact" ? "" : root;
   const target: LifebarPart = inSync
-    ? { key: "target", text: `▸${root}`, className: "lifebar__target lifebar__target--synced", title: `In sync with ${root}` }
-    : { key: "target", text: `▹${root}`, className: "lifebar__target lifebar__target--pending", title: `Not yet published to ${root}` };
+    ? { key: "target", text: `▸${targetLabel}`, className: "lifebar__target lifebar__target--synced", title: `In sync with ${root}` }
+    : { key: "target", text: `▹${targetLabel}`, className: "lifebar__target lifebar__target--pending", title: `Not yet published to ${root}` };
 
   const parts: LifebarPart[] = [];
 

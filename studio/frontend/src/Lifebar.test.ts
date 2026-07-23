@@ -126,17 +126,31 @@ describe("lifebarParts — behind warning", () => {
 describe("lifebarParts — compact variant", () => {
   it("renders one glyph-prefixed count per nonzero trail type, no bound or ellipsis", () => {
     const parts = lifebarParts(post({ inRoot: true, ahead: 4, unpushed: 1, incoming: 1, uncommitted: true, behind: 2 }), "main", "compact");
-    expect(texts(parts)).toEqual(["◉", "●3", "○1", "◍1", "▹main", "✎", "⚠↓2"]);
+    expect(texts(parts)).toEqual(["◉", "●3", "○1", "◍1", "▹", "✎", "⚠↓2"]);
   });
 
   it("omits a trail glyph type entirely when its count is 0", () => {
     const parts = lifebarParts(post({ ahead: 2, unpushed: 0, incoming: 0 }), "main", "compact");
-    expect(texts(parts)).toEqual(["│", "●2", "▹main"]);
+    expect(texts(parts)).toEqual(["│", "●2", "▹"]);
   });
 
   it("never renders an ellipsis, however large the counts", () => {
     const parts = lifebarParts(post({ ahead: 10, unpushed: 0 }), "main", "compact");
     expect(texts(parts)).not.toContain("⋯");
     expect(texts(parts)).toContain("●10");
+  });
+
+  it("drops the <root> label from the target glyph, unlike full", () => {
+    const compact = lifebarParts(post({ ahead: 1 }), "feat/worktree", "compact");
+    const full = lifebarParts(post({ ahead: 1 }), "feat/worktree", "full");
+    expect(texts(compact).at(-1)).toBe("▹");
+    expect(texts(full).at(-1)).toBe("▹feat/worktree");
+  });
+
+  it("keeps the root name in the target's title even though the label is gone", () => {
+    const parts = lifebarParts(post({ ahead: 0, incoming: 1 }), "feat/worktree", "compact");
+    const target = parts.find((p) => p.key === "target");
+    expect(target?.text).toBe("▸");
+    expect(target?.title).toBe("In sync with feat/worktree");
   });
 });
