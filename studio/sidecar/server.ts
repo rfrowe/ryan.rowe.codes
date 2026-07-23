@@ -292,6 +292,10 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     ws.send(JSON.stringify({ type: "post.namesync", ...store.getActiveNameSync() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mcp.status", servers: agentHost.getMcpStatus() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mode.status", mode: agentHost.getPermissionMode() } satisfies ServerMessage));
+    // The cached git.state snapshot, if the first one has landed; omitted otherwise rather than
+    // blocking the rest of the connect snapshot on a fresh git re-query.
+    const gitState = store.getGitState();
+    if (gitState) ws.send(JSON.stringify({ type: "git.state", state: gitState } satisfies ServerMessage));
     // The studio's branch/worktree is resolved via git (async), so it's sent once it's ready rather
     // than blocking the rest of the snapshot; ordering doesn't matter to the client. A failed git
     // lookup just omits it from the status popover, so swallow the rejection.

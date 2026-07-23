@@ -20,6 +20,7 @@ import { createStore, type StudioStore } from "../state/store";
 import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
 import { createGitWatch } from "./gitWatch";
+import { createGitStatusService } from "./gitStatus";
 import { originRefExists } from "./diffService";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
@@ -70,8 +71,7 @@ async function main(): Promise<void> {
 
   // ---- construct concretes ----
   const git = createGitRunner({ cwd: REPO_ROOT });
-  // Watches the repo's common .git dir once for the whole sidecar lifetime; no consumer yet
-  // (the status service that reacts to it is a later bead).
+  // Watches the repo's common .git dir once for the whole sidecar lifetime.
   const gitWatcher = createGitWatch(REPO_ROOT);
   // The branch the studio launched on: the fork base for new post worktrees and the ship target.
   const sessionBranch = await resolveSessionBranch(git);
@@ -107,6 +107,16 @@ async function main(): Promise<void> {
       await rm(p, { recursive: true, force: true });
     },
   });
+
+  const gitStatus = createGitStatusService({
+    git,
+    store,
+    repoRoot: REPO_ROOT,
+    sessionBranch,
+    watcher: gitWatcher,
+    publish: (state) => store.setGitState(state),
+  });
+  gitStatus.start();
 
   const ship = createShipService({
     git,

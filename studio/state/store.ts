@@ -8,7 +8,7 @@
 
 import path from "node:path";
 
-import type { BranchStatus, ServerMessage } from "../shared/protocol";
+import type { BranchStatus, GitState, ServerMessage } from "../shared/protocol";
 import type { Fs, GitRunner } from "../shared/seams";
 import type { Store } from "../shared/services";
 import type { ActiveDoc, DocRev, EditorContext, PreviewState } from "../shared/types";
@@ -385,6 +385,16 @@ export interface StudioStore extends Store {
    */
   publishActiveDivergence(): Promise<void>;
   /**
+   * This session's branch-namespace segment (`""` for a primary session, else the sanitized session
+   * branch) every post branch/worktree is namespaced under. Lets git.state derive post branch names
+   * without duplicating default-branch resolution.
+   */
+  sessionNamespaceSeg(): Promise<string>;
+  /** The last published `git.state` snapshot, or null before the first one; replayed on WS connect. */
+  getGitState(): GitState | null;
+  /** Cache `state` and publish it as `git.state`, the one path a new snapshot ever reaches subscribers by. */
+  setGitState(state: GitState): void;
+  /**
    * Worktree file backing the open post at `canonicalPath` (not necessarily the active one); null if
    * it isn't open. The canonical-to-worktree companion to {@link getDocByWatchPath}: the LSP bridge
    * rewrites a browser's `textDocument.uri` to the worktree path TS resolves against. Path-keyed so a
@@ -436,6 +446,7 @@ export function createStore(deps: StoreDeps): StudioStore {
   let editorContext: EditorContext | null = null;
   let preview: PreviewState = NO_ACTIVE_PREVIEW;
   let cachedDefaultBranch: string | undefined = deps.defaultBranch;
+  let cachedGitState: GitState | null = null;
 
   function publish(message: ServerMessage): void {
     // Copy first: a listener may unsubscribe during iteration.
@@ -1051,6 +1062,17 @@ export function createStore(deps: StoreDeps): StudioStore {
     getActiveDivergence,
 
     publishActiveDivergence,
+
+    sessionNamespaceSeg: prefixSeg,
+
+    getGitState() {
+      return cachedGitState;
+    },
+
+    setGitState(state) {
+      cachedGitState = state;
+      publish({ type: "git.state", state });
+    },
 
     getWorktreeFilePath(canonicalPath) {
       const doc = open.get(resolveJailed(canonicalPath) ?? canonicalPath);
