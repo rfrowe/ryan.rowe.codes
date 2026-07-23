@@ -190,11 +190,21 @@ describe("docSync layout-flip detection", () => {
 
 describe("docSync git-op classification", () => {
   let dir: string;
+  let dir2: string | null = null;
+  let otherWt: string | null = null;
   let sync: DocSync | null = null;
 
   afterEach(async () => {
     await sync?.close();
     sync = null;
+    if (otherWt) {
+      await rm(otherWt, { recursive: true, force: true });
+      otherWt = null;
+    }
+    if (dir2) {
+      await rm(dir2, { recursive: true, force: true });
+      dir2 = null;
+    }
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
@@ -214,13 +224,13 @@ describe("docSync git-op classification", () => {
     expect(pokes).toBeGreaterThan(0);
   });
 
-  it("classifies a checkout/reset that moves HEAD as a git operation", async () => {
+  it("classifies a checkout/reset that moves HEAD as a git operation, even as the first disk event", async () => {
     dir = await makeRepo(STEM_FILE);
     const filePath = path.join(dir, STEM_FILE);
     // Diverge a second branch's commit in its own linked worktree, so preparing it never touches
     // the file this test's watcher follows.
     runGit(["branch", "other"], dir);
-    const otherWt = await mkdtemp(path.join(tmpdir(), "docsync-other-"));
+    otherWt = await mkdtemp(path.join(tmpdir(), "docsync-other-"));
     runGit(["worktree", "add", "-q", otherWt, "other"], dir);
     await writeFile(path.join(otherWt, STEM_FILE), "v3\n");
     runGit(["add", "."], otherWt);
@@ -228,20 +238,45 @@ describe("docSync git-op classification", () => {
 
     const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
     sync = createDocSync(store, { filePath, git: createGitRunner() });
-
-    // An ordinary edit first, so the watcher has a HEAD baseline to compare the reset against.
-    await writeFile(filePath, "v2\n");
-    await waitFor(() => reloadCalls.length > 0);
-    expect(reloadCalls[0]?.origin).toBe("external");
+    // Let chokidar finish attaching before the next mutation; execFileSync never yields the event
+    // loop, so a git command run immediately after construction can otherwise race the watcher's
+    // own (async) setup and go unseen.
+    await new Promise((r) => setTimeout(r, 100));
 
     // A single git command moves HEAD and rewrites the file in one stroke, exactly like a terminal
-    // checkout/reset landing under the buffer.
+    // checkout/reset landing under the buffer. No warm-up edit first: the HEAD baseline is seeded
+    // eagerly at construction, so even this very first disk event classifies correctly.
     runGit(["reset", "--hard", "other"], dir);
 
-    await waitFor(() => reloadCalls.length > 1);
+    await waitFor(() => reloadCalls.length > 0);
     expect(reloadCalls.at(-1)?.origin).toBe("git");
+  });
 
-    await rm(otherWt, { recursive: true, force: true });
+  it("reseeds the HEAD baseline on retarget, so a switched-to post's first event still classifies", async () => {
+    dir = await makeRepo(STEM_FILE);
+    dir2 = await makeRepo(STEM_FILE);
+    const fileA = path.join(dir, STEM_FILE);
+    const fileB = path.join(dir2, STEM_FILE);
+
+    // Diverge dir2's "other" branch the same way, so switching to it and resetting is a real move.
+    runGit(["branch", "other"], dir2);
+    otherWt = await mkdtemp(path.join(tmpdir(), "docsync-other-"));
+    runGit(["worktree", "add", "-q", otherWt, "other"], dir2);
+    await writeFile(path.join(otherWt, STEM_FILE), "b-other\n");
+    runGit(["add", "."], otherWt);
+    runGit(["commit", "-q", "-m", "diverge"], otherWt);
+
+    const { store, reloadCalls } = makeFakeStore(fileA, "v1\n");
+    sync = createDocSync(store, { filePath: fileA, git: createGitRunner() });
+    sync.retarget(fileB);
+    // Let chokidar finish attaching to fileB before the next mutation (see the sibling test's note).
+    await new Promise((r) => setTimeout(r, 100));
+
+    // No warm-up write on fileB either: retarget reseeds the baseline just like construction did.
+    runGit(["reset", "--hard", "other"], dir2);
+
+    await waitFor(() => reloadCalls.length > 0);
+    expect(reloadCalls.at(-1)?.origin).toBe("git");
   });
 
   it("never classifies as git when no GitRunner is given", async () => {

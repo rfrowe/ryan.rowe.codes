@@ -102,13 +102,26 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   // so the turn keeps watching (and applying to) its own file instead of losing those writes.
   let pendingRetarget: string | null = null;
   // HEAD as of the last external classification, so the next one can tell a checkout/reset apart
-  // from a plain editor write. Null (no baseline yet) always reads as unmoved.
+  // from a plain editor write.
   let lastKnownHead: string | null = null;
+
+  /** One rev-parse HEAD for the currently-watched worktree, seeding `lastKnownHead`. Kicked off
+   *  eagerly (construction and every retarget) rather than lazily on the first classification, so a
+   *  terminal git op run right after opening or switching to a post still has a real baseline to
+   *  move away from instead of reading as unmoved by default. */
+  async function seedHead(): Promise<void> {
+    if (!git) return;
+    const target = filePath; // snapshot: a retarget before this resolves must not let a stale seed win.
+    const res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(target) });
+    if (res.code === 0 && filePath === target) lastKnownHead = res.stdout.trim();
+  }
+  let headReady = seedHead();
 
   /** External-path classification: a rev-parse against `lastKnownHead`, only ever run off the lock.
    *  `cwd` just needs to sit inside the worktree; git resolves it upward to the right one. */
   async function classifyExternalOrigin(cwd: string): Promise<"external" | "git"> {
     if (!git) return "external";
+    await headReady; // never classify against a baseline that hasn't landed yet.
     const res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(cwd) });
     if (res.code !== 0) return "external"; // detached/unborn HEAD or a mid-op race; don't block on it.
     const head = res.stdout.trim();
@@ -243,6 +256,7 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     watcher = makeWatcher(filePath);
     // A different post means a different worktree; the old HEAD baseline doesn't apply to it.
     lastKnownHead = null;
+    headReady = seedHead();
   }
 
   return {
