@@ -3,6 +3,10 @@
 // timeout (default 30s); a timeout rejects, a normal non-zero exit resolves with the
 // code so callers can inspect stderr (git/gh use non-zero for expected cases, e.g.
 // `rev-parse --verify` on a missing ref).
+//
+// Every call carries GIT_OPTIONAL_LOCKS=0: without it, a read-only `git status`/`rev-parse`
+// still refreshes a worktree's index stat cache, rewriting worktrees/*/index and re-ringing
+// the git-live doorbell for no real change.
 
 import { execFile } from "node:child_process";
 
@@ -23,7 +27,7 @@ function run(bin: "git" | "gh", args: readonly string[], opts: RunOpts): Promise
     execFile(
       bin,
       [...args],
-      { cwd: opts.cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER },
+      { cwd: opts.cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
       (error, stdout, stderr) => {
         if (error) {
           const err = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };

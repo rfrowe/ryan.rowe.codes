@@ -24,3 +24,12 @@ export interface GitRunner {
 export interface Clock {
   now(): number;
 }
+
+export interface GitWatcher {
+  /** Debounced, payload-free doorbell for a ref or HEAD moving. Returns an unsubscribe. */
+  onChange(listener: () => void): () => void;
+  /** Manual doorbell for state outside `.git` a caller wants coalesced with real git changes. */
+  poke(): void;
+  /** Stop watching and release the underlying filesystem handle. */
+  close(): Promise<void>;
+}
