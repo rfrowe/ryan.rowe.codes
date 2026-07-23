@@ -1,10 +1,14 @@
-// Unit tests for the agent host's pure permission logic: the decision-to-SDK-result mapping and the
-// worktree "ask" jail (file edits that escape the allowed dir set must route to `ask`, not silently
-// auto-approve). The `query()`-driven session isn't exercised here, only the extracted helpers.
+// Unit tests for the agent host's pure permission logic (the decision-to-SDK-result mapping, the
+// worktree "ask" jail) and the dispatchSystemPrompt queuing state machine. Everything above the
+// "dispatchSystemPrompt" describe block avoids the query()-driven session entirely, exercising only
+// the extracted helpers; that block mocks the SDK's `query` export, since it's the one behavior
+// (draining a queued system prompt once an in-flight turn ends) that only exists inside `runTurn`.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HookInput, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
+import type { ActiveWorktree } from "../state/store";
 import type { StudioTools } from "../shared/services";
 import {
   createAgentHost,
@@ -14,6 +18,11 @@ import {
   withinAnyDir,
   worktreeAskHook,
 } from "./agentHost";
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  return { ...actual, query: vi.fn() };
+});
 
 const WT = "/repo/.worktrees/blog/2026-07-10_a-post";
 
@@ -213,5 +222,66 @@ describe("worktreeAskHook", () => {
     const hook = worktreeAskHook(() => [WT]);
     expect(await hook(preToolUse("Bash", { command: "rm -rf ~/important" }))).toEqual({});
     expect(await hook(preToolUse("Read", { file_path: "/etc/passwd" }))).toEqual({});
+  });
+});
+
+describe("dispatchSystemPrompt", () => {
+  const activeWorktree: ActiveWorktree = {
+    slug: "a",
+    branch: "blog/a",
+    worktreePath: WT,
+    worktreeFilePath: `${WT}/post.mdx`,
+    relPath: "src/content/blog/a.mdx",
+    canonicalPath: "/repo/src/content/blog/a.mdx",
+  };
+
+  function makeHost() {
+    const emitted: unknown[] = [];
+    const turnEnds: string[] = [];
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => activeWorktree,
+      skillInstructions: "",
+      emit: (m) => emitted.push(m),
+      onTurnEnd: (promptId) => turnEnds.push(promptId),
+    });
+    return { host, emitted, turnEnds };
+  }
+
+  it("mints its own promptId and queues rather than rejecting when a turn is already in flight", async () => {
+    const { host } = makeHost();
+    // A regular prompt is mid-flight; poke the private latch directly rather than driving a real
+    // query() call, since only the queuing decision is under test here.
+    const internals = host as unknown as { current: unknown; pendingSystemPrompt: unknown };
+    internals.current = { promptId: "human-1", abort: new AbortController() };
+
+    const { promptId } = await host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "resolve" });
+
+    expect(promptId).toBeTruthy();
+    expect(promptId).not.toBe("human-1");
+    expect(internals.pendingSystemPrompt).toEqual({ promptId, path: activeWorktree.canonicalPath, text: "resolve" });
+  });
+
+  it("drains a queued system prompt once the in-flight turn ends, even though that turn errors", async () => {
+    const mockedQuery = vi.mocked(query);
+    // The human's in-flight turn: query() itself blows up, exactly like an aborted/failed turn.
+    mockedQuery.mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    // The drained system turn: completes cleanly with no SDK messages. query() actually returns a
+    // Query (an async generator plus control methods runTurn never calls); the plain generator here
+    // only needs to satisfy the `for await` loop, so it's cast rather than implementing the rest.
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+
+    const { host, turnEnds } = makeHost();
+    const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
+    // Queued while "human-1" is still current: dispatchSystemPrompt must not reject or run inline.
+    const dispatched = host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "resolve the conflict" });
+
+    await humanTurn; // prompt() itself never rejects; runTurn's catch absorbs the thrown error.
+    const { promptId } = await dispatched;
+
+    expect(turnEnds).toEqual(["human-1", promptId]); // both turns reached onTurnEnd, never just the first.
+    expect(mockedQuery).toHaveBeenCalledTimes(2);
   });
 });

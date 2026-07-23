@@ -229,6 +229,12 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         // F3: fetch this post's base (targeted, not the global --prune above) then rebase onto it.
         const body = await readJson<UpdateRequest>(req);
         const result = await services.gitOps.update(body.path);
+        // A conflict hands off to F4 rather than a manual merge-conflict UI; the response still
+        // reports "conflicted" immediately, git.state's rebase.phase flips to "resolving" once the
+        // agent's dispatch actually lands.
+        if (result.ok && result.result === "conflicted") {
+          services.conflictResolver.onConflict(body.path, result.conflictedFiles);
+        }
         return sendJson(res, 200, result satisfies UpdateResponse);
       }
 

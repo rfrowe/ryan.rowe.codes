@@ -270,6 +270,76 @@ describe("createGitStatusService — start()", () => {
     await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
   });
 
+  it("setResolving overrides a conflicted post's rebase.phase to resolving and republishes", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const created = await store.createPost({ title: "A", slug: "a", headline: "h", created_at: "2026-07-10" });
+    if (!created.ok) throw new Error(created.error);
+    const worktree = store.getWorktreeFor(created.path);
+    if (!worktree) throw new Error("expected a worktree for the new post");
+    git(["add", "."], worktree.worktreePath);
+    git(["commit", "-q", "-m", "first draft"], worktree.worktreePath);
+
+    // The post's own commit and main both touch README.md, in conflicting ways.
+    await writeFile(path.join(worktree.worktreePath, "README.md"), "post change\n");
+    git(["add", "."], worktree.worktreePath);
+    git(["commit", "-q", "-m", "post edit"], worktree.worktreePath);
+    await writeFile(path.join(repo, "README.md"), "root change\n");
+    git(["add", "."], repo);
+    git(["commit", "-q", "-m", "root edit"], repo);
+    try {
+      git(["rebase", "main"], worktree.worktreePath);
+    } catch {
+      // expected: the rebase conflicts and exits non-zero, leaving the worktree mid-rebase.
+    }
+
+    const { watcher } = fakeWatcher();
+    const publish = vi.fn();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish });
+    service.start();
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+    const conflictedState = publish.mock.calls[0][0] as Awaited<ReturnType<typeof service.snapshot>>;
+    expect(conflictedState.posts.find((p) => p.stem === "2026-07-10_a")?.rebase.phase).toBe("conflicted");
+
+    service.setResolving("2026-07-10_a", true);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
+    const resolvingState = publish.mock.calls[1][0] as Awaited<ReturnType<typeof service.snapshot>>;
+    expect(resolvingState.posts.find((p) => p.stem === "2026-07-10_a")?.rebase).toEqual({
+      phase: "resolving",
+      conflictedFiles: ["README.md"],
+    });
+
+    // Clearing it (as handleTurnEnd always does) reports the real, still-conflicted git state again --
+    // this override can only ever mask "conflicted" as "resolving", never invent or freeze a phase.
+    service.setResolving("2026-07-10_a", false);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(3));
+    const clearedState = publish.mock.calls[2][0] as Awaited<ReturnType<typeof service.snapshot>>;
+    expect(clearedState.posts.find((p) => p.stem === "2026-07-10_a")?.rebase.phase).toBe("conflicted");
+  });
+
+  it("setResolving has no effect on a post that isn't actually conflicted", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const created = await store.createPost({ title: "A", slug: "a", headline: "h", created_at: "2026-07-10" });
+    if (!created.ok) throw new Error(created.error);
+    git(["add", "."], store.getWorktreeFor(created.path)!.worktreePath);
+    git(["commit", "-q", "-m", "first draft"], store.getWorktreeFor(created.path)!.worktreePath);
+
+    const { watcher } = fakeWatcher();
+    const publish = vi.fn();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish });
+    service.start();
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+
+    // A stale/mistaken setResolving (e.g. after a race) must never wedge an idle post as "resolving":
+    // computeRebaseState's real git-derived phase is the only thing this override can ever mask.
+    service.setResolving("2026-07-10_a", true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(publish).toHaveBeenCalledTimes(1); // no observable change, so no republish either.
+  });
+
   it("recovers on the next ring after a rejected recompute, instead of wedging for good", async () => {
     repo = await makeRepo();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

@@ -43,6 +43,11 @@ export interface GitStatusService {
    *  post's behind/incoming reflects the fetched refs with no per-post follow-up call. A fetch
    *  already in flight makes this a no-op rather than running two overlapping fetches. */
   fetch(): Promise<FetchResponse>;
+  /** F4: report `stem`'s conflicted rebase as agent-owned ("resolving") until cleared, then
+   *  republish. Git plumbing alone can't tell a resolving rebase from a merely conflicted one, since
+   *  the on-disk rebase-merge/rebase-apply marker looks identical either way; a rebase that isn't
+   *  actually conflicted (marker gone) never shows "resolving" regardless of this flag. */
+  setResolving(stem: string, resolving: boolean): void;
 }
 
 interface WorktreeEntry {
@@ -98,6 +103,10 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
   // A fetch this service itself kicked off; guards against two overlapping `git fetch`s and backs
   // the button's spinner (git.state.fetch.inFlight) reactively, with no client-side flag needed.
   let inFlight = false;
+
+  // Stems the F4 conflict resolver has an agent turn in flight for; overrides a conflicted rebase to
+  // "resolving" in computePosts (see setResolving's own doc for why this can't be derived from git).
+  const resolvingStems = new Set<string>();
 
   /** FETCH_HEAD's mtime (git.state.fetch.at): null before this repo has ever fetched. Read fresh
    *  every snapshot, not just after fetch(), so a prior session's fetch still shows on restart. */
@@ -207,7 +216,13 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
         else if (localTip) unpushed = ahead; // never pushed: every ahead commit is unpushed.
 
         const uncommitted = hasWorktree ? await computeUncommitted(worktree.path) : null;
-        const rebase = hasWorktree ? await computeRebaseState(worktree.path) : { phase: "idle" as const, conflictedFiles: [] };
+        const computedRebase = hasWorktree
+          ? await computeRebaseState(worktree.path)
+          : { phase: "idle" as const, conflictedFiles: [] };
+        const rebase: RebaseState =
+          computedRebase.phase === "conflicted" && resolvingStems.has(stem)
+            ? { ...computedRebase, phase: "resolving" }
+            : computedRebase;
 
         const rel = openPath ? path.relative(repoRoot, openPath) : await postRelPath(git, repoRoot, tip, stem);
         if (!rel) return null; // no commit has touched the post file yet on any resolvable ref.
@@ -294,5 +309,10 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
       schedule();
     },
     fetch: fetchOrigin,
+    setResolving(stem, resolving) {
+      if (resolving) resolvingStems.add(stem);
+      else resolvingStems.delete(stem);
+      schedule(); // no ref moves for this flag alone, so the doorbell won't republish on its own.
+    },
   };
 }

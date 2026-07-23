@@ -34,6 +34,9 @@ export interface AgentHost {
   select(mode: SessionMode, sessionId?: string): Promise<{ sessionId: string; mode: SessionMode }>;
   prompt(input: { promptId: string; text: string; context: PromptContext }): Promise<void>;
   resolveDirective(input: { promptId: string; path: string; range: Range; instruction: string }): Promise<void>;
+  /** Server-composed prompt (F4's conflict-resolution dispatch): mints its own promptId and queues
+   *  behind an in-flight turn rather than rejecting. `path` must be the active post. */
+  dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string }>;
   cancel(promptId: string): void;
 }
 
@@ -70,6 +73,15 @@ export interface GitOpsService {
   rebaseAbort(canonicalPath: string): Promise<RebaseAbortResponse>;
 }
 
+/** F4: hands a rebase conflict to the post's own agent session instead of a manual merge-conflict UI. */
+export interface ConflictResolverService {
+  /** F3 left `canonicalPath` conflicted: dispatch a system prompt and mark rebase.phase "resolving". */
+  onConflict(canonicalPath: string, conflictedFiles: string[]): void;
+  /** An agent turn ended; a no-op unless `promptId` belongs to a dispatch this service made. Callers
+   *  fire-and-forget this; it resolves once any follow-up (finishing the rebase, a re-prompt) settles. */
+  onTurnEnd(promptId: string): Promise<void>;
+}
+
 /** The bundle the bootstrap constructs and injects into the server factory. */
 export interface StudioServices {
   store: Store;
@@ -78,6 +90,7 @@ export interface StudioServices {
   ship: ShipService;
   sessions: SessionsService;
   gitOps: GitOpsService;
+  conflictResolver: ConflictResolverService;
 }
 
 // Re-export the injected value type used by the sidecar server factory.

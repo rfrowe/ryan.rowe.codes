@@ -22,6 +22,7 @@ import { createGitRunner } from "./gitRunner";
 import { createGitWatch } from "./gitWatch";
 import { createGitStatusService } from "./gitStatus";
 import { createGitOpsService } from "./gitOps";
+import { createConflictResolver } from "./conflictResolver";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
 import { createStudioTools } from "../mcp/tools";
@@ -32,7 +33,7 @@ import { createMdxLspServer } from "./lspServer";
 import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
 import { copyWorktreeIncludes } from "./worktreeInclude";
-import type { StudioServices } from "../shared/services";
+import type { ConflictResolverService, StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -160,6 +161,11 @@ async function main(): Promise<void> {
     void astro.switchTo(info.worktreePath);
   });
 
+  // agentHost.onTurnEnd needs conflictResolver, and conflictResolver needs agentHost.dispatchSystemPrompt:
+  // a box breaks the cycle, since conflictResolver is only constructed (and the box filled) after agentHost.
+  // onTurnEnd never fires before a turn has actually run, by which point this is filled.
+  const conflictResolverBox: { current?: ConflictResolverService } = {};
+
   const agentHost = createAgentHost({
     tools,
     getActiveWorktree: () => store.getActiveWorktree(),
@@ -170,8 +176,21 @@ async function main(): Promise<void> {
     // Soft-lock the editor for the turn so the watcher treats the agent's writes as agent-origin
     // (live-applied) rather than external (reload banner).
     onTurnStart: () => docSync?.dispatch({ type: "prompt.dispatch" }),
-    onTurnEnd: () => docSync?.dispatch({ type: "agent.turn.end" }),
+    onTurnEnd: (promptId) => {
+      docSync?.dispatch({ type: "agent.turn.end" });
+      void conflictResolverBox.current?.onTurnEnd(promptId);
+    },
   });
+
+  const conflictResolver = createConflictResolver({
+    git,
+    sessionBranch,
+    getWorktreeFor: (p) => store.getWorktreeFor(p),
+    dispatchSystemPrompt: (input) => agentHost.dispatchSystemPrompt(input),
+    setResolving: (stem, resolving) => gitStatus.setResolving(stem, resolving),
+    publish: (msg) => store.publish(msg),
+  });
+  conflictResolverBox.current = conflictResolver;
 
   // `post.renamed` is the single migration signal: the SPA follows a tab's transcript to the new
   // path, and the SDK session must follow too so the resumable conversation isn't orphaned. Covers
@@ -194,7 +213,7 @@ async function main(): Promise<void> {
     console.error(`[sidecar] no .mdx post found under ${BLOG_CONTENT_ROOT}; starting with no active post.`);
   }
 
-  const services: StudioServices = { store, agentHost, tools, ship, sessions, gitOps };
+  const services: StudioServices = { store, agentHost, tools, ship, sessions, gitOps, conflictResolver };
 
   // ---- start faces ----
   const web = createServer(services, {
