@@ -68,6 +68,52 @@ export type SessionHistoryItem =
   | { kind: "assistant"; text: string }
   | { kind: "tool"; tool: SessionHistoryTool };
 
+// The studio's own root worktree, the "<root>" every post's ahead/behind/inRoot is measured
+// against. sessionBranch is the immutable fork base and publish target, resolved once at launch
+// (main, or a feature branch on a worktree launch); the lifebar target node renders that name.
+export interface GitPrimaryState {
+  sessionBranch: string;
+  // Root worktree's current branch name, or short sha when detached. Used to compute rootMoved.
+  head: string;
+  // head is not sessionBranch: the launch branch was checked away under the root worktree.
+  // Surfaces a restart prompt, never an auto-restart.
+  rootMoved: boolean;
+  // Display label for the root worktree's branch (status popover, the rootMoved restart prompt).
+  // Not the target-node label; that's always sessionBranch.
+  ref: string;
+  onOrigin: boolean; // origin/<sessionBranch> exists.
+  ahead: number;
+  behind: number; // root worktree vs origin/<sessionBranch>. Informational, not the ship gate.
+  worktree: string; // root worktree path.
+}
+
+export interface RebaseState {
+  phase: "idle" | "conflicted" | "resolving"; // resolving means an agent turn is in flight.
+  conflictedFiles: string[]; // empty unless phase is not idle.
+}
+
+export interface GitPostState {
+  path: string;
+  stem: string;
+  branch: string;
+  open: boolean;
+  hasWorktree: boolean; // a local working copy exists. When false, uncommitted is null.
+  onRemote: boolean; // origin/blog/<stem> exists (pushed at all).
+  inRoot: boolean; // the post's work is in origin/<root>.
+  ahead: number; // commits since fork not yet in origin/<root>.
+  unpushed: number; // of ahead, the commits not on origin/blog/<stem>.
+  incoming: number; // commits on origin/blog/<stem> the local branch lacks.
+  behind: number; // commits in origin/<root> the branch lacks. Drives the ship gate.
+  uncommitted: boolean | null; // working tree modified; null means unknown (no worktree).
+  rebase: RebaseState;
+}
+
+export interface GitState {
+  primary: GitPrimaryState;
+  posts: GitPostState[]; // union of open tabs, on-disk worktrees, and session-namespace refs.
+  fetch: { inFlight: boolean; at: number | null }; // at is the FETCH_HEAD mtime; null means never fetched.
+}
+
 // ---- WebSocket: server to client ----
 export type ServerMessage =
   | { type: "session"; sessionId: string; mode: SessionMode }
@@ -135,6 +181,9 @@ export type ServerMessage =
   // for the same call, if any, so the client can attach the human's answer back onto that transcript
   // entry once resolved (used for AskUserQuestion).
   | { type: "permission.request"; promptId: string; requestId: string; toolName: string; input: unknown; title?: string; description?: string; reason?: string; toolUseId?: string }
+  // Every git fact in one push: reactive, fired whenever a ref or HEAD moves (or on connect, from
+  // the cached snapshot). Supersedes studio.branch/post.divergence for anything driven off it.
+  | { type: "git.state"; state: GitState }
   | { type: "error"; promptId?: string; message: string };
 
 // ---- REST DTOs ----

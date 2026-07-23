@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { ServerMessage } from "../shared/protocol";
+import type { GitState, ServerMessage } from "../shared/protocol";
 import type { GitRunner } from "../shared/seams";
 import { makeFs, ok, type FakeFs } from "./fakeFs";
 import { deriveUrl } from "../preview/deriveUrl";
@@ -369,6 +369,46 @@ describe("store divergence (getActiveDivergence / publishActiveDivergence)", () 
     // Only the still-active post is published; the stale read for the switched-away post is dropped.
     expect(div.length).toBeGreaterThan(0);
     expect(div.every((m) => m.type === "post.divergence" && m.path === HELLO_CANON)).toBe(true);
+  });
+});
+
+describe("store.getGitState / setGitState (git.state connect replay)", () => {
+  const STATE: GitState = {
+    primary: { sessionBranch: "main", head: "main", rootMoved: false, ref: "origin/main", onOrigin: true, ahead: 0, behind: 0, worktree: REPO },
+    posts: [],
+    fetch: { inFlight: false, at: null },
+  };
+
+  it("is null before any snapshot has been set", () => {
+    const { store } = newStore();
+    expect(store.getGitState()).toBeNull();
+  });
+
+  it("caches the snapshot it's given and broadcasts it as git.state", () => {
+    const { store, messages } = newStore();
+    store.setGitState(STATE);
+    expect(store.getGitState()).toBe(STATE);
+    expect(messages.at(-1)).toEqual({ type: "git.state", state: STATE });
+  });
+
+  it("replaces the cached snapshot on the next call, for a freshly-connecting client to replay", () => {
+    const { store } = newStore();
+    store.setGitState(STATE);
+    const next: GitState = { ...STATE, primary: { ...STATE.primary, ahead: 1 } };
+    store.setGitState(next);
+    expect(store.getGitState()).toBe(next);
+  });
+});
+
+describe("store.sessionNamespaceSeg", () => {
+  it("is empty for a primary session (sessionBranch equals the repo default)", async () => {
+    const { store } = newStore();
+    expect(await store.sessionNamespaceSeg()).toBe("");
+  });
+
+  it("is the sanitized session branch for a non-primary session", async () => {
+    const { store } = newStore({}, {}, "feat/worktree");
+    expect(await store.sessionNamespaceSeg()).toBe("feat-worktree");
   });
 });
 
