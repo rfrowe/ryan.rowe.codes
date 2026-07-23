@@ -24,8 +24,9 @@ import { onLspStatus, type LspStatus } from "./lsp/client";
 import { fetchRemote, getDirtyPosts, saveDraft } from "./api";
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
+import { EMPTY_GIT } from "./gitSelectors";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
-import type { PromptContext, ServerMessage } from "../../shared/protocol";
+import type { GitState, PromptContext, ServerMessage } from "../../shared/protocol";
 
 interface DocState {
   path: string;
@@ -78,6 +79,8 @@ interface StudioState {
   turn: { promptId: string; path: string } | null;
   /** promptId to owning tab path. Outlives `turn` so a stale done/error still routes correctly. */
   promptOwners: Record<string, string>;
+  /** Every git fact (from `git.state`), replaced wholesale on each push. */
+  git: GitState;
 }
 
 type Action =
@@ -143,6 +146,7 @@ const initialState: StudioState = {
   mode: "auto",
   turn: null,
   promptOwners: {},
+  git: EMPTY_GIT,
 };
 
 // ---- chat transcript helpers (operate on one tab's chat) ----
@@ -315,6 +319,20 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       // measured in case the active post switched before it landed.
       return patchTab(state, msg.path, (t) => ({ ...t, divergence: { ahead: msg.ahead, behind: msg.behind } }));
 
+    case "chat.injected": {
+      // A server-composed prompt (no client sendPrompt action fired it), so this case does what
+      // sendPrompt's action handler does: insert the bubble, latch the turn, register the owner.
+      const next = patchTab(state, msg.path, (t) => ({
+        ...t,
+        chat: [...t.chat, { kind: "system", id: nid(), text: msg.text }],
+      }));
+      return {
+        ...next,
+        turn: { promptId: msg.promptId, path: msg.path },
+        promptOwners: { ...next.promptOwners, [msg.promptId]: msg.path },
+      };
+    }
+
     case "done": {
       const owner = state.promptOwners[msg.promptId] ?? null;
       // A finished turn has no live prompts; drop any pending cards so none dangle unanswerable.
@@ -397,6 +415,10 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
 
     case "studio.branch":
       return { ...state, studio: { ref: msg.ref, worktree: msg.worktree } };
+
+    case "git.state":
+      // Publish-on-change means each push is already the full truth: replace the slice wholesale.
+      return { ...state, git: msg.state };
 
     case "permission.request":
       // Route to the owning tab (like tool.start). De-dupe on requestId in case a replay repeats it.
