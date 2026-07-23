@@ -7,8 +7,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { SocketStatus } from "./ws";
 import { kebabSlug, slugFromPath } from "./slug";
-import { WarnIcon } from "./WarnIcon";
-import { SyncIcon } from "./SyncIcon";
+import { Lifebar } from "./Lifebar";
+import { selectPost, selectPushable, selectRootName, selectUncommitted } from "./gitSelectors";
+import type { GitState } from "../../shared/protocol";
 
 export interface TabDescriptor {
   path: string;
@@ -31,13 +32,6 @@ const STATE_WORD: Record<StackComponent["status"], string> = {
   disabled: "off",
 };
 
-/** The origin base the divergence warning is measured against, from the studio's own branch label
- *  (already `origin/<branch>` when in sync, else the bare branch). */
-function baseRefLabel(studio: { ref: string } | null): string {
-  if (!studio) return "origin";
-  return studio.ref.startsWith("origin/") ? studio.ref : `origin/${studio.ref}`;
-}
-
 interface TabBarProps {
   tabs: TabDescriptor[];
   activePath: string | null;
@@ -46,14 +40,8 @@ interface TabBarProps {
   stackStatus: StackComponent[];
   /** The studio's own branch/worktree, shown as a chip + in the popover; null until the sidecar reports it. */
   studio: { ref: string; worktree: string } | null;
-  /** How many commits origin's base has that the active post isn't built on; > 0 shows the warning. */
-  behind: number;
-  /** Canonical paths of open posts that are drafts (unshipped work); drives the tab dot and
-   *  gates "Save to remote…" and "Delete draft…" in the right-click menu. */
-  dirtyPaths: Set<string>;
-  /** Canonical paths with uncommitted edits (⊆ dirtyPaths); gates "Revert to clean…", which has
-   *  nothing to discard on a clean (or clean-but-ahead) post. */
-  uncommittedPaths: Set<string>;
+  /** Every git fact, for each tab's lifebar and the right-click menu's push/revert gating. */
+  git: GitState;
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onNewPost: () => void;
@@ -74,9 +62,7 @@ export function TabBar({
   status,
   stackStatus,
   studio,
-  behind,
-  dirtyPaths,
-  uncommittedPaths,
+  git,
   onSelect,
   onClose,
   onNewPost,
@@ -158,6 +144,8 @@ export function TabBar({
     setMenu({ path, x: e.clientX, y: e.clientY });
   }
 
+  const root = selectRootName(git);
+
   return (
     <header className="tabbar">
       <div className="tabbar__tabs" role="tablist">
@@ -165,6 +153,7 @@ export function TabBar({
         {tabs.map((tab) => {
           const active = tab.path === activePath;
           const isRenaming = renaming === tab.path;
+          const post = selectPost(git, tab.path);
           return (
             <div
               key={tab.path}
@@ -189,9 +178,7 @@ export function TabBar({
                 />
               ) : (
                 <>
-                  {dirtyPaths.has(tab.path) && (
-                    <span className="tab__dot" aria-label="Unshipped draft" title="Draft — unshipped changes" />
-                  )}
+                  {post && <Lifebar post={post} root={root} variant="compact" />}
                   <button
                     type="button"
                     className="tab__label"
@@ -221,14 +208,6 @@ export function TabBar({
       </div>
 
       <div className="tabbar__spacer" />
-      {behind > 0 && (
-        <span
-          className="tabbar__diverged"
-          title={`${baseRefLabel(studio)} has ${behind} commit${behind === 1 ? "" : "s"} this post isn't based on — fetch and rebase.`}
-        >
-          <WarnIcon size={14} />
-        </span>
-      )}
       <button
         type="button"
         className={`tabbar__fetch ${fetching ? "tabbar__fetch--busy" : ""}`}
@@ -237,7 +216,7 @@ export function TabBar({
         title="Fetch from origin"
         aria-label="Fetch from origin"
       >
-        <SyncIcon size={15} />
+        <span aria-hidden="true">↻</span>
       </button>
       <div className="tabbar__status" tabIndex={0} role="status" aria-label={`Stack status — sidecar ${status}`}>
         <span className={`tabbar__conn tabbar__conn--${status}`} aria-hidden="true" />
@@ -290,8 +269,8 @@ export function TabBar({
             type="button"
             className="tabmenu__item"
             role="menuitem"
-            disabled={!dirtyPaths.has(menu.path)}
-            title={dirtyPaths.has(menu.path) ? undefined : "Nothing to save — already up to date on origin"}
+            disabled={!selectPushable(git, menu.path)}
+            title={selectPushable(git, menu.path) ? undefined : "Nothing to save — already up to date on origin"}
             onClick={() => {
               onSaveDraft(menu.path);
               setMenu(null);
@@ -303,8 +282,8 @@ export function TabBar({
             type="button"
             className="tabmenu__item"
             role="menuitem"
-            disabled={!uncommittedPaths.has(menu.path)}
-            title={uncommittedPaths.has(menu.path) ? undefined : "No uncommitted changes to revert"}
+            disabled={!selectUncommitted(git, menu.path)}
+            title={selectUncommitted(git, menu.path) ? undefined : "No uncommitted changes to revert"}
             onClick={() => {
               onRevert(menu.path);
               setMenu(null);
@@ -312,7 +291,7 @@ export function TabBar({
           >
             Revert to clean…
           </button>
-          {dirtyPaths.has(menu.path) && (
+          {selectPushable(git, menu.path) && (
             <button
               type="button"
               className="tabmenu__item tabmenu__item--danger"
