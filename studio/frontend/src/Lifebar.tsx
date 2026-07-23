@@ -32,15 +32,15 @@ function trailParts(pushed: number, unpushed: number, incoming: number, variant:
     return parts;
   }
   // One glyph per commit, ordered pushed then local-only then incoming, bounded then an ellipsis.
-  const glyphs = [
-    ...Array<{ text: string; kind: string }>(pushed).fill({ text: "●", kind: "pushed" }),
-    ...Array<{ text: string; kind: string }>(unpushed).fill({ text: "○", kind: "unpushed" }),
-    ...Array<{ text: string; kind: string }>(incoming).fill({ text: "◍", kind: "incoming" }),
-  ];
-  const parts = glyphs
-    .slice(0, MAX_FULL_TRAIL)
-    .map((g, i): LifebarPart => ({ key: `dot-${i}`, text: g.text, className: `lifebar__dot lifebar__dot--${g.kind}` }));
-  if (glyphs.length > MAX_FULL_TRAIL) parts.push({ key: "overflow", text: "⋯", className: "lifebar__overflow" });
+  // Cap each count before building anything, so a huge ahead/incoming never allocates past the bound.
+  const shownPushed = Math.min(pushed, MAX_FULL_TRAIL);
+  const shownUnpushed = Math.min(unpushed, MAX_FULL_TRAIL - shownPushed);
+  const shownIncoming = Math.min(incoming, MAX_FULL_TRAIL - shownPushed - shownUnpushed);
+  const parts: LifebarPart[] = [];
+  for (let i = 0; i < shownPushed; i++) parts.push({ key: `dot-${parts.length}`, text: "●", className: "lifebar__dot lifebar__dot--pushed" });
+  for (let i = 0; i < shownUnpushed; i++) parts.push({ key: `dot-${parts.length}`, text: "○", className: "lifebar__dot lifebar__dot--unpushed" });
+  for (let i = 0; i < shownIncoming; i++) parts.push({ key: `dot-${parts.length}`, text: "◍", className: "lifebar__dot lifebar__dot--incoming" });
+  if (pushed + unpushed + incoming > MAX_FULL_TRAIL) parts.push({ key: "overflow", text: "⋯", className: "lifebar__overflow" });
   return parts;
 }
 
