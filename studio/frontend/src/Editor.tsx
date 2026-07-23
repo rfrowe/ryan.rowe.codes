@@ -27,6 +27,10 @@ export interface EditorHandle {
    * CodeMirror state is otherwise lost). Returns null if the view isn't mounted.
    */
   getText: () => string | null;
+  /** Opens the ⌘K prompt popover, mirroring the editor's own Mod-k binding; a no-op if the view
+   *  isn't mounted or a turn is already in flight. Lets the keymap registry's `agent.directive`
+   *  command run the same action the panel's row/click affordance offers. */
+  openPrompt: () => void;
 }
 
 interface EditorProps {
@@ -499,7 +503,18 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     }
   }, [props.suspendSave]);
 
-  useImperativeHandle(ref, () => ({ flush, getText: () => viewRef.current?.state.doc.toString() ?? null }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      flush,
+      getText: () => viewRef.current?.state.doc.toString() ?? null,
+      openPrompt: () => {
+        const view = viewRef.current;
+        if (view && !cb.current.promptInFlight) openPromptPopover(view);
+      },
+    }),
+    [],
+  );
 
   // Focus the popover input when it opens.
   useEffect(() => {
