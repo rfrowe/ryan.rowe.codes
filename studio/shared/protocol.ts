@@ -184,6 +184,10 @@ export type ServerMessage =
   // Every git fact in one push: reactive, fired whenever a ref or HEAD moves (or on connect, from
   // the cached snapshot). Supersedes studio.branch/post.divergence for anything driven off it.
   | { type: "git.state"; state: GitState }
+  // A server-composed system prompt was dispatched into path's session (a rebase conflict handed to
+  // the agent): insert a visible system bubble, register the prompt's owner, and latch the turn like
+  // a client-sent prompt would. promptId is server-minted.
+  | { type: "chat.injected"; promptId: string; path: string; text: string; kind: "system" }
   | { type: "error"; promptId?: string; message: string };
 
 // ---- REST DTOs ----
