@@ -264,20 +264,38 @@ describe("dispatchSystemPrompt", () => {
 
   it("drains a queued system prompt once the in-flight turn ends, even though that turn errors", async () => {
     const mockedQuery = vi.mocked(query);
-    // The human's in-flight turn: query() itself blows up, exactly like an aborted/failed turn.
-    mockedQuery.mockImplementationOnce(() => {
-      throw new Error("boom");
-    });
+    let releaseHumanTurn: () => void = () => {};
+    const humanTurnGate = new Promise<void>((resolve) => (releaseHumanTurn = resolve));
+    // The human's in-flight turn: a real suspension point (await the gate) before it blows up, so
+    // "human-1" is genuinely still current when dispatchSystemPrompt runs below. A synchronous throw
+    // here would let runTurn's whole finally (including the drain) complete before dispatch is even
+    // called, which would pass this test without the queuing path ever running. A plain async
+    // iterator (rather than a generator) since there's no yield to give require-yield.
+    mockedQuery.mockImplementationOnce((() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          await humanTurnGate;
+          throw new Error("boom");
+        },
+      }),
+    })) as unknown as typeof query);
     // The drained system turn: completes cleanly with no SDK messages. query() actually returns a
     // Query (an async generator plus control methods runTurn never calls); the plain generator here
     // only needs to satisfy the `for await` loop, so it's cast rather than implementing the rest.
     mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
 
     const { host, turnEnds } = makeHost();
+    const internals = host as unknown as { current: unknown; pendingSystemPrompt: unknown };
     const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
-    // Queued while "human-1" is still current: dispatchSystemPrompt must not reject or run inline.
-    const dispatched = host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "resolve the conflict" });
+    await new Promise((r) => setTimeout(r, 0)); // let prompt()'s synchronous prefix set `current`, then park on the gate.
+    expect(internals.current).toMatchObject({ promptId: "human-1" });
 
+    // Queued while "human-1" is genuinely still current: dispatchSystemPrompt must not reject or run inline.
+    const dispatched = host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "resolve the conflict" });
+    expect(internals.pendingSystemPrompt).toMatchObject({ path: activeWorktree.canonicalPath });
+    expect(mockedQuery).toHaveBeenCalledTimes(1); // not yet drained; the human turn hasn't ended.
+
+    releaseHumanTurn();
     await humanTurn; // prompt() itself never rejects; runTurn's catch absorbs the thrown error.
     const { promptId } = await dispatched;
 
