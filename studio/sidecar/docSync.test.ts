@@ -16,6 +16,7 @@ import { createGitRunner } from "./gitRunner";
 import { sha256Hex } from "./hash";
 import { SelfWriteGuard } from "../state/store";
 import type { StudioStore } from "../state/store";
+import type { GitRunner } from "../shared/seams";
 import type { ActiveDoc, DocRev } from "../shared/types";
 
 interface RelayoutCall {
@@ -75,6 +76,33 @@ async function makeRepo(stemFile: string): Promise<string> {
   runGit(["add", "."], dir);
   runGit(["commit", "-q", "-m", "init"], dir);
   return dir;
+}
+
+/** Wraps a real GitRunner so the `nth` `rev-parse HEAD` call blocks until `release()` is called,
+ *  letting a test suspend `handle()` mid-classification and act while it's paused there.
+ *  `waitUntilPaused` resolves the instant that call is reached, before it actually blocks. */
+function gateNthRevParse(real: GitRunner, nth: number): { git: GitRunner; waitUntilPaused: () => Promise<void>; release: () => void } {
+  let seen = 0;
+  let releaseFn: (() => void) | null = null;
+  let pausedResolve: (() => void) | null = null;
+  const paused = new Promise<void>((resolve) => (pausedResolve = resolve));
+  return {
+    git: {
+      async git(args, opts) {
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          seen += 1;
+          if (seen === nth) {
+            pausedResolve?.();
+            await new Promise<void>((resolve) => (releaseFn = resolve));
+          }
+        }
+        return real.git(args, opts);
+      },
+      gh: real.gh,
+    },
+    waitUntilPaused: () => paused,
+    release: () => releaseFn?.(),
+  };
 }
 
 /** Poll until `pred` holds or the deadline passes (fs-watch events are inherently async). */
@@ -292,5 +320,48 @@ describe("docSync git-op classification", () => {
 
     await waitFor(() => reloadCalls.length > 1);
     expect(reloadCalls.every((c) => c.origin === "external")).toBe(true);
+  });
+});
+
+describe("docSync handle() path stability under a mid-flight retarget", () => {
+  let dir: string;
+  let dir2: string | null = null;
+  let sync: DocSync | null = null;
+
+  afterEach(async () => {
+    await sync?.close();
+    sync = null;
+    if (dir2) {
+      await rm(dir2, { recursive: true, force: true });
+      dir2 = null;
+    }
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  const STEM_FILE = "src/content/blog/2026-07-14_hello.mdx";
+
+  it("writes a disk change to the post it belongs to, even if a retarget lands mid-classification", async () => {
+    dir = await makeRepo(STEM_FILE);
+    dir2 = await makeRepo(STEM_FILE);
+    const fileA = path.join(dir, STEM_FILE);
+    const fileB = path.join(dir2, STEM_FILE);
+
+    // The 1st rev-parse is construction's seed for A; the 2nd is the classification this event's
+    // handle() call makes. Gate that one so the test can retarget while it's still in flight.
+    const gated = gateNthRevParse(createGitRunner(), 2);
+    const { store, reloadCalls } = makeFakeStore(fileA, "v1\n");
+    sync = createDocSync(store, { filePath: fileA, git: gated.git });
+    await new Promise((r) => setTimeout(r, 100)); // let chokidar attach to A (see sibling tests' note).
+
+    await writeFile(fileA, "v2\n");
+    await gated.waitUntilPaused(); // handle() is suspended inside classifyExternalOrigin for A's event.
+
+    sync.retarget(fileB); // switches the watched post while A's write is still being classified.
+    gated.release();
+
+    await waitFor(() => reloadCalls.length > 0);
+    // A's write must land on A, carrying A's own text, however far filePath has since moved on.
+    expect(reloadCalls.at(-1)?.path).toBe(fileA);
+    expect(reloadCalls.some((c) => c.path === fileB)).toBe(false);
   });
 });
