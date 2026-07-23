@@ -10,9 +10,6 @@ import { ScopeSelector } from "./ScopeSelector";
 import { selectPost, selectRootName, selectShipBlocked } from "./gitSelectors";
 
 interface ShipPanelProps {
-  /** The active post's isolation branch, display-only (the sidecar pushes its own regardless).
-   *  Null before a post is active. */
-  branch: string | null;
   /** The active post's slug, seeding the conventional-commit subject prefix. Null before a post
    *  is active. */
   slug: string | null;
@@ -28,7 +25,7 @@ interface ShipPanelProps {
 
 type Phase = "editing" | "confirming" | "shipping" | "result";
 
-export function ShipPanel({ branch, slug, path, git, nameSync, onClose }: ShipPanelProps) {
+export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps) {
   const review = useDiffReview();
   const { scope, setScope } = review;
 
@@ -43,6 +40,7 @@ export function ShipPanel({ branch, slug, path, git, nameSync, onClose }: ShipPa
   const shipBlocked = !!path && selectShipBlocked(git, path);
   const behind = (path && selectPost(git, path)?.behind) || 0;
   const rootName = selectRootName(git);
+  const branch = (path && selectPost(git, path)?.branch) || null;
 
   // Can't ship until the branch resolves, never while the frontmatter/filename is desynced, and
   // never while behind the root (rebase first).

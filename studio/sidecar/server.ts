@@ -18,13 +18,11 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import type { StudioServices } from "../shared/services";
-import { type StudioStore, postWouldLoseWork } from "../state/store";
+import { resolveDestructiveConfirm, type StudioStore } from "../state/store";
 import type { StudioAgentHost } from "./agentHost";
 import type {
-  BranchesResponse,
   ClientMessage,
   DiffResponse,
-  DirtyPostsResponse,
   FetchResponse,
   PostsResponse,
   PutDocRequest,
@@ -61,9 +59,7 @@ export interface ServerOptions {
    * unavailable, in which case `/lsp` upgrades are refused and the editor uses its built-in sources.
    */
   lspConnect?: (ws: WebSocket) => void;
-  /** The studio's branch/worktree for the status popover; sent to each client on connect. */
-  getStudioBranch?: () => Promise<{ ref: string; worktree: string }>;
-  /** Run `git fetch --prune origin` and republish the active post's divergence; backs `POST /fetch`. */
+  /** Run `git fetch --prune origin` and republish git.state; backs `POST /fetch`. */
   fetchRemote?: () => Promise<FetchResponse>;
 }
 
@@ -169,10 +165,27 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       }
 
       case "GET /diff": {
-        const scope = url.searchParams.get("scope") === "all" ? "all" : "post";
-        // Optional `path` targets a specific open post (save-draft can review a non-focused tab);
-        // omitted, the diff follows the active post (ship).
         const path = url.searchParams.get("path") ?? undefined;
+        const op = url.searchParams.get("op");
+        // The destructive-confirm preview (delete/revert): straight from postLossPreview, so the
+        // counts a caller echoes back on confirm can never drift from what confirm itself re-checks.
+        if (op === "delete" || op === "revert") {
+          if (!path) return sendJson(res, 400, { error: "op requires a path" });
+          const rawScope = url.searchParams.get("scope");
+          const scope = rawScope === "post" || rawScope === "all" ? rawScope : undefined;
+          const preview = await store.postLossPreview(path, op, scope);
+          return sendJson(res, 200, {
+            status: preview.status,
+            diff: preview.diff,
+            outsideCount: 0,
+            scope: preview.scope,
+            changedFiles: preview.changedFiles,
+            unpushed: preview.ahead,
+          } satisfies DiffResponse);
+        }
+        // Ship / save-draft review. Optional `path` targets a specific open post (save-draft can
+        // review a non-focused tab); omitted, the diff follows the active post (ship).
+        const scope = url.searchParams.get("scope") === "all" ? "all" : "post";
         const { status, diff, outsideCount } = await services.ship.diff(scope, path);
         return sendJson(res, 200, { status, diff, outsideCount } satisfies DiffResponse);
       }
@@ -187,23 +200,6 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       case "GET /posts": {
         const posts = await services.tools.listPosts();
         return sendJson(res, 200, { posts } satisfies PostsResponse);
-      }
-
-      case "GET /posts/dirty": {
-        // Posts with unshipped changes (the palette's dirty badge / tab dot) plus the uncommitted
-        // subset (gates "Revert to clean"). Reflects every worktree on disk, not just this session's
-        // open tabs (also strays and worktrees created on the CLI). Probed on demand.
-        const { dirty, uncommitted } = await store.scanDirtyPosts();
-        return sendJson(res, 200, { dirty, uncommitted } satisfies DirtyPostsResponse);
-      }
-
-      case "GET /posts/branches": {
-        // Every blog/* branch's local/remote/stale status, for every stem regardless of open or
-        // published state (including one left by a sidecar that died or a tab that was closed),
-        // otherwise invisible to both /posts and the open-tab set. Powers the palette's status
-        // chips. Offline-safe (local refs only); probed on demand.
-        const branches = await store.listBranchStatuses();
-        return sendJson(res, 200, { branches } satisfies BranchesResponse);
       }
 
       case "POST /ship": {
@@ -296,25 +292,6 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     // blocking the rest of the connect snapshot on a fresh git re-query.
     const gitState = store.getGitState();
     if (gitState) ws.send(JSON.stringify({ type: "git.state", state: gitState } satisfies ServerMessage));
-    // The studio's branch/worktree is resolved via git (async), so it's sent once it's ready rather
-    // than blocking the rest of the snapshot; ordering doesn't matter to the client. A failed git
-    // lookup just omits it from the status popover, so swallow the rejection.
-    opts
-      .getStudioBranch?.()
-      .then((info) => {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "studio.branch", ...info } satisfies ServerMessage));
-      })
-      .catch(() => {});
-    // The active post's divergence is a git round-trip too, so defer it like studio.branch rather than
-    // block the snapshot; a failed lookup just omits the warning. Only present when a post is active.
-    store
-      .getActiveDivergence()
-      .then((d) => {
-        if (d && ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: "post.divergence", path: d.path, ahead: d.ahead, behind: d.behind } satisfies ServerMessage));
-        }
-      })
-      .catch(() => {});
 
     ws.on("message", (data) => {
       let message: ClientMessage;
@@ -461,28 +438,19 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Delete a draft post (worktree and branch). Gated: if there's work to lose, reply post.confirm
-      // instead of acting unless the client already confirmed. A clean post deletes without a prompt.
+      // Delete a draft post (worktree and branch). The client already previewed via GET /diff?op=delete
+      // and echoes back what it saw; resolveDestructiveConfirm re-checks a fresh preview against that
+      // before deleting, refusing if the tree moved on since the preview (an agent turn, say).
       case "post.delete": {
-        const { requestId, path, confirm } = message;
+        const { requestId, path, expectedChangedFiles, expectedUnpushed } = message;
         void (async () => {
           try {
-            const preview = await store.postLossPreview(path, "delete");
-            if (postWouldLoseWork(preview) && !confirm) {
-              if (ws.readyState === ws.OPEN) {
-                ws.send(
-                  JSON.stringify({
-                    type: "post.confirm",
-                    requestId,
-                    op: "delete",
-                    path,
-                    changedFiles: preview.changedFiles,
-                    ahead: preview.ahead,
-                    diff: preview.diff,
-                    scope: preview.scope,
-                  } satisfies ServerMessage),
-                );
-              }
+            const gate = await resolveDestructiveConfirm(store, "delete", path, undefined, {
+              changedFiles: expectedChangedFiles,
+              ahead: expectedUnpushed,
+            });
+            if (!gate.ok) {
+              sendPostResult(ws, requestId, { ok: false, error: gate.error });
               return;
             }
             const res = await store.deletePost(path);
@@ -494,37 +462,22 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return;
       }
 
-      // Revert a post's uncommitted edits to HEAD. Gated: nothing to discard is a no-op success;
-      // otherwise reply post.confirm (carrying the diff to be lost) unless confirmed.
+      // Revert a post's uncommitted edits to HEAD. Same preview-then-confirm shape as post.delete;
+      // revertPost runs even when there's nothing to revert (a safe no-op) rather than special-casing
+      // it here.
       case "post.revert": {
-        const { requestId, path, scope, confirm } = message;
+        const { requestId, path, scope, expectedChangedFiles } = message;
         void (async () => {
           try {
-            const preview = await store.postLossPreview(path, "revert", scope);
-            if (preview.diff.trim().length === 0) {
-              sendPostResult(ws, requestId, { ok: true, path });
+            const gate = await resolveDestructiveConfirm(store, "revert", path, scope, {
+              changedFiles: expectedChangedFiles,
+              ahead: 0,
+            });
+            if (!gate.ok) {
+              sendPostResult(ws, requestId, { ok: false, error: gate.error });
               return;
             }
-            if (!confirm) {
-              if (ws.readyState === ws.OPEN) {
-                ws.send(
-                  JSON.stringify({
-                    type: "post.confirm",
-                    requestId,
-                    op: "revert",
-                    path,
-                    changedFiles: preview.changedFiles,
-                    ahead: preview.ahead,
-                    diff: preview.diff,
-                    scope: preview.scope,
-                  } satisfies ServerMessage),
-                );
-              }
-              return;
-            }
-            // Use the scope this preview actually resolved to (the request's own choice, or the
-            // sidecar's auto-pick), not the request's raw (possibly unset) field.
-            const res = await store.revertPost(path, preview.scope);
+            const res = await store.revertPost(path, gate.scope);
             sendPostResult(ws, requestId, res.ok ? { ok: true, path } : { ok: false, error: res.error });
           } catch (err) {
             sendPostResult(ws, requestId, { ok: false, error: errorText(err) });

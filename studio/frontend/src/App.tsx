@@ -24,12 +24,12 @@ import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveCo
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
-import { fetchRemote, getDirtyPosts, saveDraft } from "./api";
+import { fetchRemote, getLossPreview, saveDraft } from "./api";
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import { EMPTY_GIT } from "./gitSelectors";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
-import type { GitState, PromptContext, ServerMessage } from "../../shared/protocol";
+import type { DiffResponse, GitState, PromptContext, ServerMessage } from "../../shared/protocol";
 
 interface DocState {
   path: string;
@@ -51,8 +51,6 @@ const SYNCED: NameSync = { synced: true };
 interface TabState {
   path: string;
   title: string;
-  /** The post's isolation branch (`blog/<date>_<slug>`), from `active`; null until first activated. */
-  branch: string | null;
   /** The post's worktree root (from `active`), so tool-call file paths drop that prefix; null until first activated. */
   worktreePath: string | null;
   doc: DocState | null;
@@ -67,16 +65,12 @@ interface TabState {
    *  banner copy: "git" traces to a checkout/commit/reset, "external" to an out-of-band editor. */
   externalChange: { text: string; rev: DocRev; origin: "external" | "git" } | null;
   nameSync: NameSync;
-  /** Divergence from origin's base (from `post.divergence`); `behind` > 0 drives the header warning. */
-  divergence: { ahead: number; behind: number };
 }
 
 interface StudioState {
   tabs: TabState[];
   activePath: string | null;
   mcp: McpServerStatus[];
-  /** The studio's own branch/worktree (from `studio.branch`), shown in the status popover. */
-  studio: { ref: string; worktree: string } | null;
   /** Authoritative permission mode (from `mode.status`), shown + edited via the mode chip. */
   mode: PermissionMode;
   /** The single in-flight turn (the backend serializes one at a time) and the tab that owns it. */
@@ -124,11 +118,10 @@ function mcpHealth(status: string, enabled: boolean): Health {
   return "down";
 }
 
-function makeTab(path: string, title: string, branch: string | null = null): TabState {
+function makeTab(path: string, title: string): TabState {
   return {
     path,
     title,
-    branch,
     worktreePath: null,
     doc: null,
     remoteUpdate: null,
@@ -138,7 +131,6 @@ function makeTab(path: string, title: string, branch: string | null = null): Tab
     permissions: [],
     externalChange: null,
     nameSync: SYNCED,
-    divergence: { ahead: 0, behind: 0 },
   };
 }
 
@@ -146,7 +138,6 @@ const initialState: StudioState = {
   tabs: [],
   activePath: null,
   mcp: [],
-  studio: null,
   mode: "auto",
   turn: null,
   promptOwners: {},
@@ -319,11 +310,6 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
         },
       }));
 
-    case "post.divergence":
-      // Path-scoped (unlike preview/namesync): the divergence read is async, so it names the tab it
-      // measured in case the active post switched before it landed.
-      return patchTab(state, msg.path, (t) => ({ ...t, divergence: { ahead: msg.ahead, behind: msg.behind } }));
-
     case "chat.injected": {
       // A server-composed prompt (no client sendPrompt action fired it), so this case does what
       // sendPrompt's action handler does: insert the bubble, latch the turn, register the owner.
@@ -375,7 +361,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       if (msg.oldPath === msg.newPath) return state;
       const tabs = state.tabs.map((t) =>
         t.path === msg.oldPath
-          ? { ...t, path: msg.newPath, title: msg.title, branch: msg.branch, doc: null, remoteUpdate: null, externalChange: null, nameSync: SYNCED }
+          ? { ...t, path: msg.newPath, title: msg.title, doc: null, remoteUpdate: null, externalChange: null, nameSync: SYNCED }
           : t,
       );
       const activePath = state.activePath === msg.oldPath ? msg.newPath : state.activePath;
@@ -390,10 +376,8 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       // Ensure a tab entry exists (in case `active` lands before `tabs`), then focus it.
       const exists = state.tabs.some((t) => t.path === msg.path);
       const tabs = exists
-        ? state.tabs.map((t) =>
-            t.path === msg.path ? { ...t, title: msg.title, branch: msg.branch, worktreePath: msg.worktreePath } : t,
-          )
-        : [...state.tabs, { ...makeTab(msg.path, msg.title, msg.branch), worktreePath: msg.worktreePath }];
+        ? state.tabs.map((t) => (t.path === msg.path ? { ...t, title: msg.title, worktreePath: msg.worktreePath } : t))
+        : [...state.tabs, { ...makeTab(msg.path, msg.title), worktreePath: msg.worktreePath }];
       return { ...state, tabs, activePath: msg.path };
     }
 
@@ -417,9 +401,6 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
 
     case "mode.status":
       return { ...state, mode: msg.mode };
-
-    case "studio.branch":
-      return { ...state, studio: { ref: msg.ref, worktree: msg.worktree } };
 
     case "git.state":
       // Publish-on-change means each push is already the full truth: replace the slice wholesale.
@@ -541,10 +522,6 @@ export default function App() {
   const [pendingConfirm, setPendingConfirm] = useState<DestructiveConfirmData | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
-  // Refreshed via refreshDirty; unread for now (git.state's selectPushable/selectUncommitted
-  // drive the tab bar and its menu instead).
-  const [_dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
-  const [_uncommittedPaths, setUncommittedPaths] = useState<Set<string>>(() => new Set());
 
   const socketRef = useRef<StudioSocket | null>(null);
   const editorRef = useRef<EditorHandle | null>(null);
@@ -559,7 +536,6 @@ export default function App() {
   // Pending post.* requests keyed by requestId, resolved by the matching post.result.
   const pendingRef = useRef<Map<string, (ok: boolean, error?: string) => void>>(new Map());
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dirtyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Flash a transient notice, replacing any prior one; auto-clears after a few seconds.
   const showNotice = useCallback((text: string) => {
@@ -570,26 +546,6 @@ export default function App() {
 
   useEffect(() => () => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
-  }, []);
-
-  // Re-probe GET /posts/dirty for the tab bar's draft dot. Several triggers can fire in quick
-  // succession (tabs change, agent edit, turn finishing, autosave), so debounce into one request.
-  const refreshDirty = useCallback(() => {
-    if (dirtyTimerRef.current) clearTimeout(dirtyTimerRef.current);
-    dirtyTimerRef.current = setTimeout(() => {
-      getDirtyPosts()
-        .then((res) => {
-          setDirtyPaths(new Set(res.dirty));
-          setUncommittedPaths(new Set(res.uncommitted));
-        })
-        .catch(() => {
-          /* best-effort: leave the previous dirty set in place */
-        });
-    }, 400);
-  }, []);
-
-  useEffect(() => () => {
-    if (dirtyTimerRef.current) clearTimeout(dirtyTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -612,26 +568,7 @@ export default function App() {
           }
           return;
         }
-        // A confirm:false destructive op that would lose work: drop the probe resolver and raise the
-        // confirmation dialog with what's at risk.
-        if (msg.type === "post.confirm") {
-          pendingRef.current.delete(msg.requestId);
-          setPendingConfirm({
-            op: msg.op,
-            path: msg.path,
-            changedFiles: msg.changedFiles,
-            ahead: msg.ahead,
-            diff: msg.diff,
-            scope: msg.scope,
-          });
-          return;
-        }
         dispatch({ type: "server", msg });
-        // Draft-ness can change when the open set changes, an edit lands, a turn finishes, or a fetch
-        // moves the base under a post (post.divergence rides that fetch), so re-probe the dirty set too.
-        if (msg.type === "tabs" || msg.type === "file.changed" || msg.type === "done" || msg.type === "post.divergence") {
-          refreshDirty();
-        }
       },
       onStatus: setStatus,
     });
@@ -648,12 +585,6 @@ export default function App() {
   useEffect(() => {
     connectedRef.current = connected;
   }, [connected]);
-
-  // The socket coming up (initial load and every reconnect) is the first chance to learn which
-  // open posts are drafts.
-  useEffect(() => {
-    if (connected) refreshDirty();
-  }, [connected, refreshDirty]);
 
   // A dropped socket means the in-flight turn's terminal done/error can never arrive, so without
   // this the owning tab stays wedged until a page reload. Release the latch when the connection
@@ -740,11 +671,42 @@ export default function App() {
     socketRef.current?.send({ type: "post.rename", requestId: nid(), path, newSlug });
   }, []);
 
-  // Revert/delete from the tab menu. Sent with confirm:false first: the sidecar either acts
-  // immediately (nothing to lose) or replies post.confirm with what's at risk, raising the dialog.
-  // An error becomes a transient notice; the tab set updates via the authoritative tabs broadcast.
-  // `scope` is omitted for the first request of a revert (the sidecar picks it: "all" when there's
-  // more than just the post, else "post", and echoes its choice back on post.confirm).
+  // Send a delete/revert confirm over the socket, echoing the loss preview's own counts so the
+  // sidecar can refuse if the tree moved on since that preview was pulled. Resolves rather than
+  // throwing, so both the no-dialog fast path and the dialog's own confirm button can await it.
+  const sendDestructiveConfirm = useCallback(
+    (op: "delete" | "revert", path: string, scope: Scope, changedFiles: number, unpushed: number) =>
+      new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        const requestId = nid();
+        pendingRef.current.set(requestId, (ok, error) => resolve({ ok, error }));
+        const sent =
+          op === "delete"
+            ? (socketRef.current?.send({
+                type: "post.delete",
+                requestId,
+                path,
+                expectedChangedFiles: changedFiles,
+                expectedUnpushed: unpushed,
+              }) ?? false)
+            : (socketRef.current?.send({
+                type: "post.revert",
+                requestId,
+                path,
+                scope,
+                expectedChangedFiles: changedFiles,
+              }) ?? false);
+        if (!sent) {
+          pendingRef.current.delete(requestId);
+          resolve({ ok: false, error: "Lost the connection — try again in a moment." });
+        }
+      }),
+    [],
+  );
+
+  // Revert/delete from the tab menu: preview via GET /diff?op= first, so the dialog's counts and
+  // diff come straight from the sidecar rather than being re-derived here, then either act
+  // immediately (nothing at stake) or raise the confirm dialog with what's at risk. An error becomes
+  // a transient notice; the tab set updates via the authoritative tabs broadcast.
   const requestDestructive = useCallback(
     async (op: "delete" | "revert", path: string, scope?: Scope) => {
       // Flush the active editor first so the "what would be lost" diff (and a subsequent save) reflect
@@ -756,35 +718,53 @@ export default function App() {
           /* proceed; edits still live in the worktree file and any conflict surfaces via the banner */
         }
       }
-      const requestId = nid();
-      pendingRef.current.set(requestId, (ok, error) => {
-        if (!ok && error) showNotice(error);
-      });
-      if (op === "delete") {
-        socketRef.current?.send({ type: "post.delete", requestId, path, confirm: false });
-      } else {
-        socketRef.current?.send({ type: "post.revert", requestId, path, scope, confirm: false });
+      let preview: DiffResponse;
+      try {
+        preview = await getLossPreview(op, path, scope);
+      } catch (e: unknown) {
+        showNotice(e instanceof Error ? e.message : "Failed to preview the change.");
+        return;
       }
+      const resolvedScope: Scope = preview.scope ?? "post";
+      const changedFiles = preview.changedFiles ?? 0;
+      const unpushed = preview.unpushed ?? 0;
+      const atStake = op === "delete" ? changedFiles > 0 || unpushed > 0 : preview.diff.trim().length > 0;
+      if (!atStake) {
+        const { ok, error } = await sendDestructiveConfirm(op, path, resolvedScope, changedFiles, unpushed);
+        if (!ok && error) showNotice(error);
+        return;
+      }
+      setPendingConfirm({ op, path, changedFiles, unpushed, diff: preview.diff, scope: resolvedScope });
     },
-    [showNotice],
+    [showNotice, sendDestructiveConfirm],
   );
 
   const onDeletePost = useCallback((path: string) => void requestDestructive("delete", path), [requestDestructive]);
   const onRevertPost = useCallback((path: string) => void requestDestructive("revert", path), [requestDestructive]);
 
-  // In-dialog scope toggle for revert (delete never shows the toggle): re-request the preview under
-  // the new scope, swapping the dialog's data on reply, or closing it if the new scope turns out
-  // clean (e.g. toggling from "all" down to "post" when only an outside file was dirty).
+  // In-dialog scope toggle for revert (delete never shows the toggle): re-pull the preview under the
+  // new scope, swapping the dialog's data in, or closing it if the new scope turns out clean (e.g.
+  // toggling from "all" down to "post" when only an outside file was dirty).
   const onRevertScopeChange = useCallback(
     (scope: Scope) => {
       if (!pendingConfirm || pendingConfirm.op !== "revert") return;
       const { path } = pendingConfirm;
-      const requestId = nid();
-      pendingRef.current.set(requestId, (ok, error) => {
-        if (ok) setPendingConfirm(null);
-        else if (error) showNotice(error);
-      });
-      socketRef.current?.send({ type: "post.revert", requestId, path, scope, confirm: false });
+      getLossPreview("revert", path, scope)
+        .then((preview) => {
+          if (preview.diff.trim().length === 0) {
+            setPendingConfirm(null);
+            return;
+          }
+          setPendingConfirm({
+            op: "revert",
+            path,
+            changedFiles: preview.changedFiles ?? 0,
+            unpushed: 0,
+            diff: preview.diff,
+            scope: preview.scope ?? scope,
+          });
+        })
+        .catch((e: unknown) => showNotice(e instanceof Error ? e.message : "Failed to preview the change."));
     },
     [pendingConfirm, showNotice],
   );
@@ -828,15 +808,14 @@ export default function App() {
     [showNotice],
   );
 
-  // Author confirmed the destructive op: resend with confirm:true, then close on success or show the
-  // error inline. A rejected send (dropped connection) clears the busy latch so the dialog doesn't hang.
+  // Author confirmed the destructive op shown in the dialog: send the confirm, echoing back exactly
+  // the counts the dialog displayed, then close on success or show the error inline.
   const onConfirmDestructive = useCallback(() => {
     if (!pendingConfirm) return;
-    const { op, path, scope } = pendingConfirm;
-    const requestId = nid();
+    const { op, path, scope, changedFiles, unpushed } = pendingConfirm;
     setConfirmBusy(true);
     setConfirmError(null);
-    pendingRef.current.set(requestId, (ok, error) => {
+    void sendDestructiveConfirm(op, path, scope, changedFiles, unpushed).then(({ ok, error }) => {
       setConfirmBusy(false);
       if (ok) {
         setPendingConfirm(null);
@@ -845,16 +824,7 @@ export default function App() {
         setConfirmError(error ?? `Failed to ${op} the post.`);
       }
     });
-    const sent =
-      (op === "delete"
-        ? socketRef.current?.send({ type: "post.delete", requestId, path, confirm: true })
-        : socketRef.current?.send({ type: "post.revert", requestId, path, scope, confirm: true })) ?? false;
-    if (!sent) {
-      pendingRef.current.delete(requestId);
-      setConfirmBusy(false);
-      setConfirmError("Lost the connection — try again in a moment.");
-    }
-  }, [pendingConfirm]);
+  }, [pendingConfirm, sendDestructiveConfirm]);
 
   const onCancelDestructive = useCallback(() => {
     if (confirmBusy) return;
@@ -886,25 +856,26 @@ export default function App() {
         setConfirmError(saved.error);
         return;
       }
-      // Pushed (or already on origin): now delete the local copy.
-      const requestId = nid();
-      pendingRef.current.set(requestId, (ok, error) => {
+      // The save just made everything safe on origin, so re-preview before deleting: the guard must
+      // compare against the post-save tree, not the pre-save counts the dialog originally showed.
+      let fresh: DiffResponse;
+      try {
+        fresh = await getLossPreview("delete", path);
+      } catch (e: unknown) {
         setConfirmBusy(false);
-        if (ok) {
-          setPendingConfirm(null);
-          setConfirmError(null);
-        } else {
-          setConfirmError(error ?? "Saved to remote, but the local delete failed.");
-        }
-      });
-      const sent = socketRef.current?.send({ type: "post.delete", requestId, path, confirm: true }) ?? false;
-      if (!sent) {
-        pendingRef.current.delete(requestId);
-        setConfirmBusy(false);
-        setConfirmError("Saved to remote, but lost the connection before deleting locally.");
+        setConfirmError(e instanceof Error ? e.message : "Saved to remote, but failed to re-check before deleting.");
+        return;
+      }
+      const { ok, error } = await sendDestructiveConfirm("delete", path, "all", fresh.changedFiles ?? 0, fresh.unpushed ?? 0);
+      setConfirmBusy(false);
+      if (ok) {
+        setPendingConfirm(null);
+        setConfirmError(null);
+      } else {
+        setConfirmError(error ?? "Saved to remote, but the local delete failed.");
       }
     })();
-  }, [pendingConfirm]);
+  }, [pendingConfirm, sendDestructiveConfirm]);
 
   // Open the New Post dialog seeded with `title` (empty for a blank post), clearing any stale error.
   const openNewPost = useCallback((title: string) => {
@@ -1020,14 +991,9 @@ export default function App() {
     if (path) socketRef.current?.send({ type: "editor.state", path, cursor, selection, viewport });
   }, []);
 
-  const onRev = useCallback(
-    (path: string, rev: DocRev) => {
-      dispatch({ type: "revUpdated", path, rev });
-      // A successful autosave can flip a clean tab to a draft (or back, on revert).
-      refreshDirty();
-    },
-    [refreshDirty],
-  );
+  const onRev = useCallback((path: string, rev: DocRev) => {
+    dispatch({ type: "revUpdated", path, rev });
+  }, []);
 
   // ⌘P / Ctrl-P toggles the command palette. Capture phase so it beats CodeMirror and browser print.
   useEffect(() => {
@@ -1060,7 +1026,6 @@ export default function App() {
           activePath={state.activePath}
           status={status}
           stackStatus={stackStatus}
-          studio={state.studio}
           git={state.git}
           onSelect={openPost}
           onClose={onCloseTab}
@@ -1232,7 +1197,6 @@ export default function App() {
         {showShip && (
           <Modal size="wide" onClose={() => setShowShip(false)}>
             <ShipPanel
-              branch={activeTab?.branch ?? null}
               slug={activeTab ? slugFromPath(activeTab.path) : null}
               path={activeTab?.path ?? null}
               git={state.git}
@@ -1249,7 +1213,7 @@ export default function App() {
               <Modal size="wide" onClose={() => setSaveDraftFor(null)}>
                 <SaveDraftPanel
                   path={tab.path}
-                  branch={tab.branch}
+                  git={state.git}
                   onClose={() => setSaveDraftFor(null)}
                 />
               </Modal>

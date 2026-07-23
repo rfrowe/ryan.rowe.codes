@@ -10,7 +10,8 @@ export interface DestructiveConfirmData {
   op: "delete" | "revert";
   path: string;
   changedFiles: number;
-  ahead: number;
+  /** Commits not safe anywhere else the op would discard. Always 0 for revert. */
+  unpushed: number;
   diff: string;
   /** The scope this preview reflects. Always "all" for delete (never partial); "post" or "all" for
    *  revert, per the toggle below. */
@@ -51,7 +52,7 @@ export function DestructiveConfirm({
 
   const lossParts: string[] = [];
   if (data.changedFiles > 0) lossParts.push(plural(data.changedFiles, "uncommitted file"));
-  if (data.ahead > 0) lossParts.push(plural(data.ahead, "unmerged commit"));
+  if (data.unpushed > 0) lossParts.push(plural(data.unpushed, "unmerged commit"));
   const lossSummary = lossParts.join(" and ");
 
   return (
