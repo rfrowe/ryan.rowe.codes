@@ -3,10 +3,11 @@
 // resulting PR URL, or the error on failure.
 
 import { useState } from "react";
-import type { ShipResponse } from "../../shared/protocol";
+import type { GitState, ShipResponse } from "../../shared/protocol";
 import { ship } from "./api";
 import { DiffReviewSection, useDiffReview } from "./DiffReview";
 import { ScopeSelector } from "./ScopeSelector";
+import { selectPost, selectRootName, selectShipBlocked } from "./gitSelectors";
 
 interface ShipPanelProps {
   /** The active post's isolation branch, display-only (the sidecar pushes its own regardless).
@@ -15,6 +16,10 @@ interface ShipPanelProps {
   /** The active post's slug, seeding the conventional-commit subject prefix. Null before a post
    *  is active. */
   slug: string | null;
+  /** The active post's canonical path, keying the ship gate (F7). Null before a post is active. */
+  path: string | null;
+  /** Every git fact; the ship gate reads the active post's own `behind`, not `primary.behind`. */
+  git: GitState;
   /** Frontmatter/filename name-sync. When `synced` is false, ship is blocked (the sidecar refuses
    *  a desynced post too; this disables the button and explains why). */
   nameSync: { synced: boolean; expectedStem?: string; currentStem?: string };
@@ -23,7 +28,7 @@ interface ShipPanelProps {
 
 type Phase = "editing" | "confirming" | "shipping" | "result";
 
-export function ShipPanel({ branch, slug, nameSync, onClose }: ShipPanelProps) {
+export function ShipPanel({ branch, slug, path, git, nameSync, onClose }: ShipPanelProps) {
   const review = useDiffReview();
   const { scope, setScope } = review;
 
@@ -33,8 +38,15 @@ export function ShipPanel({ branch, slug, nameSync, onClose }: ShipPanelProps) {
   const [phase, setPhase] = useState<Phase>("editing");
   const [result, setResult] = useState<ShipResponse | null>(null);
 
-  // Can't ship until the branch resolves, and never while the frontmatter/filename is desynced.
-  const canShip = !!branch && subject.trim().length > 0 && nameSync.synced;
+  // Ship gate (F7): a real hard gate, not merely advisory. The sidecar re-checks this too, so
+  // bypassing the disabled button still can't ship.
+  const shipBlocked = !!path && selectShipBlocked(git, path);
+  const behind = (path && selectPost(git, path)?.behind) || 0;
+  const rootName = selectRootName(git);
+
+  // Can't ship until the branch resolves, never while the frontmatter/filename is desynced, and
+  // never while behind the root (rebase first).
+  const canShip = !!branch && subject.trim().length > 0 && nameSync.synced && !shipBlocked;
 
   async function doShip(): Promise<void> {
     setPhase("shipping");
@@ -63,6 +75,12 @@ export function ShipPanel({ branch, slug, nameSync, onClose }: ShipPanelProps) {
             <p className="ship__error">
               This post's deployed URL has changed to <code>{nameSync.expectedStem}</code>. Rename the worktree to
               match, or revert the URL, before shipping.
+            </p>
+          )}
+          {shipBlocked && (
+            <p className="ship__error">
+              ⚠ {behind} behind <code>{rootName}</code>. Fetch and rebase onto <code>{rootName}</code> before
+              shipping.
             </p>
           )}
           <div className="ship__field">
@@ -125,7 +143,12 @@ export function ShipPanel({ branch, slug, nameSync, onClose }: ShipPanelProps) {
               </p>
             ) : (
               <div className="ship__fail">
-                <p>Ship failed: {result.error}</p>
+                <p>
+                  Ship failed:{" "}
+                  {"behind" in result
+                    ? `${result.behind} behind ${rootName}. Fetch and rebase onto ${rootName} before shipping.`
+                    : result.error}
+                </p>
               </div>
             )}
             <button className="btn btn--ghost" onClick={onClose}>

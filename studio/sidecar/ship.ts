@@ -9,7 +9,7 @@ import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
 import type { SaveDraftRequest, SaveDraftResponse } from "../shared/protocol";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
-import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, stagePathsForScope, underBlog } from "./diffService";
+import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeDivergence, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, stagePathsForScope, underBlog } from "./diffService";
 import { errorMessage } from "./errorMessage";
 import { cloudflarePreviewOrigin } from "../preview/cloudflare";
 import { deriveUrl } from "../preview/deriveUrl";
@@ -137,6 +137,13 @@ export function createShipService(deps: ShipDeps): ShipService {
           ok: false,
           error: `refusing to ship: the worktree is on "${head}", expected the post's branch "${wt.branch}".`,
         };
+      }
+
+      // Ship gate (F7): re-query behind here too, so a client that bypasses the disabled button
+      // still can't ship. Structured, not a message, so the client can point at Update (F3).
+      const { behind } = await computeDivergence(git, cwd, sessionBranch);
+      if (behind > 0) {
+        return { ok: false, error: "behind", behind };
       }
 
       // Derive the staging set. `core.quotePath=false` keeps non-ASCII paths UTF-8 so

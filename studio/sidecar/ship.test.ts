@@ -165,6 +165,26 @@ describe("createShipService.openPr", () => {
     expect(seq.some((l) => l.includes("pr create"))).toBe(false);
   });
 
+  it("refuses to ship a post behind origin/<sessionBranch>, before any commit or push", async () => {
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("rev-list --left-right --count") ? { stdout: "3\t0\n" } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.openPr(baseInput);
+    expect(res).toEqual({ ok: false, error: "behind", behind: 3 });
+    const seq = lines();
+    expect(seq.some((l) => l.includes("commit"))).toBe(false);
+    expect(seq.some((l) => l.includes("push"))).toBe(false);
+    expect(seq.some((l) => l.includes("pr create"))).toBe(false);
+  });
+
   it("blocks on the confirm gate with no git/gh side effects", async () => {
     const { git, calls } = makeGit(happy);
     const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
@@ -603,6 +623,15 @@ describe("createShipService.saveDraft", () => {
 
   it("does not gate on a frontmatter⇄filename desync (unlike ship)", async () => {
     const svc = saveSvc(saveHappy, { nameSync: { synced: false } });
+    const res = await svc.saveDraft({ subject: "Save draft", body: "", scope: "post", confirm: true });
+    expect(res.ok).toBe(true);
+  });
+
+  it("does not gate on being behind origin/<sessionBranch> (unlike ship)", async () => {
+    const handler = withOverride(saveHappy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("rev-list --left-right --count") ? { stdout: "3\t0\n" } : {},
+    );
+    const svc = saveSvc(handler);
     const res = await svc.saveDraft({ subject: "Save draft", body: "", scope: "post", confirm: true });
     expect(res.ok).toBe(true);
   });

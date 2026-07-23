@@ -260,7 +260,10 @@ export interface ShipRequest {
 }
 export type ShipResponse =
   | { ok: true; prUrl: string; previewUrl?: string }
-  | { ok: false; error: string; violations?: string[] };
+  | { ok: false; error: string; violations?: string[] }
+  // Ship gate (F7): the post is behind origin/<sessionBranch>. A structured error, not a message, so
+  // the client can point at Update (F3) instead of just displaying text.
+  | { ok: false; error: "behind"; behind: number };
 
 // Persist a draft to origin without opening a PR: commit the post with the pinned identity and push
 // its `blog/<stem>` isolation branch, so the draft survives locally-detached (reopened as a remote
