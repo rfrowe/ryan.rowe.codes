@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import type { SocketStatus } from "./ws";
 import { kebabSlug, slugFromPath } from "./slug";
 import { Lifebar } from "./Lifebar";
-import { selectPost, selectPushable, selectRootName, selectUncommitted } from "./gitSelectors";
+import { selectPost, selectPushable, selectRebase, selectRootName, selectUncommitted, selectUpdatable } from "./gitSelectors";
 import { useCommand } from "./useCommand";
 import type { GitState } from "../../shared/protocol";
 
@@ -62,6 +62,10 @@ interface TabBarProps {
   /** Fetch from origin (`git fetch --prune`): refs only, global, updates every post's behind/incoming
    *  reactively via git.state. The spinner and "refs as of …" freshness read git.fetch, not a prop. */
   onFetch: () => void;
+  /** Update/Pull (F3): fetch this post's base then rebase onto it. */
+  onUpdate: (path: string) => void;
+  /** Abort an in-progress rebase (F6), returning the post to its pre-update tip. */
+  onAbortUpdate: (path: string) => void;
 }
 
 export function TabBar({
@@ -78,6 +82,8 @@ export function TabBar({
   onRevert,
   onDelete,
   onFetch,
+  onUpdate,
+  onAbortUpdate,
 }: TabBarProps) {
   // Path currently being renamed (any tab may enter rename mode via the menu; the active tab also
   // via double-click).
@@ -160,6 +166,15 @@ export function TabBar({
     group: "Git",
     when: () => status === "open",
     run: onFetch,
+  });
+
+  useCommand({
+    id: "git.update",
+    chord: "mod+shift+u",
+    label: "Update / Pull",
+    group: "Git",
+    when: () => status === "open" && !!activePath && selectUpdatable(git, activePath),
+    run: () => activePath && onUpdate(activePath),
   });
 
   return (
@@ -281,6 +296,32 @@ export function TabBar({
           >
             Rename…
           </button>
+          <button
+            type="button"
+            className="tabmenu__item"
+            role="menuitem"
+            disabled={!selectUpdatable(git, menu.path)}
+            title={selectUpdatable(git, menu.path) ? undefined : "Nothing to update — not behind, or a rebase is already in progress"}
+            onClick={() => {
+              onUpdate(menu.path);
+              setMenu(null);
+            }}
+          >
+            Update…
+          </button>
+          {selectRebase(git, menu.path).phase !== "idle" && (
+            <button
+              type="button"
+              className="tabmenu__item"
+              role="menuitem"
+              onClick={() => {
+                onAbortUpdate(menu.path);
+                setMenu(null);
+              }}
+            >
+              Abort update…
+            </button>
+          )}
           <button
             type="button"
             className="tabmenu__item"

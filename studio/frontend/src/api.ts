@@ -7,11 +7,13 @@ import type {
   PostsResponse,
   PutDocRequest,
   PutDocResponse,
+  RebaseAbortResponse,
   SaveDraftRequest,
   SaveDraftResponse,
   SessionsResponse,
   ShipRequest,
   ShipResponse,
+  UpdateResponse,
 } from "../../shared/protocol";
 import { REST_BASE, authHeaders } from "./config";
 
@@ -90,4 +92,24 @@ export async function saveDraft(req: SaveDraftRequest): Promise<SaveDraftRespons
     body: JSON.stringify(req),
   });
   return asJson<SaveDraftResponse>(res);
+}
+
+/** Update/Pull (F3): fetch the post's base then rebase onto it. Opens a closed post first. */
+export async function update(path: string): Promise<UpdateResponse> {
+  const res = await fetch(endpoint("/update"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ path }),
+  });
+  return asJson<UpdateResponse>(res);
+}
+
+/** Abort an in-progress rebase (F6), returning the post to its pre-update tip. */
+export async function rebaseAbort(path: string): Promise<RebaseAbortResponse> {
+  const res = await fetch(endpoint("/rebase-abort"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ path }),
+  });
+  return asJson<RebaseAbortResponse>(res);
 }

@@ -24,7 +24,7 @@ import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveCo
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
-import { fetchRemote, getLossPreview, saveDraft } from "./api";
+import { fetchRemote, getLossPreview, rebaseAbort, saveDraft, update } from "./api";
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import { EMPTY_GIT } from "./gitSelectors";
@@ -912,6 +912,34 @@ export default function App() {
       .catch((e: unknown) => showNotice(e instanceof Error ? `Fetch failed: ${e.message}` : "Fetch failed."));
   }, [state.git.fetch.inFlight, showNotice]);
 
+  // Update/Pull (F3): fetch this post's base then rebase onto it. git.state reflects the outcome
+  // reactively (behind clears, or rebase.phase flips to "conflicted" for F4 to pick up); a notice
+  // here only covers a transport failure or the no-op "already up to date" result.
+  const onUpdate = useCallback(
+    (path: string) => {
+      update(path)
+        .then((res) => {
+          if (!res.ok) showNotice(`Update failed: ${res.error}`);
+          else if (res.result === "up-to-date") showNotice("Already up to date.");
+        })
+        .catch((e: unknown) => showNotice(e instanceof Error ? `Update failed: ${e.message}` : "Update failed."));
+    },
+    [showNotice],
+  );
+
+  // Abort update (F6): returns the post to its pre-update tip; git.state's behind warning reappears
+  // once the rebase's ref move is picked up.
+  const onAbortUpdate = useCallback(
+    (path: string) => {
+      rebaseAbort(path)
+        .then((res) => {
+          if (!res.ok) showNotice(`Abort failed: ${res.error}`);
+        })
+        .catch((e: unknown) => showNotice(e instanceof Error ? `Abort failed: ${e.message}` : "Abort failed."));
+    },
+    [showNotice],
+  );
+
   // Switch the permission mode; the sidecar echoes mode.status back to the chip.
   const onSetMode = useCallback((mode: PermissionMode) => {
     socketRef.current?.send({ type: "mode.set", mode });
@@ -1035,6 +1063,8 @@ export default function App() {
           onRevert={onRevertPost}
           onDelete={onDeletePost}
           onFetch={onFetch}
+          onUpdate={onUpdate}
+          onAbortUpdate={onAbortUpdate}
         />
 
         {notice && (
@@ -1169,6 +1199,7 @@ export default function App() {
                 git={state.git}
                 onSelect={openPost}
                 onCreate={openNewPost}
+                onUpdate={onUpdate}
                 onClose={() => setShowPalette(false)}
               />
             </div>

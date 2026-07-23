@@ -4,7 +4,7 @@
 // constructs the concretes and injects them.
 
 import type { ActiveDoc, EditorContext, PreviewState, Range, SessionMode } from "./types";
-import type { PromptContext, SaveDraftRequest, SaveDraftResponse, ServerMessage } from "./protocol";
+import type { PromptContext, RebaseAbortResponse, SaveDraftRequest, SaveDraftResponse, ServerMessage, UpdateResponse } from "./protocol";
 import type {
   DescribeResult,
   GetEditorContextResult,
@@ -64,6 +64,12 @@ export interface SessionsService {
   list(scope: "post" | "all"): Promise<SessionListItem[]>;
 }
 
+/** Update/Pull (F3) and its abort (F6); studio-run, never the agent. */
+export interface GitOpsService {
+  update(canonicalPath: string): Promise<UpdateResponse>;
+  rebaseAbort(canonicalPath: string): Promise<RebaseAbortResponse>;
+}
+
 /** The bundle the bootstrap constructs and injects into the server factory. */
 export interface StudioServices {
   store: Store;
@@ -71,6 +77,7 @@ export interface StudioServices {
   tools: StudioTools;
   ship: ShipService;
   sessions: SessionsService;
+  gitOps: GitOpsService;
 }
 
 // Re-export the injected value type used by the sidecar server factory.

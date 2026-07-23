@@ -241,7 +241,28 @@ export type SaveDraftResponse =
   | { ok: true; branch: string; committed: boolean; pushed: boolean; noop: boolean }
   | { ok: false; error: string };
 
-// Result of the persistent git-fetch button: `git fetch --prune origin` (the one place the studio
-// pulls from origin — it's otherwise offline by design), after which the sidecar republishes
-// git.state so every post's behind/incoming reflects the newly-fetched refs.
+// Result of the persistent git-fetch button: the global refs-only `git fetch --prune origin`, after
+// which the sidecar republishes git.state so every post's behind/incoming reflects the newly-fetched
+// refs. UpdateResponse below is the per-post fetch-then-rebase; the studio is otherwise offline.
 export type FetchResponse = { ok: true } | { ok: false; error: string };
+
+// Update / Pull (F3): fetches this post's base (targeted `git fetch origin <sessionBranch>`, never
+// the global --prune fetch above) then rebases its branch onto it. "fast-forward" means the post had
+// no commits of its own ahead of the base; "rebased" means it did and they were replayed; "up-to-date"
+// means HEAD didn't move (the base fetch found nothing new). A conflict hands off to F4 (the agent)
+// and leaves the post's `rebase.phase` "conflicted" in git.state; conflictedFiles names the unmerged
+// paths so the client needn't re-derive them. `path` need not be open: a closed post is opened first.
+export interface UpdateRequest {
+  path: string;
+}
+export type UpdateResponse =
+  | { ok: true; result: "fast-forward" | "rebased" | "up-to-date" }
+  | { ok: true; result: "conflicted"; conflictedFiles: string[] }
+  | { ok: false; error: string };
+
+// F6: abort an in-progress rebase, returning the post to its pre-update tip. Kept distinct from
+// POST /update rather than an `{abort:true}` flag on it (locked decision 1).
+export interface RebaseAbortRequest {
+  path: string;
+}
+export type RebaseAbortResponse = { ok: true } | { ok: false; error: string };
