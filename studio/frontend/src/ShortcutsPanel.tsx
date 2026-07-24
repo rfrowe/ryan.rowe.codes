@@ -37,10 +37,6 @@ export function ShortcutsPanel({ git: _git }: ShortcutsPanelProps) {
   const [open, setOpen] = useState(false);
   useCommand({
     id: "help.shortcuts",
-    // mod+shift+? is swallowed by the macOS Help menu before it reaches the page. mod+/ collides
-    // with the editor's own toggle-comment binding, but that's fine: CodeMirror preventDefaults it
-    // when the editor is focused, so this only fires when focus is elsewhere (see agent.directive's
-    // mod+k for the same pattern).
     chord: "mod+/",
     label: "Keyboard shortcuts",
     group: "Navigation",
