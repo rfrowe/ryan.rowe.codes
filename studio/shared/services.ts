@@ -97,6 +97,15 @@ export interface ConflictResolverService {
   onTurnEnd(promptId: string): Promise<void>;
 }
 
+/** F4 for the studio root: the same agent-assisted rebase resolution, for the root worktree rather
+ *  than a post. Single-episode (the root has one worktree, not a per-post map). */
+export interface RootConflictResolverService {
+  /** The root's rebase left it conflicted: dispatch a system prompt and mark it resolving. */
+  onConflict(conflictedFiles: string[]): void;
+  /** An agent turn ended; a no-op unless `promptId` belongs to a dispatch this service made. */
+  onTurnEnd(promptId: string): Promise<void>;
+}
+
 /** The bundle the bootstrap constructs and injects into the server factory. */
 export interface StudioServices {
   store: Store;
