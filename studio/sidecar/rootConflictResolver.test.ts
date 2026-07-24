@@ -82,24 +82,32 @@ async function makeConflictedRoot(): Promise<{ repo: string; origin: string }> {
   return { repo, origin };
 }
 
-/** A resolver wired to fakes for dispatch/resolving/publish, plus real git against `repo`. */
+/** A resolver wired to fakes for dispatch/resolving/publish, plus real git against `repo`. abortRoot
+ *  mirrors gitStatus.abortRoot()'s git-facing half (that service's own resolvingRoot/schedule
+ *  bookkeeping is gitStatus.test.ts's concern, not this one). */
 function makeResolver(repo: string) {
   const setResolvingCalls: boolean[] = [];
   const published: ServerMessage[] = [];
+  const gitRunner = createGitRunner();
   let nextId = 0;
   const dispatchSystemPrompt = vi.fn(async (_input: { path: string; text: string }) => ({
     promptId: `p${nextId++}`,
     dispatched: true,
   }));
+  const abortRoot = vi.fn(async () => {
+    const res = await gitRunner.git(["rebase", "--abort"], { cwd: repo });
+    return res.code === 0 ? { ok: true as const } : { ok: false as const, error: res.stderr.trim() || `exit ${res.code}` };
+  });
   const resolver = createRootConflictResolver({
-    git: createGitRunner(),
+    git: gitRunner,
     rootWorktreePath: repo,
     sessionBranch: "main",
     dispatchSystemPrompt,
     setResolving: (resolving) => setResolvingCalls.push(resolving),
     publish: (msg) => published.push(msg),
+    abortRoot,
   });
-  return { resolver, setResolvingCalls, published, dispatchSystemPrompt };
+  return { resolver, setResolvingCalls, published, dispatchSystemPrompt, abortRoot };
 }
 
 describe("createRootConflictResolver", () => {
@@ -167,7 +175,7 @@ describe("createRootConflictResolver", () => {
     const c = await makeConflictedRoot();
     repo = c.repo;
     origin = c.origin;
-    const { resolver, setResolvingCalls, dispatchSystemPrompt } = makeResolver(c.repo);
+    const { resolver, setResolvingCalls, dispatchSystemPrompt, abortRoot } = makeResolver(c.repo);
 
     resolver.onConflict(["astro.config.mjs"]);
     await flush();
@@ -185,6 +193,7 @@ describe("createRootConflictResolver", () => {
     await resolver.onTurnEnd("p1");
 
     expect(dispatchSystemPrompt).toHaveBeenCalledTimes(2);
+    expect(abortRoot).toHaveBeenCalledTimes(1); // routed through gitStatus's own F6, not a separate call site.
     expect(git(["status", "--porcelain"], c.repo).trim()).toBe(""); // aborted back to the pre-rebase tip.
     expect(git(["symbolic-ref", "--short", "HEAD"], c.repo).trim()).toBe("main"); // no longer detached mid-rebase.
 
@@ -203,6 +212,7 @@ describe("createRootConflictResolver", () => {
     // A transient spawn failure (the same class gitRunner.run() already retries at its own layer,
     // but a caller must still survive one slipping through rather than crashing the sidecar).
     const gitSpy = vi.spyOn(gitRunner, "git").mockRejectedValueOnce(new Error("spawn git ENOENT"));
+    const abortRoot = vi.fn(async () => ({ ok: true as const }));
     const resolver = createRootConflictResolver({
       git: gitRunner,
       rootWorktreePath: c.repo,
@@ -210,6 +220,7 @@ describe("createRootConflictResolver", () => {
       dispatchSystemPrompt,
       setResolving: (resolving) => setResolvingCalls.push(resolving),
       publish: () => {},
+      abortRoot,
     });
 
     resolver.onConflict(["astro.config.mjs"]);
@@ -219,6 +230,7 @@ describe("createRootConflictResolver", () => {
 
     expect(setResolvingCalls).toEqual([true, false]); // cleared before the git calls, as always.
     expect(gitSpy).toHaveBeenCalledTimes(1); // rejected on the very first call; nothing after it ran.
+    expect(abortRoot).not.toHaveBeenCalled(); // never reached: the rejection short-circuits first.
   });
 });
 
@@ -255,6 +267,7 @@ describe("createRootConflictResolver against a real agentHost (root-target dispa
       dispatchSystemPrompt: (input) => agentHost.dispatchSystemPrompt(input),
       setResolving: (resolving) => setResolvingCalls.push(resolving),
       publish: (msg) => published.push(msg),
+      abortRoot: () => Promise.resolve({ ok: true }), // never reached: onTurnEnd isn't exercised here.
     });
 
     resolver.onConflict(["astro.config.mjs"]);

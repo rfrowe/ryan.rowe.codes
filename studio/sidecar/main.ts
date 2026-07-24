@@ -205,6 +205,7 @@ async function main(): Promise<void> {
     dispatchSystemPrompt: (input) => agentHost.dispatchSystemPrompt(input),
     setResolving: (resolving) => gitStatus.setResolvingRoot(resolving),
     publish: (msg) => store.publish(msg),
+    abortRoot: () => gitStatus.abortRoot(),
   });
   rootConflictResolverBox.current = rootConflictResolver;
 
