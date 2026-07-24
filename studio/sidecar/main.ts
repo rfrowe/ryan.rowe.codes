@@ -33,6 +33,7 @@ import { createMdxLspServer } from "./lspServer";
 import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
 import { copyWorktreeIncludes } from "./worktreeInclude";
+import { logUncaughtExceptionAndShutdown, logUnhandledRejection } from "./processGuards";
 import type { ConflictResolverService, StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
@@ -255,6 +256,11 @@ async function main(): Promise<void> {
   // A terminal close sends SIGHUP; shut down the same way so the Astro daemon stops gracefully
   // instead of being left orphaned.
   process.on("SIGHUP", () => void shutdown());
+  // A synchronous throw that escapes every try/catch (e.g. a raw event-emitter callback, not a
+  // promise chain) may have interrupted a mutation mid-way; Node's own guidance is that resuming
+  // isn't safe. Tear down through the same path SIGTERM uses, rather than a bare exit, so the Astro
+  // daemon and watchers still get closed instead of left orphaned.
+  process.on("uncaughtException", (err) => logUncaughtExceptionAndShutdown(err, shutdown));
 }
 
 /** Ensure `<worktree>/node_modules` symlinks to the repo's (worktrees are gitignored, no deps). */
@@ -470,17 +476,10 @@ async function loadSkillBody(skillPath: string): Promise<string> {
   }
 }
 
-// Defense in depth: a spawn failure or rejection that slips past a narrower guard (docSync's
-// watched-worktree git calls, an unguarded `void` fire-and-forget elsewhere) would otherwise take
-// the whole sidecar down over one bad call. This is a single local-authoring session, not a
-// multi-tenant service; losing the open posts and agent conversations to one hiccup is worse than
-// limping in a possibly degraded state, so log loudly and stay up rather than exit.
-process.on("uncaughtException", (err) => {
-  console.error("[sidecar] uncaughtException (studio stays up):", err);
-});
-process.on("unhandledRejection", (reason) => {
-  console.error("[sidecar] unhandledRejection (studio stays up):", reason);
-});
+// Registered before main() runs anything, not inside it alongside uncaughtException: that handler
+// needs shutdown() to exist first, but a rejection during bootstrap (before shutdown is defined)
+// deserves the same "log and keep going" treatment as one later, not a gap in coverage.
+process.on("unhandledRejection", logUnhandledRejection);
 
 main().catch((err: unknown) => {
   console.error("[sidecar] fatal:", err);
