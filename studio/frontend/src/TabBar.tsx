@@ -268,6 +268,8 @@ export function TabBar({
             {git.primary.worktree && (
               <span className="statuspop__titleref" title={`${git.primary.ref} · ${git.primary.worktree}`}>
                 {git.primary.ref}
+                {/* Detached HEAD already renders ref as the short sha; don't repeat it. */}
+                {git.primary.headSha !== git.primary.ref && ` · ${git.primary.headSha}`}
               </span>
             )}
           </div>

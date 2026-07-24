@@ -35,7 +35,7 @@ function post(path: string, overrides: Partial<GitPostState> = {}): GitPostState
 
 function gitState(posts: GitPostState[], primaryOverrides: Partial<GitState["primary"]> = {}): GitState {
   return {
-    primary: { sessionBranch: "main", head: "main", rootMoved: false, ref: "origin/main", onOrigin: true, ahead: 0, behind: 0, worktree: "/repo", ...primaryOverrides },
+    primary: { sessionBranch: "main", head: "main", rootMoved: false, ref: "origin/main", headSha: "abc1234", onOrigin: true, ahead: 0, behind: 0, worktree: "/repo", ...primaryOverrides },
     posts,
     fetch: { inFlight: false, at: null },
   };

@@ -20,6 +20,10 @@ function git(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd });
 }
 
+function gitOut(args: string[], cwd: string): string {
+  return execFileSync("git", args, { cwd }).toString().trim();
+}
+
 /** A repo with `src/content/blog/` and one commit on `main`, ready for post/worktree operations. */
 async function makeRepo(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), "gitstatus-"));
@@ -477,5 +481,33 @@ describe("createGitStatusService — primary", () => {
     expect(state.primary.head).toBe("other");
     expect(state.primary.rootMoved).toBe(true);
     expect(state.primary).not.toHaveProperty("staleSession");
+  });
+
+  it("adds the root worktree HEAD's short sha", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+    const state = await service.snapshot();
+
+    expect(state.primary.headSha).toBe(gitOut(["rev-parse", "--short", "HEAD"], repo));
+  });
+
+  it("keeps the short sha current after HEAD moves", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+    const before = (await service.snapshot()).primary.headSha;
+
+    await writeFile(path.join(repo, "README.md"), "root, updated\n");
+    git(["add", "."], repo);
+    git(["commit", "-q", "-m", "second"], repo);
+
+    const after = (await service.snapshot()).primary.headSha;
+    expect(after).not.toBe(before);
+    expect(after).toBe(gitOut(["rev-parse", "--short", "HEAD"], repo));
   });
 });

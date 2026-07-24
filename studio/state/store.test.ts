@@ -303,7 +303,7 @@ describe("store.openPost (existing post)", () => {
 
 describe("store.getGitState / setGitState (git.state connect replay)", () => {
   const STATE: GitState = {
-    primary: { sessionBranch: "main", head: "main", rootMoved: false, ref: "origin/main", onOrigin: true, ahead: 0, behind: 0, worktree: REPO },
+    primary: { sessionBranch: "main", head: "main", rootMoved: false, ref: "origin/main", headSha: "abc1234", onOrigin: true, ahead: 0, behind: 0, worktree: REPO },
     posts: [],
     fetch: { inFlight: false, at: null },
   };

@@ -6,7 +6,7 @@ import type { GitPostState, GitPrimaryState, GitState, RebaseState } from "../..
 /** Seeds StudioState.git so first-paint/reconnect (before the first git.state lands) never reads
  *  `.primary` of null. */
 export const EMPTY_GIT: GitState = {
-  primary: { sessionBranch: "", head: "", rootMoved: false, ref: "", onOrigin: false, ahead: 0, behind: 0, worktree: "" },
+  primary: { sessionBranch: "", head: "", rootMoved: false, ref: "", headSha: "", onOrigin: false, ahead: 0, behind: 0, worktree: "" },
   posts: [],
   fetch: { inFlight: false, at: null },
 };
