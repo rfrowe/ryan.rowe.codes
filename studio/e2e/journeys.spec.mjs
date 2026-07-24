@@ -115,11 +115,14 @@ test("update an old remote draft whose base moved → conflict handed to the age
   gh.advanceMain({ "conflict.txt": "base\nroot-side change\n" }, "root: conflicting base change");
 
   // Pin Sonnet + low effort via the composer chips (only matters for the paid resolver turn) — the
-  // studio default is Opus 4.8; validate the flow on the cheapest capable model.
+  // studio default is Opus 4.8; validate the flow on the cheapest capable model. The chips' own
+  // rendered text is dynamic ("model: Opus 4.8", "effort: medium"), so their accessible name isn't
+  // the static "Model"/"Reasoning effort" label. getByTitle targets that static title attribute
+  // directly instead of relying on a role-name match against ever-changing button text.
   if (RUN_AGENT) {
-    await page.getByRole("button", { name: "Model" }).click();
+    await page.getByTitle("Model", { exact: true }).click();
     await page.getByText("Sonnet 5").click();
-    await page.getByRole("button", { name: "Reasoning effort" }).click();
+    await page.getByTitle("Reasoning effort", { exact: true }).click();
     await page.getByRole("dialog", { name: "Reasoning effort" }).getByText("low", { exact: true }).click();
   }
 
