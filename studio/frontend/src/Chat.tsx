@@ -258,7 +258,7 @@ function Composer({ connected }: { connected: boolean }) {
       <ComposerPrimitive.Input
         className="chat__input"
         placeholder={connected ? "Message the agent…" : "Disconnected — reconnecting…"}
-        submitMode="ctrlEnter"
+        submitMode="enter"
         minRows={3}
         maxRows={12}
         autoFocus
@@ -270,7 +270,7 @@ function Composer({ connected }: { connected: boolean }) {
         <ThreadPrimitive.If running>
           <ComposerPrimitive.Cancel className="btn btn--danger">Cancel</ComposerPrimitive.Cancel>
         </ThreadPrimitive.If>
-        <span className="chat__hint">⌘↵ to send</span>
+        <span className="chat__hint">↵ to send · Shift+↵ for a newline</span>
       </div>
     </ComposerPrimitive.Root>
   );
