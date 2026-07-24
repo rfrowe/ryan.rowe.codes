@@ -172,16 +172,24 @@ class EmbeddedAgentHost implements StudioAgentHost {
     );
   }
 
-  async dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string }> {
+  async dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string; dispatched: boolean }> {
     const promptId = randomUUID();
     // A regular prompt rejects outright when busy (single-threaded session); a system prompt queues
     // instead, since F3 already committed to this dispatch before the human's turn could be foreseen.
     if (this.current) {
       this.pendingSystemPrompt = { promptId, path: input.path, text: input.text };
-    } else {
-      void this.runSystemTurn(promptId, input.path, input.text);
+      return { promptId, dispatched: true };
     }
-    return { promptId };
+    // Checked here rather than solely inside runSystemTurn: runTurn/onTurnEnd never fires for a
+    // dispatch that never started, so a caller waiting on onTurnEnd to learn the outcome would wait
+    // forever. `dispatched: false` is the only signal this precondition failure ever gets.
+    const mismatch = this.targetMismatch(input.path);
+    if (mismatch) {
+      this.deps.emit({ type: "error", promptId, message: mismatch });
+      return { promptId, dispatched: false };
+    }
+    void this.runTurn(promptId, () => input.text);
+    return { promptId, dispatched: true };
   }
 
   cancel(promptId: string): void {
@@ -401,13 +409,21 @@ class EmbeddedAgentHost implements StudioAgentHost {
     return options;
   }
 
-  /** Runs a system-composed prompt if `path` is still the active post, else reports and bails. Always
-   *  reaches `onTurnEnd` (directly here, or via `runTurn`'s `finally`) so a caller tracking `promptId`
-   *  never waits on a turn that silently never started. */
-  private async runSystemTurn(promptId: string, path: string, text: string): Promise<void> {
+  /** Null if `path` is the active post's worktree, else the reason it isn't. */
+  private targetMismatch(path: string): string | null {
     const wt = this.deps.getActiveWorktree();
-    if (!wt || wt.canonicalPath !== path) {
-      this.deps.emit({ type: "error", promptId, message: `cannot dispatch: ${path} is not the active post` });
+    if (!wt || wt.canonicalPath !== path) return `cannot dispatch: ${path} is not the active post`;
+    return null;
+  }
+
+  /** Runs a system-composed prompt queued behind a prior turn, once that turn's `finally` drains it.
+   *  Unlike `dispatchSystemPrompt`'s own immediate-dispatch check, a mismatch here still reaches
+   *  `onTurnEnd`: the caller already got `dispatched: true` back when this was first queued, so
+   *  `onTurnEnd` is the only signal left for it. */
+  private async runSystemTurn(promptId: string, path: string, text: string): Promise<void> {
+    const mismatch = this.targetMismatch(path);
+    if (mismatch) {
+      this.deps.emit({ type: "error", promptId, message: mismatch });
       this.deps.onTurnEnd?.(promptId);
       return;
     }

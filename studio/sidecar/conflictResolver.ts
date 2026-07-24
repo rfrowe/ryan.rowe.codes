@@ -15,7 +15,7 @@ export interface ConflictResolverDeps {
   /** The branch every post rebases onto; named in the composed prompt. */
   sessionBranch: string;
   getWorktreeFor: (canonicalPath: string) => { worktreePath: string } | null;
-  dispatchSystemPrompt: (input: { path: string; text: string }) => Promise<{ promptId: string }>;
+  dispatchSystemPrompt: (input: { path: string; text: string }) => Promise<{ promptId: string; dispatched: boolean }>;
   setResolving: (stem: string, resolving: boolean) => void;
   publish: (msg: ServerMessage) => void;
 }
@@ -49,7 +49,14 @@ export function createConflictResolver(deps: ConflictResolverDeps): ConflictReso
     setResolving(stem, true);
     const text = composePrompt(sessionBranch, conflictedFiles, attempts > 0);
     dispatchSystemPrompt({ path, text })
-      .then(({ promptId }) => {
+      .then(({ promptId, dispatched }) => {
+        // A turn that never started never reaches onTurnEnd either, so this .then is the only place
+        // that ever hears about it: clear resolving here instead of registering a dead episode and
+        // publishing a bubble for a conversation that's never going to happen.
+        if (!dispatched) {
+          setResolving(stem, false);
+          return;
+        }
         episodes.set(promptId, { path, stem, attempts });
         publish({ type: "chat.injected", promptId, path, text, kind: "system" });
       })

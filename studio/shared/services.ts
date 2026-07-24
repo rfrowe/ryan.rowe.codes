@@ -35,8 +35,9 @@ export interface AgentHost {
   prompt(input: { promptId: string; text: string; context: PromptContext }): Promise<void>;
   resolveDirective(input: { promptId: string; path: string; range: Range; instruction: string }): Promise<void>;
   /** Server-composed prompt (F4's conflict-resolution dispatch): mints its own promptId and queues
-   *  behind an in-flight turn rather than rejecting. `path` must be the active post. */
-  dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string }>;
+   *  behind an in-flight turn rather than rejecting. `path` must be the active post; `dispatched:false`
+   *  means it never started (the caller won't see an `onTurnEnd` for this promptId either). */
+  dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string; dispatched: boolean }>;
   cancel(promptId: string): void;
 }
 

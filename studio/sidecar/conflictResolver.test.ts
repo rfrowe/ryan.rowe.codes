@@ -11,10 +11,12 @@ import path from "node:path";
 
 import { createGitRunner } from "./gitRunner";
 import { createGitOpsService } from "./gitOps";
+import { createAgentHost } from "./agentHost";
 import { createConflictResolver } from "./conflictResolver";
 import { createStore } from "../state/store";
 import { nodeFs } from "./fsImpl";
 import type { ServerMessage } from "../shared/protocol";
+import type { ConflictResolverService, StudioTools } from "../shared/services";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd }).toString();
@@ -86,6 +88,7 @@ function makeResolver(wtPath: string, canonical: string) {
   let nextId = 0;
   const dispatchSystemPrompt = vi.fn(async (_input: { path: string; text: string }) => ({
     promptId: `p${nextId++}`,
+    dispatched: true,
   }));
   const resolver = createConflictResolver({
     git: createGitRunner(),
@@ -200,7 +203,7 @@ describe("createConflictResolver", () => {
     repo = c.repo;
     origin = c.origin;
     const setResolvingCalls: Array<[string, boolean]> = [];
-    const dispatchSystemPrompt = vi.fn(async () => ({ promptId: "p0" }));
+    const dispatchSystemPrompt = vi.fn(async () => ({ promptId: "p0", dispatched: true }));
     const gitRunner = createGitRunner();
     const gitSpy = vi.spyOn(gitRunner, "git");
     const resolver = createConflictResolver({
@@ -221,5 +224,46 @@ describe("createConflictResolver", () => {
       ["foo", false],
     ]);
     expect(gitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("createConflictResolver against a real agentHost (the fourth turn-end path)", () => {
+  // dispatchSystemPrompt's immediate-dispatch precondition check (the active post no longer matches
+  // the conflicted post) fails before any turn starts, so onTurnEnd is never called for it -- only
+  // dispatchSystemPrompt's own `dispatched: false` return tells the caller. A real agentHost proves
+  // the two are actually wired together correctly, not just that conflictResolver reacts properly to
+  // a fake shaped the way I assume the real one behaves.
+  it("clears resolving and never publishes a phantom bubble when the active post no longer matches", async () => {
+    const setResolvingCalls: Array<[string, boolean]> = [];
+    const published: ServerMessage[] = [];
+    // No active post at all, so every dispatch's precondition check fails. agentHost.onTurnEnd needs
+    // conflictResolver and conflictResolver needs agentHost.dispatchSystemPrompt; a box breaks the
+    // cycle, mirroring main.ts's own wiring of the two.
+    const conflictResolverBox: { current?: ConflictResolverService } = {};
+    const agentHost = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => null,
+      skillInstructions: "",
+      emit: () => {},
+      onTurnEnd: (promptId) => void conflictResolverBox.current?.onTurnEnd(promptId),
+    });
+    const conflictResolver = createConflictResolver({
+      git: createGitRunner(),
+      sessionBranch: "main",
+      getWorktreeFor: () => null,
+      dispatchSystemPrompt: (input) => agentHost.dispatchSystemPrompt(input),
+      setResolving: (stem, resolving) => setResolvingCalls.push([stem, resolving]),
+      publish: (msg) => published.push(msg),
+    });
+    conflictResolverBox.current = conflictResolver;
+
+    conflictResolver.onConflict("/repo/src/content/blog/foo.mdx", ["foo.mdx"]);
+    await new Promise((r) => setImmediate(r));
+
+    expect(setResolvingCalls).toEqual([
+      ["foo", true],
+      ["foo", false],
+    ]);
+    expect(published).toEqual([]); // no chat.injected bubble for a turn that never started.
   });
 });
