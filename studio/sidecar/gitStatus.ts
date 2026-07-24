@@ -15,7 +15,7 @@ import path from "node:path";
 import { realpath, stat } from "node:fs/promises";
 
 import type { GitRunner, GitWatcher } from "../shared/seams";
-import type { FetchResponse, GitPostState, GitPrimaryState, GitState, RebaseState, UpdateRootResponse } from "../shared/protocol";
+import type { FetchResponse, GitPostState, GitPrimaryState, GitState, RebaseAbortResponse, RebaseState, UpdateRootResponse } from "../shared/protocol";
 import type { StudioStore } from "../state/store";
 import { BLOG_CONTENT_DIR, originRefExists } from "./diffService";
 import { PINNED_EMAIL, PINNED_NAME, parseConflictedPaths } from "./gitOps";
@@ -48,10 +48,14 @@ export interface GitStatusService {
    *  the on-disk rebase-merge/rebase-apply marker looks identical either way; a rebase that isn't
    *  actually conflicted (marker gone) never shows "resolving" regardless of this flag. */
   setResolving(stem: string, resolving: boolean): void;
+  /** Same as setResolving, for the root's own F4 turn. */
+  setResolvingRoot(resolving: boolean): void;
   /** The explicit "Update root from origin" affordance: the deliberate counterpart to fetch's own
    *  reactive ff-only advance, for a genuine divergence that can't ff. `confirm` gates the rebase
    *  (see UpdateRootResponse); omitted or false just reports the divergence without mutating. */
   updateRoot(confirm: boolean): Promise<UpdateRootResponse>;
+  /** F6 for root: abort an in-progress root rebase, returning it to its pre-update tip. */
+  abortRoot(): Promise<RebaseAbortResponse>;
 }
 
 interface WorktreeEntry {
@@ -115,6 +119,9 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
   // Stems the F4 conflict resolver has an agent turn in flight for; overrides a conflicted rebase to
   // "resolving" in computePosts (see setResolving's own doc for why this can't be derived from git).
   const resolvingStems = new Set<string>();
+  // Same as resolvingStems, for the root's own F4 turn; a single flag since there's one root, not a
+  // per-post map.
+  let resolvingRoot = false;
 
   /** FETCH_HEAD's mtime (git.state.fetch.at): null before this repo has ever fetched. Read fresh
    *  every snapshot, not just after fetch(), so a prior session's fetch still shows on restart. */
@@ -170,7 +177,13 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
     // Display label for the root worktree's own branch, not the target-node label (always
     // sessionBranch): origin/<branch> when in sync with or behind origin, else the bare name.
     const ref = onOrigin && ahead === 0 ? `origin/${sessionBranch}` : head;
-    return { sessionBranch, head, rootMoved: head !== sessionBranch, ref, headSha, onOrigin, ahead, behind, worktree: repoRoot };
+    // computeRebaseState reads a worktree's own rebase-merge/rebase-apply markers, which are
+    // per-worktree administrative files -- reading it against repoRoot is exactly the root's own
+    // rebase state, distinct from any linked post worktree sharing the same common .git.
+    const computedRebase = await computeRebaseState(repoRoot);
+    const rebase: RebaseState =
+      computedRebase.phase === "conflicted" && resolvingRoot ? { ...computedRebase, phase: "resolving" } : computedRebase;
+    return { sessionBranch, head, rootMoved: head !== sessionBranch, ref, headSha, onOrigin, ahead, behind, worktree: repoRoot, rebase };
   }
 
   async function computePosts(base: string): Promise<GitPostState[]> {
@@ -370,28 +383,42 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
         return { ok: true, result: "updated" };
       }
 
-      // A real conflict, or the rebase refusing to start for some other reason: the root has no agent
-      // session of its own to hand a conflict to (unlike a post's F4), so never leave it mid-rebase.
+      // A real conflict: hand off to F4 for root rather than aborting (mirrors gitOps.update()'s own
+      // "conflicted" result for a post). republish so rebase.phase reflects "conflicted" immediately;
+      // the caller dispatches the resolver, which flips it to "resolving" once its turn actually lands.
       const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: repoRoot });
       const conflictedFiles = parseConflictedPaths(statusRes.stdout);
+      if (conflictedFiles.length > 0) {
+        await recomputeAndPublish();
+        return { ok: true, result: "conflicted", conflictedFiles };
+      }
+      // The rebase failed to even start conflicted (no unmerged paths): nothing to hand off, so this
+      // is the same unrecoverable-refusal path as before -- abort so the root isn't left mid-rebase.
       const abortRes = await git.git(["rebase", "--abort"], { cwd: repoRoot });
       if (abortRes.code !== 0) {
-        // The abort itself failed: don't claim the root is unchanged when it might still be mid-rebase.
         return {
           ok: false,
-          error: `rebase onto origin/${sessionBranch} conflicted, and the recovery 'git rebase --abort' also failed (${abortRes.stderr.trim() || abortRes.stdout.trim() || `exit ${abortRes.code}`}). The root may still be mid-rebase; resolve manually.`,
-        };
-      }
-      if (conflictedFiles.length > 0) {
-        return {
-          ok: false,
-          error: `rebase onto origin/${sessionBranch} conflicted in: ${conflictedFiles.join(", ")}. Aborted, so the root is unchanged; resolve manually and try again.`,
+          error: `rebase onto origin/${sessionBranch} failed, and the recovery 'git rebase --abort' also failed (${abortRes.stderr.trim() || abortRes.stdout.trim() || `exit ${abortRes.code}`}). The root may still be mid-rebase; resolve manually.`,
         };
       }
       return { ok: false, error: `git rebase origin/${sessionBranch} failed: ${rebaseRes.stderr.trim() || rebaseRes.stdout.trim() || `exit ${rebaseRes.code}`}` };
     } finally {
       updatingRoot = false;
     }
+  }
+
+  /** F6 for root: abort an in-progress root rebase, returning it to its pre-update tip. The root's
+   *  own F4 resolver also auto-aborts once it exhausts its retry (see rootConflictResolver.ts), so
+   *  this is the human's way to bail out sooner, not the only thing standing between root and being
+   *  stranded mid-rebase. */
+  async function abortRoot(): Promise<RebaseAbortResponse> {
+    const res = await git.git(["rebase", "--abort"], { cwd: repoRoot });
+    if (res.code !== 0) {
+      return { ok: false, error: `git rebase --abort failed: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}` };
+    }
+    resolvingRoot = false;
+    schedule();
+    return { ok: true };
   }
 
   return {
@@ -406,6 +433,11 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
       else resolvingStems.delete(stem);
       schedule(); // no ref moves for this flag alone, so the doorbell won't republish on its own.
     },
+    setResolvingRoot(resolving) {
+      resolvingRoot = resolving;
+      schedule();
+    },
     updateRoot,
+    abortRoot,
   };
 }

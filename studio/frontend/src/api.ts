@@ -150,3 +150,9 @@ export async function rebaseAbort(path: string): Promise<RebaseAbortResponse> {
   });
   return asJson<RebaseAbortResponse>(res);
 }
+
+/** F6 for root: abort an in-progress root rebase, returning it to its pre-update tip. */
+export async function abortUpdateRoot(): Promise<RebaseAbortResponse> {
+  const res = await fetch(endpoint("/rebase-abort-root"), { method: "POST", headers: { ...authHeaders() } });
+  return asJson<RebaseAbortResponse>(res);
+}

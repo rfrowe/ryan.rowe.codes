@@ -6,7 +6,7 @@
 
 import type { GitRunner } from "../shared/seams";
 import type { RootConflictResolverService } from "../shared/services";
-import type { ServerMessage } from "../shared/protocol";
+import type { RebaseAbortResponse, ServerMessage } from "../shared/protocol";
 import { PINNED_EMAIL, PINNED_NAME, parseConflictedPaths } from "./gitOps";
 
 export interface RootConflictResolverDeps {
@@ -18,6 +18,9 @@ export interface RootConflictResolverDeps {
   dispatchSystemPrompt: (input: { path: string; text: string }) => Promise<{ promptId: string; dispatched: boolean }>;
   setResolving: (resolving: boolean) => void;
   publish: (msg: ServerMessage) => void;
+  /** gitStatus's own F6, reused here on retry exhaustion so the abort and its schedule()/resolvingRoot
+   *  bookkeeping live in one place instead of two separate `rebase --abort` call sites. */
+  abortRoot: () => Promise<RebaseAbortResponse>;
 }
 
 function composePrompt(sessionBranch: string, conflictedFiles: string[], retry: boolean): string {
@@ -27,15 +30,18 @@ function composePrompt(sessionBranch: string, conflictedFiles: string[], retry: 
     : `A rebase of the studio root onto origin/${sessionBranch} hit conflicts in: ${files}.`;
   return [
     intro,
+    // No human is watching this turn live, so narrating the reasoning only clutters the transcript
+    // for whoever reads it later; the resolution itself is the only useful output.
+    "Work silently: no reasoning or narration in chat text, only tool calls, until you're done.",
     "Resolve each conflict in the working tree, reconciling the root's local commits with the incoming base changes.",
     "Stage resolved files with `git add`.",
     "Do not commit and do not run `git rebase --continue`: the studio finishes the rebase once conflicts are cleared.",
-    "When done, briefly summarize what you reconciled.",
+    "When done, reply with only a terse, structured summary: one line per file as `<path>: <what you kept>`. No preamble, no restating the conflict, no closing remarks.",
   ].join(" ");
 }
 
 export function createRootConflictResolver(deps: RootConflictResolverDeps): RootConflictResolverService {
-  const { git, rootWorktreePath, sessionBranch, dispatchSystemPrompt, setResolving, publish } = deps;
+  const { git, rootWorktreePath, sessionBranch, dispatchSystemPrompt, setResolving, publish, abortRoot } = deps;
   // promptId to attempt count; onTurnEnd is a no-op for any promptId not in here. At most one entry:
   // the root has a single session, not a per-post map.
   const episodes = new Map<string, { attempts: number }>();
@@ -109,8 +115,15 @@ export function createRootConflictResolver(deps: RootConflictResolverDeps): Root
         dispatch(conflicted, attempts + 1);
         return;
       }
-      // Fall back: rebase reports conflicted again (the marker is still there, just no longer
-      // resolving); the human's way out from here is "Abort update" (F6).
+      // Exhausted the one retry: unlike a post (which has a human watching its own tab and a manual
+      // F6), the root has no session of its own to notice it's stuck, so never leave it mid-rebase.
+      // Abort automatically, restoring the pre-rebase tip; going through gitStatus's own abortRoot()
+      // (rather than a second `rebase --abort` call site here) keeps the schedule()/resolvingRoot
+      // bookkeeping in one place. A manual "Abort update" still exists for the human to bail out sooner.
+      const abortRes = await abortRoot();
+      if (!abortRes.ok) {
+        console.error(`[rootConflictResolver] auto-abort failed after exhausting retries: ${abortRes.error}`);
+      }
     } catch (err) {
       // The root worktree can't be removed out from under this the way a post's can, but a git call
       // can still reject (a transient spawn failure). resolving is already cleared, so fall back the
