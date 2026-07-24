@@ -124,7 +124,7 @@ test("update an old remote draft whose base moved → conflict handed to the age
     await page.getByTitle("Model", { exact: true }).click();
     await page.getByRole("dialog", { name: "Model" }).getByText("Sonnet 5").click();
     await page.getByTitle("Reasoning effort", { exact: true }).click();
-    await page.getByRole("dialog", { name: "Reasoning effort" }).getByText("low", { exact: true }).click();
+    await page.getByRole("dialog", { name: "Reasoning effort" }).locator(".effort__option-label", { hasText: "low" }).click();
   }
 
   // Fetch, adopt, and update the behind draft from ⌘P — the update conflicts.
@@ -180,7 +180,7 @@ test("update the studio root whose base moved → conflict handed to the root ag
     await page.getByTitle("Model", { exact: true }).click();
     await page.getByRole("dialog", { name: "Model" }).getByText("Sonnet 5").click();
     await page.getByTitle("Reasoning effort", { exact: true }).click();
-    await page.getByRole("dialog", { name: "Reasoning effort" }).getByText("low", { exact: true }).click();
+    await page.getByRole("dialog", { name: "Reasoning effort" }).locator(".effort__option-label", { hasText: "low" }).click();
   }
 
   // Fetch surfaces the divergence (git.primary.behind > 0), which is what gates the status popover's
