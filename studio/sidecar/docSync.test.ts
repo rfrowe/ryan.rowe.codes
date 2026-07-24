@@ -5,7 +5,7 @@
 // both flip directions and regardless of whether the new file is created before or after the old one
 // is removed.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -346,6 +346,77 @@ describe("docSync git-op classification", () => {
 
     await waitFor(() => reloadCalls.length > 1);
     expect(reloadCalls.every((c) => c.origin === "external")).toBe(true);
+  });
+});
+
+/** Wraps a real GitRunner so the Nth `rev-parse HEAD` call rejects (spawn failure) instead of
+ *  running, everything else passing through untouched. Simulates the watched worktree vanishing
+ *  out from under docSync's own git calls (an adopt/update racing a removal), not just a plain
+ *  non-zero exit code. */
+function rejectOnRevParse(real: GitRunner, rejectOn: Set<number>): GitRunner {
+  let seen = 0;
+  return {
+    async git(args, opts) {
+      if (args[0] === "rev-parse" && args[1] === "HEAD") {
+        seen += 1;
+        if (rejectOn.has(seen)) throw new Error("spawn git ENOENT");
+      }
+      return real.git(args, opts);
+    },
+    gh: real.gh,
+  };
+}
+
+describe("docSync survives a spawn failure against a removed worktree", () => {
+  let dir: string;
+  let sync: DocSync | null = null;
+  let unhandled: unknown[] = [];
+  const onUnhandled = (err: unknown) => unhandled.push(err);
+
+  beforeEach(() => {
+    unhandled = [];
+    process.on("unhandledRejection", onUnhandled);
+  });
+
+  afterEach(async () => {
+    process.off("unhandledRejection", onUnhandled);
+    await sync?.close();
+    sync = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  const STEM_FILE = "src/content/blog/2026-07-14_hello.mdx";
+
+  it("does not crash when the worktree is already gone at construction (seedHead's own rev-parse)", async () => {
+    dir = await makeRepo(STEM_FILE);
+    const filePath = path.join(dir, STEM_FILE);
+    const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
+    // The construction-time seedHead is the 1st rev-parse HEAD call: simulate it hitting a
+    // worktree removed between the retarget decision and this call actually running.
+    sync = createDocSync(store, { filePath, git: rejectOnRevParse(createGitRunner(), new Set([1])) });
+
+    await new Promise((r) => setTimeout(r, 100)); // let the rejected seedHead settle.
+    expect(unhandled).toEqual([]);
+
+    // No baseline landed, so the next real edit reads as external rather than misclassifying or hanging.
+    await writeFile(filePath, "v2\n");
+    await waitFor(() => reloadCalls.length > 0);
+    expect(reloadCalls.at(-1)?.origin).toBe("external");
+  });
+
+  it("does not crash when the worktree disappears between construction and the next classification", async () => {
+    dir = await makeRepo(STEM_FILE);
+    const filePath = path.join(dir, STEM_FILE);
+    const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
+    // Call 1 (construction's seedHead) succeeds normally, seeding a real baseline; call 2
+    // (classifyExternalOrigin, fired by the write below) hits the removed worktree instead.
+    sync = createDocSync(store, { filePath, git: rejectOnRevParse(createGitRunner(), new Set([2])) });
+    await new Promise((r) => setTimeout(r, 100)); // let the real seedHead land.
+
+    await writeFile(filePath, "v2\n");
+    await waitFor(() => reloadCalls.length > 0);
+    expect(unhandled).toEqual([]);
+    expect(reloadCalls.at(-1)?.origin).toBe("external");
   });
 });
 

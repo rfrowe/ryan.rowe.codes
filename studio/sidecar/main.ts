@@ -470,6 +470,18 @@ async function loadSkillBody(skillPath: string): Promise<string> {
   }
 }
 
+// Defense in depth: a spawn failure or rejection that slips past a narrower guard (docSync's
+// watched-worktree git calls, an unguarded `void` fire-and-forget elsewhere) would otherwise take
+// the whole sidecar down over one bad call. This is a single local-authoring session, not a
+// multi-tenant service; losing the open posts and agent conversations to one hiccup is worse than
+// limping in a possibly degraded state, so log loudly and stay up rather than exit.
+process.on("uncaughtException", (err) => {
+  console.error("[sidecar] uncaughtException (studio stays up):", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[sidecar] unhandledRejection (studio stays up):", reason);
+});
+
 main().catch((err: unknown) => {
   console.error("[sidecar] fatal:", err);
   process.exit(1);

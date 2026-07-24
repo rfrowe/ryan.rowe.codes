@@ -119,7 +119,16 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   async function seedHead(): Promise<void> {
     if (!git) return;
     const target = filePath; // snapshot: a retarget before this resolves must not let a stale seed win.
-    const res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(target) });
+    let res;
+    try {
+      res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(target) });
+    } catch (err) {
+      // The worktree can vanish between a retarget and this call actually running (an adopt racing
+      // a removal); a spawn failure here is the same "no baseline yet" case as a non-zero exit, not
+      // a reason to leave this promise rejected for whoever's holding `headReady`.
+      console.error(`[docSync] seedHead failed for ${target}:`, err instanceof Error ? err.message : err);
+      return;
+    }
     if (res.code === 0 && filePath === target) lastKnownHead = res.stdout.trim();
   }
   let headReady = seedHead();
@@ -135,7 +144,15 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
   async function classifyExternalOrigin(cwd: string): Promise<"external" | "git"> {
     if (!git) return "external";
     await headReady; // never classify against a baseline that hasn't landed yet.
-    const res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(cwd) });
+    let res;
+    try {
+      res = await git.git(["rev-parse", "HEAD"], { cwd: path.dirname(cwd) });
+    } catch (err) {
+      // Same spawn-failure class as seedHead's own guard: the worktree this file lives in is gone
+      // or mid-op, not a reason to reject a classification the caller is awaiting.
+      console.error(`[docSync] classifyExternalOrigin failed for ${cwd}:`, err instanceof Error ? err.message : err);
+      return "external";
+    }
     if (res.code !== 0) return "external"; // detached/unborn HEAD or a mid-op race; don't block on it.
     const head = res.stdout.trim();
     const moved = lastKnownHead !== null && head !== lastKnownHead;
