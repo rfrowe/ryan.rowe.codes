@@ -9,6 +9,7 @@ import type { SocketStatus } from "./ws";
 import { kebabSlug, slugFromPath } from "./slug";
 import { Lifebar } from "./Lifebar";
 import { selectPost, selectPushable, selectRebase, selectRootName, selectUncommitted, selectUpdatable } from "./gitSelectors";
+import { updateTriggerLabel } from "./turnSelectors";
 import { useCommand } from "./useCommand";
 import type { GitState } from "../../shared/protocol";
 
@@ -51,6 +52,13 @@ interface TabBarProps {
   stackStatus: StackComponent[];
   /** Every git fact, for each tab's lifebar and the right-click menu's push/revert gating. */
   git: GitState;
+  /** The single global turn latch and whether it's produced content yet, for the Update trigger's
+   *  Update/Updating…/Queued… label (see turnSelectors.updateTriggerLabel). */
+  turn: { promptId: string; path: string } | null;
+  turnStarted: boolean;
+  /** Paths with an Update REST call in flight, set the instant the trigger fires (before any server
+   *  round trip), so the trigger reads "Updating…" immediately rather than as a dead click. */
+  updatePending: Set<string>;
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onNewPost: () => void;
@@ -77,6 +85,9 @@ export function TabBar({
   status,
   stackStatus,
   git,
+  turn,
+  turnStarted,
+  updatePending,
   onSelect,
   onClose,
   onNewPost,
@@ -89,6 +100,10 @@ export function TabBar({
   onUpdate,
   onAbortUpdate,
 }: TabBarProps) {
+  /** This path's Update/Updating…/Queued… label, from its own rebase phase plus the shared turn latch. */
+  function updateLabel(path: string): ReturnType<typeof updateTriggerLabel> {
+    return updateTriggerLabel(selectRebase(git, path).phase, turn?.path === path, turnStarted, updatePending.has(path));
+  }
   // Path currently being renamed (any tab may enter rename mode via the menu; the active tab also
   // via double-click).
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -188,7 +203,9 @@ export function TabBar({
     chord: "mod+shift+u",
     label: "Update / Pull",
     group: "Git",
-    when: () => status === "open" && !!activePath && selectUpdatable(git, activePath),
+    // Not "Update" (i.e. already updating or queued) means the trigger already fired; a repeat
+    // ⌘⇧U must be a no-op rather than a dead click re-sending a duplicate request.
+    when: () => status === "open" && !!activePath && selectUpdatable(git, activePath) && updateLabel(activePath) === "Update",
     run: () => activePath && onUpdate(activePath),
   });
 
@@ -322,19 +339,25 @@ export function TabBar({
           >
             Rename…
           </button>
-          <button
-            type="button"
-            className="tabmenu__item"
-            role="menuitem"
-            disabled={!selectUpdatable(git, menu.path)}
-            title={selectUpdatable(git, menu.path) ? undefined : "Nothing to update — not behind, or a rebase is already in progress"}
-            onClick={() => {
-              onUpdate(menu.path);
-              setMenu(null);
-            }}
-          >
-            Update…
-          </button>
+          {(() => {
+            const label = updateLabel(menu.path);
+            const busy = label !== "Update";
+            return (
+              <button
+                type="button"
+                className="tabmenu__item"
+                role="menuitem"
+                disabled={busy || !selectUpdatable(git, menu.path)}
+                title={busy || selectUpdatable(git, menu.path) ? undefined : "Nothing to update — not behind, or a rebase is already in progress"}
+                onClick={() => {
+                  onUpdate(menu.path);
+                  setMenu(null);
+                }}
+              >
+                {label === "Update" ? "Update…" : label}
+              </button>
+            );
+          })()}
           {selectRebase(git, menu.path).phase !== "idle" && (
             <button
               type="button"

@@ -230,6 +230,53 @@ body {
   color: var(--warn);
 }
 
+/* Root-conflict banner (F4 for the root worktree): a status head plus a compact, height-capped
+   transcript, reusing .msg/.tool styling so it reads as the same conversation surface as a tab's chat. */
+.rootconflict {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.rootconflict__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+}
+.rootconflict__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--fg-faint);
+}
+.rootconflict__dot--resolving {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+.rootconflict__label {
+  font-size: 13px;
+  color: var(--fg);
+}
+.rootconflict__dismiss {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--fg-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rootconflict__dismiss:hover {
+  color: var(--fg);
+}
+.rootconflict__log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 0 14px 10px;
+}
+
 /* Transient, floating toast (reconnecting / dropped-send feedback). Fixed so it never
    shifts the layout; centered just below the tab bar. */
 .studio__notice {

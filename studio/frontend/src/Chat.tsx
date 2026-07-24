@@ -181,8 +181,9 @@ const ToolCard: ToolCallMessagePartComponent = ({ toolName, toolCallId, args, ar
 
 // Approve/deny card for a tool call the current mode won't auto-approve. Shown above the composer
 // while the turn waits on `canUseTool`. "Always allow" widens the session (or grants the folder for
-// an out-of-worktree edit) so the same call stops prompting.
-function PermissionCard({
+// an out-of-worktree edit) so the same call stops prompting. Exported for the root-conflict banner,
+// which has no composer/thread of its own but still needs to surface a permission request.
+export function PermissionCard({
   req,
   cwd,
   onPermission,
