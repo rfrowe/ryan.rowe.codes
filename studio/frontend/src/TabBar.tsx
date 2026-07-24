@@ -62,6 +62,9 @@ interface TabBarProps {
   /** Fetch from origin (`git fetch --prune`): refs only, global, updates every post's behind/incoming
    *  reactively via git.state. The spinner and "refs as of …" freshness read git.fetch, not a prop. */
   onFetch: () => void;
+  /** The explicit "Update root from origin" affordance, for when a fetch's own reactive ff-only
+   *  advance can't land (a genuine divergence). Shown in the status popover when primary.behind > 0. */
+  onUpdateRoot: () => void;
   /** Update/Pull (F3): fetch this post's base then rebase onto it. */
   onUpdate: (path: string) => void;
   /** Abort an in-progress rebase (F6), returning the post to its pre-update tip. */
@@ -82,6 +85,7 @@ export function TabBar({
   onRevert,
   onDelete,
   onFetch,
+  onUpdateRoot,
   onUpdate,
   onAbortUpdate,
 }: TabBarProps) {
@@ -273,6 +277,15 @@ export function TabBar({
               </span>
             )}
           </div>
+          {git.primary.behind > 0 && (
+            // fetchOrigin's own reactive ff-only advance already handles a clean advance; reaching
+            // here means the root has diverged, so this is the deliberate, confirmed path.
+            <button type="button" className="statuspop__row statuspop__row--action" onClick={onUpdateRoot}>
+              <span className="statuspop__dot statuspop__dot--down" aria-hidden="true" />
+              <span className="statuspop__label">{git.primary.behind} behind origin</span>
+              <span className="statuspop__state statuspop__state--action">Update root</span>
+            </button>
+          )}
           {stackStatus.map((c) => (
             <div
               className="statuspop__row"

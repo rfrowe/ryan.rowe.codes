@@ -14,6 +14,7 @@ import type {
   ShipRequest,
   ShipResponse,
   UpdateResponse,
+  UpdateRootResponse,
 } from "../../shared/protocol";
 import { REST_BASE, authHeaders } from "./config";
 
@@ -82,6 +83,17 @@ export async function ship(req: ShipRequest): Promise<ShipResponse> {
 export async function fetchRemote(): Promise<FetchResponse> {
   const res = await fetch(endpoint("/fetch"), { method: "POST", headers: { ...authHeaders() } });
   return asJson<FetchResponse>(res);
+}
+
+/** The explicit "Update root from origin" affordance: ff's the root when clean, else reports the
+ *  divergence (`confirm: false`) so the caller can re-request with `confirm: true` to rebase onto it. */
+export async function updateRoot(confirm: boolean): Promise<UpdateRootResponse> {
+  const res = await fetch(endpoint("/update-root"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ confirm }),
+  });
+  return asJson<UpdateRootResponse>(res);
 }
 
 /** Studio-run save-draft flow (commit + push the post's branch, no PR). Requires `confirm`. */

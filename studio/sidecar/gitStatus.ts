@@ -15,10 +15,10 @@ import path from "node:path";
 import { realpath, stat } from "node:fs/promises";
 
 import type { GitRunner, GitWatcher } from "../shared/seams";
-import type { FetchResponse, GitPostState, GitPrimaryState, GitState, RebaseState } from "../shared/protocol";
+import type { FetchResponse, GitPostState, GitPrimaryState, GitState, RebaseState, UpdateRootResponse } from "../shared/protocol";
 import type { StudioStore } from "../state/store";
 import { BLOG_CONTENT_DIR, originRefExists } from "./diffService";
-import { parseConflictedPaths } from "./gitOps";
+import { PINNED_EMAIL, PINNED_NAME, parseConflictedPaths } from "./gitOps";
 import { postStem } from "../shared/slug";
 
 // git fetch is the one place the sidecar reaches origin over the network; give it more headroom
@@ -48,6 +48,10 @@ export interface GitStatusService {
    *  the on-disk rebase-merge/rebase-apply marker looks identical either way; a rebase that isn't
    *  actually conflicted (marker gone) never shows "resolving" regardless of this flag. */
   setResolving(stem: string, resolving: boolean): void;
+  /** The explicit "Update root from origin" affordance: the deliberate counterpart to fetch's own
+   *  reactive ff-only advance, for a genuine divergence that can't ff. `confirm` gates the rebase
+   *  (see UpdateRootResponse); omitted or false just reports the divergence without mutating. */
+  updateRoot(confirm: boolean): Promise<UpdateRootResponse>;
 }
 
 interface WorktreeEntry {
@@ -103,6 +107,10 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
   // A fetch this service itself kicked off; guards against two overlapping `git fetch`s and backs
   // the button's spinner (git.state.fetch.inFlight) reactively, with no client-side flag needed.
   let inFlight = false;
+
+  // Guards a second updateRoot firing while one's still running: two concurrent git merge/rebase
+  // calls against the same worktree race on git's own ref locks (mirrors gitOps.ts's `updating` set).
+  let updatingRoot = false;
 
   // Stems the F4 conflict resolver has an agent turn in flight for; overrides a conflicted rebase to
   // "resolving" in computePosts (see setResolving's own doc for why this can't be derived from git).
@@ -279,6 +287,22 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
     });
   }
 
+  // Fast-forwards the local <root> onto a fresh origin/<sessionBranch>, so a post forked right after
+  // this never inherits a stale base. Only when it's safe: the root worktree must be checked out on
+  // sessionBranch itself (not rootMoved, not detached) and clean. Never touches a post branch, and
+  // never forces — a genuine divergence is left for the explicit "Update root from origin" affordance.
+  async function ffRoot(): Promise<void> {
+    const headRes = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot });
+    if (headRes.code !== 0 || headRes.stdout.trim() !== sessionBranch) return; // rootMoved or detached.
+    if (!(await originRefExists(git, repoRoot, sessionBranch))) return; // nothing to ff onto yet.
+    if (await computeUncommitted(repoRoot)) return; // dirty; don't risk touching the working tree.
+    const res = await git.git(["merge", "--ff-only", `origin/${sessionBranch}`], { cwd: repoRoot });
+    if (res.code !== 0) {
+      // A genuine divergence: the human's way out is the explicit "Update root from origin" affordance.
+      console.error(`[gitStatus] root ff-only failed: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}`);
+    }
+  }
+
   async function fetchOrigin(): Promise<FetchResponse> {
     if (inFlight) return { ok: true }; // already running; the caller's button/shortcut was a no-op.
     inFlight = true;
@@ -291,13 +315,83 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
       result = { ok: false, error: err instanceof Error ? err.message : "git fetch failed" };
     }
     inFlight = false;
+    if (result.ok) {
+      try {
+        await ffRoot();
+      } catch (err) {
+        console.error("[gitStatus] root ff-only failed:", err instanceof Error ? err.message : err);
+      }
+    }
     try {
-      await recomputeAndPublish(); // refs may have moved; every post's behind/incoming and `at` follow.
+      await recomputeAndPublish(); // refs (and now maybe the root itself) moved; behind/incoming/`at` follow.
     } catch (err) {
       // A failed recompute here must not mask the fetch's own result; log it instead (mirrors schedule()).
       console.error("[gitStatus] post-fetch recompute failed:", err instanceof Error ? err.message : err);
     }
     return result;
+  }
+
+  async function updateRoot(confirm: boolean): Promise<UpdateRootResponse> {
+    if (updatingRoot) return { ok: false, error: "an update is already in progress for the root" };
+    updatingRoot = true;
+    try {
+      const headRes = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot });
+      const headName = headRes.stdout.trim();
+      if (headRes.code !== 0 || headName !== sessionBranch) {
+        return { ok: false, error: `refusing to update: the root worktree is on "${headName || "a detached HEAD"}", expected "${sessionBranch}".` };
+      }
+      if (!(await originRefExists(git, repoRoot, sessionBranch))) {
+        return { ok: false, error: `refusing to update: origin/${sessionBranch} doesn't exist yet. Push it first.` };
+      }
+      if (await computeUncommitted(repoRoot)) {
+        return { ok: false, error: "refusing to update: the root worktree has uncommitted changes. Commit or discard them first." };
+      }
+
+      const beforeRes = await git.git(["rev-parse", "HEAD"], { cwd: repoRoot });
+      const ffRes = await git.git(["merge", "--ff-only", `origin/${sessionBranch}`], { cwd: repoRoot });
+      if (ffRes.code === 0) {
+        const afterRes = await git.git(["rev-parse", "HEAD"], { cwd: repoRoot });
+        await recomputeAndPublish();
+        return { ok: true, result: beforeRes.stdout.trim() === afterRes.stdout.trim() ? "up-to-date" : "updated" };
+      }
+
+      // Not a fast-forward: the root has its own commits origin doesn't have. Report the divergence
+      // rather than mutating anything, unless the client already confirmed replaying them onto origin.
+      const [behind, ahead] = await leftRightCount(git, repoRoot, `origin/${sessionBranch}`, "HEAD");
+      if (!confirm) {
+        return { ok: false, error: "diverged", behind, ahead };
+      }
+      const rebaseRes = await git.git(
+        ["-c", `user.name=${PINNED_NAME}`, "-c", `user.email=${PINNED_EMAIL}`, "rebase", `origin/${sessionBranch}`],
+        { cwd: repoRoot },
+      );
+      if (rebaseRes.code === 0) {
+        await recomputeAndPublish();
+        return { ok: true, result: "updated" };
+      }
+
+      // A real conflict, or the rebase refusing to start for some other reason: the root has no agent
+      // session of its own to hand a conflict to (unlike a post's F4), so never leave it mid-rebase.
+      const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd: repoRoot });
+      const conflictedFiles = parseConflictedPaths(statusRes.stdout);
+      const abortRes = await git.git(["rebase", "--abort"], { cwd: repoRoot });
+      if (abortRes.code !== 0) {
+        // The abort itself failed: don't claim the root is unchanged when it might still be mid-rebase.
+        return {
+          ok: false,
+          error: `rebase onto origin/${sessionBranch} conflicted, and the recovery 'git rebase --abort' also failed (${abortRes.stderr.trim() || abortRes.stdout.trim() || `exit ${abortRes.code}`}). The root may still be mid-rebase; resolve manually.`,
+        };
+      }
+      if (conflictedFiles.length > 0) {
+        return {
+          ok: false,
+          error: `rebase onto origin/${sessionBranch} conflicted in: ${conflictedFiles.join(", ")}. Aborted, so the root is unchanged; resolve manually and try again.`,
+        };
+      }
+      return { ok: false, error: `git rebase origin/${sessionBranch} failed: ${rebaseRes.stderr.trim() || rebaseRes.stdout.trim() || `exit ${rebaseRes.code}`}` };
+    } finally {
+      updatingRoot = false;
+    }
   }
 
   return {
@@ -312,5 +406,6 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
       else resolvingStems.delete(stem);
       schedule(); // no ref moves for this flag alone, so the doorbell won't republish on its own.
     },
+    updateRoot,
   };
 }

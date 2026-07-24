@@ -222,6 +222,7 @@ async function main(): Promise<void> {
     spaPort: SPA_PORT,
     lspConnect: (ws) => lspBridge.connect(ws),
     fetchRemote: () => gitStatus.fetch(),
+    updateRoot: (confirm) => gitStatus.updateRoot(confirm),
   });
   await web.listen();
   const mcp = createMcpHttpServer(tools, { token, instructions: conventions, port: MCP_PORT });

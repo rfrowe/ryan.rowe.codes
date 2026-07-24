@@ -37,6 +37,8 @@ import type {
   ShipResponse,
   UpdateRequest,
   UpdateResponse,
+  UpdateRootRequest,
+  UpdateRootResponse,
 } from "../shared/protocol";
 
 const HOST = process.env.STUDIO_BIND_HOST ?? "127.0.0.1";
@@ -65,6 +67,8 @@ export interface ServerOptions {
   lspConnect?: (ws: WebSocket) => void;
   /** Run `git fetch --prune origin` and republish git.state; backs `POST /fetch`. */
   fetchRemote?: () => Promise<FetchResponse>;
+  /** The explicit "Update root from origin" affordance; backs `POST /update-root`. */
+  updateRoot?: (confirm: boolean) => Promise<UpdateRootResponse>;
 }
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
@@ -223,6 +227,14 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         // behind/incoming reflects it. POST /update below is the per-post fetch-then-rebase.
         const result = (await opts.fetchRemote?.()) ?? { ok: false, error: "fetch is unavailable" };
         return sendJson(res, 200, result satisfies FetchResponse);
+      }
+
+      case "POST /update-root": {
+        // The deliberate counterpart to fetch's own reactive ff-only advance: ff's the root when
+        // clean, else reports the divergence so the client can confirm a rebase (never automatic).
+        const body = await readJson<UpdateRootRequest>(req);
+        const result = (await opts.updateRoot?.(body.confirm)) ?? { ok: false, error: "update-root is unavailable" };
+        return sendJson(res, 200, result satisfies UpdateRootResponse);
       }
 
       case "POST /update": {
