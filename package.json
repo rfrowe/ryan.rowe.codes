@@ -20,7 +20,8 @@
     "studio:sidecar": "tsx studio/sidecar/main.ts",
     "studio:ui": "vite --config studio/frontend/vite.config.ts",
     "studio:typecheck": "tsc -p studio/tsconfig.json --noEmit",
-    "studio:test": "vitest run --config studio/vitest.config.ts --passWithNoTests"
+    "studio:test": "vitest run --config studio/vitest.config.ts --passWithNoTests",
+    "studio:e2e": "playwright test --config studio/e2e/playwright.config.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.26",
@@ -55,6 +56,7 @@
     "@eslint/js": "^10.0.1",
     "@mdx-js/language-server": "0.6.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@playwright/test": "^1.61.1",
     "@types/diff": "^7.0.2",
     "@types/node": "^24",
     "@types/react": "^19.2.17",

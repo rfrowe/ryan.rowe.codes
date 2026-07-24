@@ -39,6 +39,10 @@ dist/
 .worktrees/
 studio/node_modules/
 
+# studio Playwright e2e artifacts
+studio/e2e/test-results/
+studio/e2e/playwright-report/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
