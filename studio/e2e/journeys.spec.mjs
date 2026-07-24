@@ -122,7 +122,7 @@ test("update an old remote draft whose base moved → conflict handed to the age
   // directly instead of relying on a role-name match against ever-changing button text.
   if (RUN_AGENT) {
     await page.getByTitle("Model", { exact: true }).click();
-    await page.getByText("Sonnet 5").click();
+    await page.getByRole("dialog", { name: "Model" }).getByText("Sonnet 5").click();
     await page.getByTitle("Reasoning effort", { exact: true }).click();
     await page.getByRole("dialog", { name: "Reasoning effort" }).getByText("low", { exact: true }).click();
   }
@@ -178,7 +178,7 @@ test("update the studio root whose base moved → conflict handed to the root ag
   // root's turn exactly as it would a post's).
   if (RUN_AGENT) {
     await page.getByTitle("Model", { exact: true }).click();
-    await page.getByText("Sonnet 5").click();
+    await page.getByRole("dialog", { name: "Model" }).getByText("Sonnet 5").click();
     await page.getByTitle("Reasoning effort", { exact: true }).click();
     await page.getByRole("dialog", { name: "Reasoning effort" }).getByText("low", { exact: true }).click();
   }
