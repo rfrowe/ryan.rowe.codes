@@ -1,0 +1,95 @@
+name: Integration
+
+# Studio UI end-to-end (studio/e2e): drives the real studio SPA in a headless browser against a booted
+# sidecar + isolated git sandbox, asserting on rendered UI + git ground truth. Runs in a node:24
+# container (the studio needs Node >= 24) with Playwright's chromium. Separate from the fast `check`
+# workflow so its heavier run never blocks lint/typecheck/build feedback.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Every PR and push: the deterministic UI journeys. The conflict journey's paid agent resolution is
+  # gated behind STUDIO_E2E_AGENT (unset here), so this never spends credits and never flakes on the
+  # model — it still asserts the conflict is handed to the agent (the system note + the conflicted tree).
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: node:24-bookworm
+    steps:
+      - name: Install git 🔧
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install dependencies 📦
+        run: npm ci
+      - name: Install Playwright chromium 🎭
+        run: npx playwright install --with-deps chromium
+      - name: Studio e2e — UI journeys 🧪
+        run: npm run studio:e2e
+      - name: Upload Playwright report 📄
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            studio/e2e/playwright-report
+            studio/e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Clean up sandboxes 🧹
+        if: always()
+        run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* || true
+
+  # The conflict journey's agent resolution drives a real, paid Claude turn (pinned to Sonnet + low
+  # effort), so it runs ONLY in trusted contexts — a push to main, or a maintainer's `integration-agent`
+  # label on a SAME-REPO PR (never a fork). The key step no-ops without the secret, and STUDIO_E2E_AGENT
+  # gates it, so money is only ever spent from prod or an explicit maintainer opt-in.
+  agent:
+    if: >-
+      ${{ github.event_name == 'push'
+          || (github.event_name == 'pull_request'
+              && github.event.pull_request.head.repo.full_name == github.repository
+              && contains(github.event.pull_request.labels.*.name, 'integration-agent')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: node:24-bookworm
+    steps:
+      - name: Install git 🔧
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install dependencies 📦
+        run: npm ci
+      - name: Install Playwright chromium 🎭
+        run: npx playwright install --with-deps chromium
+      - name: Provision agent key 🔑
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            printf '%s' "$ANTHROPIC_API_KEY" > /tmp/anthropic_key.txt
+            echo "agent key provisioned"
+          else
+            echo "no ANTHROPIC_API_KEY secret configured; the agent resolution will be skipped"
+          fi
+      - name: Studio e2e — agent conflict resolution 🤖
+        env:
+          STUDIO_E2E_AGENT: "1"
+        run: npm run studio:e2e -- -g conflict
+      - name: Clean up 🧹
+        if: always()
+        run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* /tmp/anthropic_key.txt || true
