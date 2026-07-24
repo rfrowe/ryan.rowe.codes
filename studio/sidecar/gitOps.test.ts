@@ -173,6 +173,48 @@ describe("createGitOpsService.update", () => {
     expect(third).toEqual({ ok: true, result: "up-to-date" });
   });
 
+  it("reports a clean failure instead of rejecting when a git call spawns against a removed worktree mid-update", async () => {
+    repo = await makeRepo();
+    origin = await makeOrigin(repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const created = await store.createPost({ title: "Foo", slug: "foo", headline: "h", created_at: "2026-07-10" });
+    if (!created.ok) throw new Error(created.error);
+    const wt = store.getWorktreeFor(created.path);
+    if (!wt) throw new Error("expected a worktree");
+    git(["add", "."], wt.worktreePath);
+    git(["commit", "-q", "-m", "first draft"], wt.worktreePath);
+
+    await writeFile(path.join(repo, "root-change.txt"), "x\n");
+    git(["add", "."], repo);
+    git(["commit", "-q", "-m", "root advances"], repo);
+    git(["push", "-q", "origin", "main"], repo);
+
+    // The "before" rev-parse HEAD, right after a successful fetch, is where a worktree removed out
+    // from under an in-flight update (a racing delete) would first surface: reject it like a genuine
+    // spawn ENOENT rather than a non-zero exit.
+    let seen = 0;
+    const flaky: GitRunner = {
+      async git(args, opts) {
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          seen += 1;
+          if (seen === 1) throw new Error("spawn git ENOENT");
+        }
+        return gitRunner.git(args, opts);
+      },
+      gh: gitRunner.gh,
+    };
+
+    const gitOps = createGitOpsService({ git: flaky, store, sessionBranch: "main" });
+    const result = await gitOps.update(created.path);
+    expect(result).toEqual({ ok: false, error: "git operation failed: spawn git ENOENT" });
+
+    // The in-flight guard clears on this failure path too, so a retry isn't refused forever.
+    const retry = await gitOps.update(created.path);
+    expect(retry).toEqual({ ok: true, result: "rebased" });
+  });
+
   it("leaves conflict markers and reports conflictedFiles on a real conflict", async () => {
     repo = await makeRepo();
     await mkdir(path.join(repo, "src", "content", "blog"), { recursive: true });
