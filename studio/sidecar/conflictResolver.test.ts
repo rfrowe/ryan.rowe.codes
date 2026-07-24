@@ -125,6 +125,10 @@ describe("createConflictResolver", () => {
     expect(call[0].path).toBe(c.canonical);
     expect(call[0].text).toContain("README.md");
     expect(call[0].text).toContain("origin/main");
+    // The agent runs with no human watching live, so the prompt must head off a narrated,
+    // paragraphs-long resolution in favor of a terse, structured one.
+    expect(call[0].text).toContain("Work silently");
+    expect(call[0].text).toContain("terse, structured summary");
     expect(setResolvingCalls).toEqual([["foo", true]]);
     expect(published).toEqual([{ type: "chat.injected", promptId: "p0", path: c.canonical, text: call[0].text, kind: "system" }]);
   });
