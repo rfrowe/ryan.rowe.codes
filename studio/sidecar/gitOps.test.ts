@@ -147,6 +147,32 @@ describe("createGitOpsService.update", () => {
     expect(git(["rev-parse", "HEAD"], wt.worktreePath).trim()).toBe(before);
   });
 
+  it("refuses a second update for the same post while the first is still running", async () => {
+    repo = await makeRepo();
+    origin = await makeOrigin(repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const created = await store.createPost({ title: "Foo", slug: "foo", headline: "h", created_at: "2026-07-10" });
+    if (!created.ok) throw new Error(created.error);
+    const wt = store.getWorktreeFor(created.path);
+    if (!wt) throw new Error("expected a worktree");
+    git(["add", "."], wt.worktreePath);
+    git(["commit", "-q", "-m", "first draft"], wt.worktreePath);
+
+    const gitOps = createGitOpsService({ git: gitRunner, store, sessionBranch: "main" });
+    // Fired back to back rather than one awaited before the other, so the second call's guard check
+    // genuinely races the first's in-flight run instead of trivially seeing a settled update().
+    const [first, second] = await Promise.all([gitOps.update(created.path), gitOps.update(created.path)]);
+
+    expect(first).toEqual({ ok: true, result: "up-to-date" });
+    expect(second).toEqual({ ok: false, error: "an update is already in progress for this post" });
+
+    // The guard clears once the first call finishes, so a later update isn't refused forever.
+    const third = await gitOps.update(created.path);
+    expect(third).toEqual({ ok: true, result: "up-to-date" });
+  });
+
   it("leaves conflict markers and reports conflictedFiles on a real conflict", async () => {
     repo = await makeRepo();
     await mkdir(path.join(repo, "src", "content", "blog"), { recursive: true });
