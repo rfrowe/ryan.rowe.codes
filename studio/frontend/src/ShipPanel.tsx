@@ -3,9 +3,10 @@
 // resulting PR URL, or the error on failure.
 
 import { useState } from "react";
-import type { GitState, ShipResponse } from "../../shared/protocol";
-import { ship } from "./api";
+import type { GitState, PushFailure, ShipResponse } from "../../shared/protocol";
+import { forcePushShip, ship } from "./api";
 import { DiffReviewSection, useDiffReview } from "./DiffReview";
+import { PushLossPreview } from "./PushLossPreview";
 import { ScopeSelector } from "./ScopeSelector";
 import { selectPost, selectRootName, selectShipBlocked } from "./gitSelectors";
 
@@ -23,7 +24,10 @@ interface ShipPanelProps {
   onClose: () => void;
 }
 
-type Phase = "editing" | "confirming" | "shipping" | "result";
+// F7's escalation ladder: a plain push rejected as diverged opens a loss-preview behind the same
+// modal shell instead of just failing; "loss-preview" offers --force-with-lease, and a stale lease
+// escalates once more to "raw-force-preview" for a bare --force.
+type Phase = "editing" | "confirming" | "shipping" | "loss-preview" | "force-pushing" | "raw-force-preview" | "raw-force-pushing" | "result";
 
 export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps) {
   const review = useDiffReview();
@@ -34,6 +38,7 @@ export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps
 
   const [phase, setPhase] = useState<Phase>("editing");
   const [result, setResult] = useState<ShipResponse | null>(null);
+  const [pushFailure, setPushFailure] = useState<PushFailure | null>(null);
 
   // Ship gate (F7): a real hard gate, not merely advisory. The sidecar re-checks this too, so
   // bypassing the disabled button still can't ship.
@@ -48,13 +53,38 @@ export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps
 
   async function doShip(): Promise<void> {
     setPhase("shipping");
+    let res: ShipResponse;
     try {
       // The sidecar ignores `branch`, but send the true value so the wire matches what happens.
-      const res = await ship({ branch: branch ?? "", subject: subject.trim(), body, scope, confirm: true });
-      setResult(res);
+      res = await ship({ branch: branch ?? "", subject: subject.trim(), body, scope, confirm: true });
     } catch (e: unknown) {
-      setResult({ ok: false, error: e instanceof Error ? e.message : "ship request failed", behind: undefined });
+      res = { ok: false, error: e instanceof Error ? e.message : "ship request failed", behind: undefined };
     }
+    if (!res.ok && res.behind === undefined && res.push?.reason === "non-ff") {
+      setPushFailure(res.push);
+      setPhase("loss-preview");
+      return;
+    }
+    setResult(res);
+    setPhase("result");
+  }
+
+  async function doForcePush(mode: "with-lease" | "raw"): Promise<void> {
+    setPhase(mode === "with-lease" ? "force-pushing" : "raw-force-pushing");
+    let res: ShipResponse;
+    try {
+      res = await forcePushShip({ mode, subject: subject.trim(), body, confirm: true });
+    } catch (e: unknown) {
+      res = { ok: false, error: e instanceof Error ? e.message : "force-push request failed", behind: undefined };
+    }
+    // --force-with-lease itself got rejected because the lease went stale; its own push field was
+    // just refreshed against the actual current remote, so escalate once more to raw --force.
+    if (mode === "with-lease" && !res.ok && res.behind === undefined && res.push?.reason === "stale-lease") {
+      setPushFailure(res.push);
+      setPhase("raw-force-preview");
+      return;
+    }
+    setResult(res);
     setPhase("result");
   }
 
@@ -67,7 +97,7 @@ export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps
 
       <DiffReviewSection review={review} emptyLabel="No changes to ship." />
 
-      {phase !== "result" && (
+      {(phase === "editing" || phase === "confirming" || phase === "shipping") && (
         <section className="ship__form">
           {!nameSync.synced && (
             <p className="ship__error">
@@ -96,6 +126,13 @@ export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps
         </section>
       )}
 
+      {(phase === "loss-preview" || phase === "force-pushing") && pushFailure && (
+        <PushLossPreview push={pushFailure} danger={false} />
+      )}
+      {(phase === "raw-force-preview" || phase === "raw-force-pushing") && pushFailure && (
+        <PushLossPreview push={pushFailure} danger={true} />
+      )}
+
       <footer className="ship__foot">
         {phase === "editing" && (
           <>
@@ -121,6 +158,28 @@ export function ShipPanel({ slug, path, git, nameSync, onClose }: ShipPanelProps
           </>
         )}
         {phase === "shipping" && <span className="ship__loading">Shipping… (branch, commit, push, PR)</span>}
+        {phase === "loss-preview" && (
+          <>
+            <button className="btn btn--ghost" onClick={() => setPhase("editing")}>
+              Cancel
+            </button>
+            <button className="btn btn--danger" onClick={() => void doForcePush("with-lease")}>
+              Force push
+            </button>
+          </>
+        )}
+        {phase === "force-pushing" && <span className="ship__loading">Force pushing…</span>}
+        {phase === "raw-force-preview" && (
+          <>
+            <button className="btn btn--ghost" onClick={() => setPhase("editing")}>
+              Cancel
+            </button>
+            <button className="btn btn--danger" onClick={() => void doForcePush("raw")}>
+              Force push anyway
+            </button>
+          </>
+        )}
+        {phase === "raw-force-pushing" && <span className="ship__loading">Force pushing…</span>}
         {phase === "result" && result && (
           <div className="ship__result">
             {result.ok ? (

@@ -6,10 +6,10 @@
 
 import type { GitRunner } from "../shared/seams";
 import type { OpenPrInput, OpenPrResult } from "../shared/mcpTools";
-import type { SaveDraftRequest, SaveDraftResponse } from "../shared/protocol";
+import type { SaveDraftForcePushRequest, SaveDraftRequest, SaveDraftResponse, ShipForcePushRequest } from "../shared/protocol";
 import type { ShipService } from "../shared/services";
 import type { ActiveWorktree } from "../state/store";
-import { BLOG_CONTENT_DIR, computeDiffAgainstRef, computeDivergence, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, stagePathsForScope, underBlog } from "./diffService";
+import { BLOG_CONTENT_DIR, buildPushFailure, computeDiffAgainstRef, computeDivergence, computeWorkingTreeDiff, countOutsideBlog, originRefExists, parseStatusPaths, stagePathsForScope, underBlog } from "./diffService";
 import { errorMessage } from "./errorMessage";
 import { cloudflarePreviewOrigin } from "../preview/cloudflare";
 import { deriveUrl } from "../preview/deriveUrl";
@@ -248,42 +248,123 @@ export function createShipService(deps: ShipDeps): ShipService {
       try {
         const pushRes = await git.git(["push", "-u", "origin", remoteBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
         if (pushRes.code !== 0) {
-          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)), behind: undefined };
+          const push = await buildPushFailure(git, cwd, remoteBranch, pushRes.stderr);
+          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)), behind: undefined, push };
         }
       } catch (e) {
         return { ok: false, error: pushFailedMessage(errorMessage(e)), behind: undefined };
       }
 
-      // Predict the post's own Cloudflare preview URL and append it to the PR body only (the commit
-      // message stays exactly what the author wrote). The branch alias tracks this branch's latest
-      // deploy, so the link goes live once Cloudflare finishes building it. deriveUrl reads the
-      // just-committed source so the path can't drift from the built route.
-      const previewUrl = await derivePreviewUrl(cwd, remoteBranch, wt.relPath);
-      const prBody = previewUrl
-        ? `${input.body.trim() ? `${input.body.trimEnd()}\n\n` : ""}Preview (live once Cloudflare finishes building this branch): ${previewUrl}`
-        : input.body;
+      return finishShip(cwd, base, remoteBranch, wt.relPath, input.subject, input.body);
+    } catch (e) {
+      return { ok: false, error: `ship failed: ${errorMessage(e)}`, behind: undefined };
+    }
+  }
 
-      // Create the PR. Partial failure here = branch pushed, but no PR yet.
-      try {
-        const prRes = await git.gh(
-          ["pr", "create", "--base", base, "--head", remoteBranch, "--title", input.subject, "--body", prBody],
-          { cwd, timeoutMs: NETWORK_TIMEOUT_MS },
-        );
-        if (prRes.code !== 0) {
-          return { ok: false, error: prFailedMessage(remoteBranch, detail(prRes.stderr, prRes.code)), behind: undefined };
-        }
-        const prUrl = extractUrl(prRes.stdout);
-        if (!prUrl) {
-          return {
-            ok: false,
-            error: `gh pr create returned no PR URL (branch "${remoteBranch}" is pushed; verify with \`gh pr view\`)`,
-            behind: undefined,
-          };
-        }
-        return { ok: true, prUrl, previewUrl };
-      } catch (e) {
-        return { ok: false, error: prFailedMessage(remoteBranch, errorMessage(e)), behind: undefined };
+  /**
+   * Predict the post's own Cloudflare preview URL, append it to the PR body only (the commit
+   * message stays exactly what the author wrote), and open the PR. Runs once the branch is already
+   * pushed, whichever way it got there, so both {@link openPr}'s own push and its force-push
+   * escalation ({@link forcePushShip}) finish the same way.
+   */
+  async function finishShip(
+    cwd: string,
+    base: string,
+    remoteBranch: string,
+    relPath: string,
+    subject: string,
+    body: string,
+  ): Promise<OpenPrResult> {
+    // The branch alias tracks this branch's latest deploy, so the link goes live once Cloudflare
+    // finishes building it. deriveUrl reads the just-committed source so the path can't drift from
+    // the built route.
+    const previewUrl = await derivePreviewUrl(cwd, remoteBranch, relPath);
+    const prBody = previewUrl
+      ? `${body.trim() ? `${body.trimEnd()}\n\n` : ""}Preview (live once Cloudflare finishes building this branch): ${previewUrl}`
+      : body;
+
+    // Create the PR. Partial failure here = branch pushed, but no PR yet.
+    try {
+      const prRes = await git.gh(
+        ["pr", "create", "--base", base, "--head", remoteBranch, "--title", subject, "--body", prBody],
+        { cwd, timeoutMs: NETWORK_TIMEOUT_MS },
+      );
+      if (prRes.code !== 0) {
+        return { ok: false, error: prFailedMessage(remoteBranch, detail(prRes.stderr, prRes.code)), behind: undefined };
       }
+      const prUrl = extractUrl(prRes.stdout);
+      if (!prUrl) {
+        return {
+          ok: false,
+          error: `gh pr create returned no PR URL (branch "${remoteBranch}" is pushed; verify with \`gh pr view\`)`,
+          behind: undefined,
+        };
+      }
+      return { ok: true, prUrl, previewUrl };
+    } catch (e) {
+      return { ok: false, error: prFailedMessage(remoteBranch, errorMessage(e)), behind: undefined };
+    }
+  }
+
+  /**
+   * Escalation for a ship push rejected as diverged (F7's loss-preview ladder): the commit from the
+   * original ShipRequest already exists on the worktree's branch, so this only redoes the push
+   * (`--force-with-lease`, or bare `--force` once a stale lease rules that out too) and, on success,
+   * finishes ship's own tail. `subject`/`body` are resent rather than re-read off HEAD, so the PR
+   * always reflects exactly what the human confirmed. REST-only: the agent's open_pr tool has no
+   * path to this method, so a force-push can never be agent-triggered.
+   */
+  async function forcePushShip(input: ShipForcePushRequest): Promise<OpenPrResult> {
+    if (!input.confirm) {
+      return { ok: false, error: "confirmation required", behind: undefined };
+    }
+    const wt = getActiveWorktree();
+    if (!wt) {
+      return { ok: false, error: "no active post to ship", behind: undefined };
+    }
+    const cwd = wt.worktreePath;
+
+    try {
+      const headRes = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
+      if (headRes.code !== 0) {
+        return fail("git rev-parse --abbrev-ref HEAD", headRes.stderr, headRes.code);
+      }
+      const head = headRes.stdout.trim();
+      if (head !== wt.branch) {
+        return {
+          ok: false,
+          error: `refusing to ship: the worktree is on "${head}", expected the post's branch "${wt.branch}".`,
+          behind: undefined,
+        };
+      }
+
+      // Re-assert the identity of the commit this is about to force onto origin (mirrors openPr;
+      // the worktree could in principle have moved between the rejected push and this retry).
+      const authorRes = await git.git(["log", "-1", "--format=%an <%ae>"], { cwd });
+      const author = authorRes.stdout.trim();
+      if (author !== PINNED_IDENTITY) {
+        return {
+          ok: false,
+          error:
+            `identity assertion failed: HEAD is authored by "${author}", expected "${PINNED_IDENTITY}". ` +
+            `The commit was NOT pushed.`,
+          behind: undefined,
+        };
+      }
+
+      const remoteBranch = wt.branch;
+      const forceFlag = input.mode === "raw" ? "--force" : "--force-with-lease";
+      try {
+        const pushRes = await git.git(["push", forceFlag, "-u", "origin", remoteBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
+        if (pushRes.code !== 0) {
+          const push = await buildPushFailure(git, cwd, remoteBranch, pushRes.stderr);
+          return { ok: false, error: pushFailedMessage(detail(pushRes.stderr, pushRes.code)), behind: undefined, push };
+        }
+      } catch (e) {
+        return { ok: false, error: pushFailedMessage(errorMessage(e)), behind: undefined };
+      }
+
+      return finishShip(cwd, sessionBranch, remoteBranch, wt.relPath, input.subject, input.body);
     } catch (e) {
       return { ok: false, error: `ship failed: ${errorMessage(e)}`, behind: undefined };
     }
@@ -388,7 +469,8 @@ export function createShipService(deps: ShipDeps): ShipService {
       try {
         const pushRes = await git.git(["push", "-u", "origin", wt.branch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
         if (pushRes.code !== 0) {
-          return { ok: false, error: savePushFailedMessage(committed, detail(pushRes.stderr, pushRes.code)) };
+          const push = await buildPushFailure(git, cwd, wt.branch, pushRes.stderr);
+          return { ok: false, error: savePushFailedMessage(committed, detail(pushRes.stderr, pushRes.code)), push };
         }
       } catch (e) {
         return { ok: false, error: savePushFailedMessage(committed, errorMessage(e)) };
@@ -399,7 +481,64 @@ export function createShipService(deps: ShipDeps): ShipService {
     }
   }
 
-  return { diff, openPr, saveDraft };
+  /**
+   * Escalation for a save-draft push rejected as diverged: the commit (if any) from the original
+   * SaveDraftRequest already exists on the branch, so this only redoes the push, `--force-with-lease`
+   * or bare `--force` once a stale lease rules that out too. `path` targets the same post the
+   * original request did.
+   */
+  async function forcePushSaveDraft(input: SaveDraftForcePushRequest): Promise<SaveDraftResponse> {
+    if (!input.confirm) {
+      return { ok: false, error: "confirmation required" };
+    }
+    const wt = input.path ? getWorktreeFor(input.path) : getActiveWorktree();
+    if (!wt) {
+      return { ok: false, error: "no post to save" };
+    }
+    const cwd = wt.worktreePath;
+
+    try {
+      const headRes = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
+      if (headRes.code !== 0) {
+        return fail("git rev-parse --abbrev-ref HEAD", headRes.stderr, headRes.code);
+      }
+      const head = headRes.stdout.trim();
+      if (head !== wt.branch) {
+        return {
+          ok: false,
+          error: `refusing to save: the worktree is on "${head}", expected the post's branch "${wt.branch}".`,
+        };
+      }
+
+      // Re-assert the identity of the commit this is about to force onto origin (mirrors saveDraft).
+      const authorRes = await git.git(["log", "-1", "--format=%an <%ae>"], { cwd });
+      const author = authorRes.stdout.trim();
+      if (author !== PINNED_IDENTITY) {
+        return {
+          ok: false,
+          error:
+            `identity assertion failed: HEAD is authored by "${author}", expected "${PINNED_IDENTITY}". ` +
+            `The commit was NOT pushed.`,
+        };
+      }
+
+      const forceFlag = input.mode === "raw" ? "--force" : "--force-with-lease";
+      try {
+        const pushRes = await git.git(["push", forceFlag, "-u", "origin", wt.branch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
+        if (pushRes.code !== 0) {
+          const push = await buildPushFailure(git, cwd, wt.branch, pushRes.stderr);
+          return { ok: false, error: savePushFailedMessage(true, detail(pushRes.stderr, pushRes.code)), push };
+        }
+      } catch (e) {
+        return { ok: false, error: savePushFailedMessage(true, errorMessage(e)) };
+      }
+      return { ok: true, branch: wt.branch, committed: false, pushed: true, noop: false };
+    } catch (e) {
+      return { ok: false, error: `save draft failed: ${errorMessage(e)}` };
+    }
+  }
+
+  return { diff, openPr, saveDraft, forcePushShip, forcePushSaveDraft };
 }
 
 // ---- helpers ----

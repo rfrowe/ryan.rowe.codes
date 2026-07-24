@@ -219,6 +219,19 @@ export interface PostsResponse {
   posts: PostSummaryDTO[];
 }
 
+// Why a plain `git push` was rejected, so a diverged branch (the human's own rebase leaving the
+// remote behind) can be told apart from a failure force can't fix. Populated with a real preview
+// only for "non-ff"/"stale-lease" -- forcing past an auth or network failure wouldn't help, so
+// there's nothing to discard and nothing to show.
+export type PushFailureReason = "non-ff" | "stale-lease" | "auth" | "network" | "other";
+export interface PushFailure {
+  reason: PushFailureReason;
+  /** Commits reachable from the remote's current tip but not the local one: what a force would
+   *  discard. Empty unless `reason` is "non-ff" or "stale-lease". */
+  remoteOnlyCommits: string[];
+  diff: string;
+}
+
 export interface ShipRequest {
   branch: string;
   subject: string;
@@ -228,10 +241,24 @@ export interface ShipRequest {
 }
 export type ShipResponse =
   | { ok: true; prUrl: string; previewUrl?: string }
-  | { ok: false; error: string; violations?: string[]; behind: undefined }
+  | { ok: false; error: string; violations?: string[]; behind: undefined; push?: PushFailure }
   // Ship gate (F7): the post is behind origin/<sessionBranch>. A structured error, not a message, so
   // the client can point at Update (F3) instead of just displaying text.
   | { ok: false; error: "behind"; behind: number; violations?: undefined };
+
+// Escalates a ship push that came back `push.reason === "non-ff" | "stale-lease"`: the commit from
+// the original ShipRequest already exists, so this only redoes the push, then (on success) finishes
+// ship's own tail (preview URL, PR create) exactly like a normal ShipRequest would have. `subject`/
+// `body` are resent rather than re-read off the existing commit, so the PR always reflects exactly
+// what the human last saw in the panel. REST-only: never reachable from the agent's open_pr tool, so
+// a force-push (unlike an ordinary ship) can never be agent-triggered.
+export interface ShipForcePushRequest {
+  mode: "with-lease" | "raw";
+  subject: string;
+  body: string;
+  confirm: boolean;
+}
+export type ShipForcePushResponse = ShipResponse;
 
 // Persist a draft to origin without opening a PR: commit the post with the pinned identity and push
 // its `blog/<stem>` isolation branch, so the draft survives locally-detached (reopened as a remote
@@ -249,7 +276,17 @@ export interface SaveDraftRequest {
 // gets pushed); `noop` is true when the local branch already matched origin, so nothing was pushed.
 export type SaveDraftResponse =
   | { ok: true; branch: string; committed: boolean; pushed: boolean; noop: boolean }
-  | { ok: false; error: string };
+  | { ok: false; error: string; push?: PushFailure };
+
+// Escalates a save-draft push that came back `push.reason === "non-ff" | "stale-lease"`: the commit
+// (if any) from the original SaveDraftRequest already exists, so this only redoes the push. `path`
+// targets the same post the original request did.
+export interface SaveDraftForcePushRequest {
+  path?: string;
+  mode: "with-lease" | "raw";
+  confirm: boolean;
+}
+export type SaveDraftForcePushResponse = SaveDraftResponse;
 
 // Result of the persistent git-fetch button: the global refs-only `git fetch --prune origin`, after
 // which the sidecar republishes git.state so every post's behind/incoming reflects the newly-fetched

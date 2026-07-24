@@ -4,8 +4,12 @@
 // unrelated new file would otherwise show an empty diff yet still get staged/reverted/destroyed).
 
 import type { GitRunner } from "../shared/seams";
+import type { PushFailure, PushFailureReason } from "../shared/protocol";
 
 export type DiffScope = "post" | "all";
+
+// Network round-trips (the fetch a stale/rejected push preview needs) get more headroom than local ops.
+const NETWORK_TIMEOUT_MS = 120_000;
 
 // The only paths ship/save-draft ever stage; the only paths a `scope: "post"` op ever touches.
 export const BLOG_CONTENT_DIR = "src/content/blog";
@@ -171,4 +175,53 @@ async function resolveMergeBase(git: GitRunner, cwd: string, ref: string): Promi
   const res = await git.git(["merge-base", ref, "HEAD"], { cwd });
   const sha = res.stdout.trim();
   return res.code === 0 && sha.length > 0 ? sha : null;
+}
+
+/** Classify a rejected `git push`'s stderr, so ship/save-draft's escalation ladder can tell a
+ *  divergence force can fix from one it can't. "stale info" (a `--force-with-lease` rejection) is
+ *  checked before the generic reject patterns, since its line also contains "rejected". */
+export function classifyPushFailure(stderr: string): PushFailureReason {
+  const s = stderr.toLowerCase();
+  if (s.includes("stale info")) return "stale-lease";
+  if (s.includes("non-fast-forward") || s.includes("fetch first") || s.includes("rejected")) return "non-ff";
+  if (s.includes("authentication failed") || s.includes("permission") || s.includes("could not read username")) {
+    return "auth";
+  }
+  if (s.includes("could not resolve host") || s.includes("connection timed out") || s.includes("connection refused") || s.includes("could not read from remote repository")) {
+    return "network";
+  }
+  return "other";
+}
+
+/** What a force-push of `branch` would discard: commits reachable from `origin/<branch>` but not
+ *  HEAD, and their accumulated diff (`HEAD...origin/<branch>`, so drift already on the base before
+ *  this branch forked doesn't show up as loss). Empty when the remote-tracking ref is absent. */
+export async function computeForcePushLossPreview(
+  git: GitRunner,
+  cwd: string,
+  branch: string,
+): Promise<{ remoteOnlyCommits: string[]; diff: string }> {
+  if (!(await originRefExists(git, cwd, branch))) return { remoteOnlyCommits: [], diff: "" };
+  const logRes = await git.git(["log", "--format=%h %s", `HEAD..origin/${branch}`], { cwd });
+  const remoteOnlyCommits = logRes.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const diffRes = await git.git(["-c", "core.quotePath=false", "diff", "-M", `HEAD...origin/${branch}`], { cwd });
+  return { remoteOnlyCommits, diff: diffRes.stdout };
+}
+
+/**
+ * Classifies a rejected push and, for `non-ff`/`stale-lease` (the only reasons a force can fix),
+ * fetches the branch and previews what forcing would discard. A rejected push never updates the
+ * local remote-tracking ref itself, so without this fetch the preview (and a stale-lease's own
+ * escalation to raw `--force`) would show the remote as it stood before the push that just failed,
+ * not as it actually stands now. `auth`/`network`/`other` come back with an empty preview: forcing
+ * past them wouldn't help, so there's nothing to discard.
+ */
+export async function buildPushFailure(git: GitRunner, cwd: string, branch: string, stderr: string): Promise<PushFailure> {
+  const reason = classifyPushFailure(stderr);
+  if (reason !== "non-ff" && reason !== "stale-lease") {
+    return { reason, remoteOnlyCommits: [], diff: "" };
+  }
+  await git.git(["fetch", "origin", branch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
+  const { remoteOnlyCommits, diff } = await computeForcePushLossPreview(git, cwd, branch);
+  return { reason, remoteOnlyCommits, diff };
 }
