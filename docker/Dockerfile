@@ -1,7 +1,20 @@
-# Toolchain-only image for the blog authoring studio. It does not bake in a copy of the repo --
-# entrypoint.sh clones (or pulls) the real thing into a persistent volume at container start, so
-# restarting the container picks up new commits (including studio's own fixes) without an image
-# rebuild.
+# Toolchain image. The studio isn't baked in: entrypoint.sh clones/pulls origin/main into the
+# /data/repo volume and runs from there, so drafts + .worktrees outlive a recreate. What IS baked in is
+# a 64-byte content digest (content-hash stage) of the .dockerignore-filtered tree, so the image id --
+# and thus a deploy -- changes iff a meaningful file does (studio code, a post, config); ignored churn
+# (node_modules/.git/.astro) and empty commits are no-ops. On a change `compose up -d` recreates and
+# entrypoint.sh's pull brings it in. Context is the repo root; see docker-compose.yml + komodo builds.toml.
+
+# Digest the filtered tree by content -- sha256sum ignores mtime, so a fresh checkout's timestamps
+# don't perturb it: same content, same digest, cached, no redeploy. Only the digest is kept (below).
+FROM node:24-slim AS content-hash
+WORKDIR /src
+COPY . .
+RUN find . -type f -print0 \
+      | sort -z \
+      | xargs -0 sha256sum \
+      | sha256sum \
+      | cut -d ' ' -f1 > /content-hash
 
 FROM node:24-slim
 
@@ -23,8 +36,11 @@ RUN useradd --create-home --shell /bin/bash studio \
     && mkdir -p /data/repo \
     && chown studio:studio /data/repo
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Only the digest lands here -- it moves the image id (see header), never runs. Inspect with `cat`.
+COPY --from=content-hash /content-hash /etc/blog-studio-content
 
 ENV HOME=/home/studio \
     REPO_DIR=/data/repo \

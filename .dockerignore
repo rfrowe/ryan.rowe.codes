@@ -1,0 +1,13 @@
+# Context is the repo root; the content-hash stage digests this filtered tree to decide when a deploy
+# fires. Exclude the huge/regenerable/irrelevant -- .git most of all (it churns every commit; hashing
+# it would defeat "redeploy only on meaningful change"). node_modules is machine-specific too.
+node_modules
+**/node_modules
+.git
+.astro
+.worktrees
+.idea
+dist
+.env
+.env.*
+!.env.example

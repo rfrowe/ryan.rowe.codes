@@ -1,12 +1,14 @@
 # Local sanity check for the studio image -- `docker compose up --build` -- independent of the
 # real Traefik-fronted deployment. No Traefik labels, no external network: just published ports on
-# localhost and two named volumes. A separate, Portainer-managed stack (outside this repo) builds
-# from the same docker/ context and mirrors this env contract, with its own Traefik labels/network/
-# volumes and real STUDIO_HOST_*/STUDIO_PROTOCOL values in place of the commented-out block below.
+# localhost and two named volumes. A separate, Komodo-managed stack (outside this repo) builds from
+# the same repo-root context / docker/Dockerfile and mirrors this env contract, with its own Traefik
+# labels/network/volumes and real STUDIO_HOST_*/STUDIO_PROTOCOL values in place of the block below.
 services:
   studio:
     build:
-      context: ./docker
+      # repo root -- the Dockerfile hashes the tree to detect changes (see docker/Dockerfile)
+      context: .
+      dockerfile: docker/Dockerfile
     ports:
       - "5199:5199" # SPA
       - "4319:4319" # sidecar (REST + WS)
