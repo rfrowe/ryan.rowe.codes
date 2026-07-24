@@ -1175,12 +1175,20 @@ body {
 .chat__actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 8px;
 }
 .chat__hint {
   font-size: 11px;
   color: var(--fg-faint);
+}
+/* Model + mode chips, pushed to the right edge of the actions row (ragged right). */
+.chat__selectors {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 
 /* ---- modal ---- */
@@ -2066,6 +2074,103 @@ body {
   font-size: 13px;
 }
 .mode__option-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+/* ---- model chip + popover (mirrors the mode chip) ---- */
+.model {
+  position: relative;
+}
+.model__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.model__chip:hover,
+.model__chip--open {
+  background: var(--bg-2);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.model__icon {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+/* Per-tier colour: gold Opus, blue Sonnet, green Haiku. */
+.model__icon--claude-opus-4-8 {
+  color: var(--warn);
+}
+.model__icon--claude-sonnet-5 {
+  color: var(--accent);
+}
+.model__icon--claude-haiku-4-5 {
+  color: var(--ok);
+}
+.model__popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: 264px;
+  padding: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  z-index: 60;
+}
+.model__popover-head {
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-faint);
+}
+.model__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.model__option:hover {
+  background: var(--bg-3);
+}
+.model__option--active {
+  border-color: var(--border-strong);
+}
+.model__option .model__icon {
+  margin-top: 2px;
+}
+.model__option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.model__option-label {
+  font-size: 13px;
+}
+.model__option-hint {
   font-size: 11px;
   color: var(--fg-faint);
 }

@@ -13,7 +13,8 @@ import type { HookInput, HookJSONOutput, Options, SDKMessage, SessionMessage } f
 
 import type { AgentHost, StudioTools } from "../shared/services";
 import type { PromptContext, ServerMessage, SessionHistoryItem, SessionHistoryTool } from "../shared/protocol";
-import type { PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
+import type { ClaudeModel, PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
+import { DEFAULT_MODEL } from "../shared/types";
 import type { ActiveWorktree } from "../state/store";
 import { STUDIO_MCP_SERVER_NAME, STUDIO_TOOL_WILDCARD } from "../shared/mcpTools";
 import { createInProcessMcp } from "../mcp/inProcess";
@@ -37,6 +38,8 @@ export interface AgentHostDeps {
   onTurnEnd?: (promptId: string) => void;
   /** Mode chip default; defaults to "auto". */
   defaultPermissionMode?: PermissionMode;
+  /** Model chip default; defaults to `DEFAULT_MODEL`. */
+  defaultModel?: ClaudeModel;
   /** Dirs editable beyond the worktree at launch; seeds the granted-dir set. */
   additionalDirectories?: string[];
   /** Seam over the SDK's `getSessionMessages` for testing; defaults to the real SDK call. */
@@ -51,6 +54,9 @@ export interface StudioAgentHost extends AgentHost {
   /** Set the mode for subsequent turns and broadcast the authoritative `mode.status`. */
   setPermissionMode(mode: PermissionMode): void;
   getPermissionMode(): PermissionMode;
+  /** Set the model for subsequent turns and broadcast the authoritative `model.status`. */
+  setModel(model: ClaudeModel): void;
+  getModel(): ClaudeModel;
   /** Resolve an in-flight `permission.request` with the human's decision. */
   resolvePermission(requestId: string, decision: PermissionDecision): void;
   /**
@@ -92,6 +98,8 @@ class EmbeddedAgentHost implements StudioAgentHost {
   private readonly disabledServers = new Set<string>();
   /** Applied to every turn's `query()`. */
   private currentMode: PermissionMode;
+  /** Model applied to every turn's `query()`. */
+  private currentModel: ClaudeModel;
   /** Dirs beyond the worktree edits may target without asking (grown via "always allow"). */
   private readonly grantedDirs: Set<string>;
   /** In-flight prompts: requestId to the resolver awaited inside `canUseTool`. */
@@ -103,6 +111,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
   constructor(deps: AgentHostDeps) {
     this.deps = deps;
     this.currentMode = deps.defaultPermissionMode ?? "auto";
+    this.currentModel = deps.defaultModel ?? DEFAULT_MODEL;
     this.grantedDirs = new Set(deps.additionalDirectories ?? []);
   }
 
@@ -228,6 +237,15 @@ class EmbeddedAgentHost implements StudioAgentHost {
 
   getPermissionMode(): PermissionMode {
     return this.currentMode;
+  }
+
+  setModel(model: ClaudeModel): void {
+    this.currentModel = model;
+    this.deps.emit({ type: "model.status", model });
+  }
+
+  getModel(): ClaudeModel {
+    return this.currentModel;
   }
 
   resolvePermission(requestId: string, decision: PermissionDecision): void {
@@ -366,6 +384,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     const options: Options = {
       cwd,
       abortController: abort,
+      model: this.currentModel,
       // The studio-tool wildcard is always auto-approved so the panel's own tools never prompt.
       // `additionalDirectories` are the dirs the human granted beyond the worktree.
       permissionMode: this.currentMode,

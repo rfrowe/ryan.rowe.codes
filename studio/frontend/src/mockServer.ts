@@ -5,7 +5,8 @@
 // protocol and is tab-aware: it seeds open posts, an MCP inventory, and not-yet-open posts (for ⌘P),
 // and services the full tab lifecycle and mcp.setEnabled.
 
-import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
+import type { AgentState, ClaudeModel, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
+import { DEFAULT_MODEL } from "../../shared/types";
 import type { ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage, SessionHistoryItem } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
 import type { DiffResponse, FetchResponse, SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse, UpdateRootResponse } from "../../shared/protocol";
@@ -175,6 +176,7 @@ class MockBackend {
   private activePath: string;
   private mcp = MOCK_MCP.map((s) => ({ ...s }));
   private mode: PermissionMode = "auto";
+  private model: ClaudeModel = DEFAULT_MODEL;
   // Resolver for an in-flight demo permission prompt, awaiting the author's answer.
   private pendingPerm: ((decision: PermissionDecision) => void) | null = null;
   // Resolver for an in-flight demo AskUserQuestion prompt, awaiting the author's picks.
@@ -209,6 +211,7 @@ class MockBackend {
     socket.deliver(this.tabsMsg());
     socket.deliver(this.mcpMsg());
     socket.deliver({ type: "mode.status", mode: this.mode });
+    socket.deliver({ type: "model.status", model: this.model });
     this.deliverActive(socket);
     const active = this.docs.get(this.activePath);
     if (active?.agent.sessionId) socket.deliver({ type: "session", sessionId: active.agent.sessionId, mode: active.agent.mode });
@@ -389,6 +392,10 @@ class MockBackend {
       case "mode.set":
         this.mode = msg.mode;
         this.broadcast({ type: "mode.status", mode: this.mode });
+        break;
+      case "model.set":
+        this.model = msg.model;
+        this.broadcast({ type: "model.status", model: this.model });
         break;
       case "permission.response":
         this.pendingPerm?.(msg.decision);
