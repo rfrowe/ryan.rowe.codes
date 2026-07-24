@@ -194,6 +194,14 @@ export function isLatestRevertScopeRequest(requestSeq: number, latestSeq: number
   return requestSeq === latestSeq;
 }
 
+/** Whether an external/git file.changed rev is a duplicate replay of the buffer's current rev, not
+ *  a genuine change. A WS reconnect can resend the rev the buffer already has; a sidecar restart
+ *  resets the rev counter, so a reconnect afterward can carry a LOWER rev whose hash still differs,
+ *  meaning the content on disk genuinely moved and must not be dropped as stale. */
+export function isDuplicateExternalRev(incoming: DocRev, current: DocRev): boolean {
+  return incoming.n <= current.n && incoming.hash === current.hash;
+}
+
 function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
   switch (msg.type) {
     case "session":
@@ -287,11 +295,12 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
           remoteUpdate: { text: msg.text, version: (t.remoteUpdate?.version ?? 0) + 1, kind },
         }));
       }
-      // external/git: a rev not strictly newer is a duplicate/hydrate snapshot (e.g. a replay after
-      // a WS reconnect). Nothing changed on disk, so no-op.
-      if (msg.rev.n <= tab.doc.rev.n) return state;
-      // A strictly-newer disk rev is a real write from outside the studio. Don't clobber the buffer,
-      // but advance the base rev so autosave keeps working, and surface the reload banner.
+      // external/git: a duplicate rev (same content, not strictly newer) is a replay, e.g. after a
+      // WS reconnect. A sidecar restart resets the rev counter, so compare the hash too, or a
+      // reconnect afterward can carry a lower rev whose content genuinely changed and get dropped.
+      if (isDuplicateExternalRev(msg.rev, tab.doc.rev)) return state;
+      // A real disk write from outside the studio. Don't clobber the buffer, but advance the base
+      // rev so autosave keeps working, and surface the reload banner.
       const origin = msg.origin;
       return patchTab(state, msg.path, (t) => ({
         ...t,
