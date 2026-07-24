@@ -200,7 +200,8 @@ test("update the studio root whose base moved → conflict handed to the root ag
   // The paid half (only with a funded key + STUDIO_E2E_AGENT=1): the agent resolves and the studio
   // finishes the rebase, so the root ends up containing origin/main with the markers gone.
   if (RUN_AGENT) {
-    await expect.poll(() => gh.containsOrigin("HEAD"), { timeout: 240_000, intervals: [2000], message: "agent resolves + rebase --continue completes" }).toBeTruthy();
+    // Poll the branch, not HEAD: HEAD already descends from origin/main mid-rebase; only the branch advances on rebase --continue.
+    await expect.poll(() => gh.containsOrigin("main"), { timeout: 240_000, intervals: [2000], message: "agent resolves + rebase --continue completes" }).toBeTruthy();
     expect(readFileSync(conflictFile, "utf8"), "markers gone after resolution").not.toContain("<<<<<<<");
   }
 });
