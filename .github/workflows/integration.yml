@@ -1,0 +1,82 @@
+name: Integration
+
+# End-to-end studio harness (studio/e2e/harness.mjs): boots a real sidecar against an isolated git
+# sandbox and drives the studio through its REST + WS faces. Runs in a node:24-slim container (the
+# same base as the studio's own image). Separate from the fast `check` workflow so its heavier run
+# never blocks lint/typecheck/build feedback.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Every PR and push: the deterministic git-flow scenarios, key-free. The agent scenario (8a)
+  # auto-skips with no key, so this never spends credits and never flakes on model availability.
+  git-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: node:24-slim
+    steps:
+      - name: Install git 🔧
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install dependencies 📦
+        run: npm ci
+      - name: Studio e2e — git-flow scenarios 🧪
+        run: npm run studio:e2e
+      - name: Clean up sandboxes 🧹
+        if: always()
+        run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* || true
+
+  # The agent-assisted conflict resolution (8a) drives a real, paid Claude turn, so it runs ONLY in
+  # trusted contexts — never a fork/stranger PR: on a push to main (prod), or a maintainer-applied
+  # `integration-agent` label on a SAME-REPO PR. The head-repo check excludes forks explicitly, and
+  # GitHub already withholds secrets from fork PR runs (belt-and-suspenders); the key step below also
+  # no-ops without the secret. So money is only ever spent from prod or an explicit maintainer opt-in.
+  # It pins the agent to Sonnet + low effort (see the harness) for the cheapest capable run.
+  agent:
+    if: >-
+      ${{ github.event_name == 'push'
+          || (github.event_name == 'pull_request'
+              && github.event.pull_request.head.repo.full_name == github.repository
+              && contains(github.event.pull_request.labels.*.name, 'integration-agent')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: node:24-slim
+    steps:
+      - name: Install git 🔧
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install dependencies 📦
+        run: npm ci
+      - name: Provision agent key 🔑
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            printf '%s' "$ANTHROPIC_API_KEY" > /tmp/anthropic_key.txt
+            echo "agent key provisioned"
+          else
+            echo "no ANTHROPIC_API_KEY secret configured; the agent scenario will be skipped"
+          fi
+      - name: Studio e2e — agent conflict resolution 🤖
+        env:
+          STUDIO_E2E_AGENT: "1"
+        run: npm run studio:e2e -- -t 8a
+      - name: Clean up 🧹
+        if: always()
+        run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* /tmp/anthropic_key.txt || true
