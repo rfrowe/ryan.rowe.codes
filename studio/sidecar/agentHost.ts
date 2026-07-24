@@ -535,12 +535,18 @@ class EmbeddedAgentHost implements StudioAgentHost {
       // The turn is over and can't answer prompts, so release any still parked before it leaks.
       this.abortPendingPermissions();
       if (this.current?.promptId === promptId) this.current = null;
-      this.deps.onTurnEnd?.(promptId);
       // Drain the queue here, not just on success: an errored/aborted turn must not strand it, since
       // nothing else will ever look at `pendingSystemPrompts` again otherwise. One at a time, FIFO:
       // draining a system turn re-enters this same `finally` and pops the next once it too ends.
+      // Runs before onTurnEnd, not after: onTurnEnd's own consumer (a conflict resolver) can
+      // synchronously dispatch a new system prompt the instant a turn ends, and dispatchSystemPrompt's
+      // busy-check only sees a turn as live via `this.current`. Draining first re-populates `this.current`
+      // with the queued item (if any) before that consumer runs, so a synchronous redispatch correctly
+      // queues behind it instead of racing into the immediate-dispatch path and cutting in line ahead of
+      // an already-queued item.
       const pending = this.pendingSystemPrompts.shift();
       if (pending) void this.runSystemTurn(pending.promptId, pending.path, pending.text);
+      this.deps.onTurnEnd?.(promptId);
     }
   }
 
