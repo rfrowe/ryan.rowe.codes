@@ -101,6 +101,7 @@ export interface StudioServices {
   sessions: SessionsService;
   gitOps: GitOpsService;
   conflictResolver: ConflictResolverService;
+  rootConflictResolver: RootConflictResolverService;
 }
 
 // Re-export the injected value type used by the sidecar server factory.

@@ -109,8 +109,19 @@ export function createRootConflictResolver(deps: RootConflictResolverDeps): Root
         dispatch(conflicted, attempts + 1);
         return;
       }
-      // Fall back: rebase reports conflicted again (the marker is still there, just no longer
-      // resolving); the human's way out from here is "Abort update" (F6).
+      // Exhausted the one retry: unlike a post (which has a human watching its own tab and a manual
+      // F6), the root has no session of its own to notice it's stuck, so never leave it mid-rebase.
+      // Abort automatically, restoring the pre-rebase tip; a manual "Abort update" still exists for
+      // the human to bail out sooner.
+      const abortRes = await git.git(
+        ["-c", `user.name=${PINNED_NAME}`, "-c", `user.email=${PINNED_EMAIL}`, "rebase", "--abort"],
+        { cwd },
+      );
+      if (abortRes.code !== 0) {
+        console.error(
+          `[rootConflictResolver] auto-abort failed after exhausting retries: ${abortRes.stderr.trim() || abortRes.stdout.trim() || `exit ${abortRes.code}`}`,
+        );
+      }
     } catch (err) {
       // The root worktree can't be removed out from under this the way a post's can, but a git call
       // can still reject (a transient spawn failure). resolving is already cleared, so fall back the

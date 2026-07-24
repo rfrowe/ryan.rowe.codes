@@ -92,6 +92,7 @@ export interface GitPrimaryState {
   ahead: number;
   behind: number; // root worktree vs origin/<sessionBranch>. Informational, not the ship gate.
   worktree: string; // root worktree path.
+  rebase: RebaseState; // resolving means F4-for-root (dgb.12-for-root) has a turn in flight.
 }
 
 export interface RebaseState {
@@ -280,12 +281,21 @@ export type RebaseAbortResponse = { ok: true } | { ok: false; error: string };
 // Update root: the deliberate counterpart to fetchOrigin's own reactive ff-only advance, for when a
 // genuine divergence stops that from ever landing. ff's onto origin/<sessionBranch> when clean;
 // reports the divergence (no mutation yet) so the client can confirm rebasing the local-only
-// commits onto it, then rebases only once confirm:true is sent, aborting safely on any conflict.
+// commits onto it, then rebases only once confirm:true is sent. A real conflict hands off to F4 for
+// root (mirrors POST /update's own "conflicted" result for a post) rather than aborting; the root's
+// rebase.phase flips to "resolving" once the agent's dispatch actually lands, same as a post's.
 // Never force-pushes; targets only the root's own sessionBranch ref, never a post branch.
 export interface UpdateRootRequest {
   confirm: boolean;
 }
 export type UpdateRootResponse =
   | { ok: true; result: "updated" | "up-to-date" }
+  | { ok: true; result: "conflicted"; conflictedFiles: string[] }
   | { ok: false; error: "diverged"; behind: number; ahead: number }
   | { ok: false; error: string };
+
+// F6 for root: abort an in-progress root rebase, returning it to its pre-update tip. No request body
+// (the root has no path to disambiguate); reuses RebaseAbortResponse, which already carries none.
+// Backs POST /rebase-abort-root. The root's own F4 resolver also aborts automatically once it
+// exhausts its retry, so the root is never left stranded mid-rebase even if this is never called;
+// this is the human's way to bail out sooner.

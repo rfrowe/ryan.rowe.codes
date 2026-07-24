@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { createGitRunner } from "./gitRunner";
-import { createGitStatusService } from "./gitStatus";
+import { createGitStatusService, type GitStatusService } from "./gitStatus";
 import { createStore, type StudioStore } from "../state/store";
 import { nodeFs } from "./fsImpl";
 import type { GitRunner, GitWatcher } from "../shared/seams";
@@ -683,7 +683,7 @@ describe("createGitStatusService — updateRoot", () => {
     expect(gitOut(["log", "-1", "--format=%cn <%ce>"], repo)).toBe("Ryan Rowe <ryan@rowe.codes>");
   });
 
-  it("aborts a conflicted rebase, restoring the pre-rebase state, rather than leaving the root mid-rebase", async () => {
+  it("hands a real conflict to F4 for root instead of aborting, leaving it mid-rebase", async () => {
     repo = await makeRepo();
     // Both origin and the local root touch the same line of the same file: a genuine conflict.
     origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
@@ -704,7 +704,6 @@ describe("createGitStatusService — updateRoot", () => {
     await writeFile(path.join(repo, "README.md"), "local change\n");
     git(["add", "."], repo);
     git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local edits README"], repo);
-    const localMainBefore = gitOut(["rev-parse", "main"], repo);
 
     const gitRunner = createGitRunner();
     const store = newStore(repo, gitRunner);
@@ -712,9 +711,11 @@ describe("createGitStatusService — updateRoot", () => {
     const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
 
     const result = await service.updateRoot(true);
-    expect(result.ok).toBe(false);
-    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore); // aborted back to the pre-rebase tip.
-    expect(gitOut(["status", "--porcelain"], repo)).toBe(""); // clean; no lingering rebase state.
+    expect(result).toEqual({ ok: true, result: "conflicted", conflictedFiles: ["README.md"] });
+    expect(gitOut(["status", "--porcelain"], repo)).toContain("UU README.md"); // left mid-rebase for the resolver.
+
+    const primary = (await service.snapshot()).primary;
+    expect(primary.rebase).toEqual({ phase: "conflicted", conflictedFiles: ["README.md"] });
   });
 
   it("rejects a second updateRoot while one is already running, rather than racing git", async () => {
@@ -729,47 +730,6 @@ describe("createGitStatusService — updateRoot", () => {
     const [first, second] = await Promise.all([service.updateRoot(false), service.updateRoot(false)]);
     expect(first).toEqual({ ok: true, result: "updated" });
     expect(second).toEqual({ ok: false, error: "an update is already in progress for the root" });
-  });
-
-  it("does not claim the root is unchanged when the recovery 'rebase --abort' itself fails", async () => {
-    repo = await makeRepo();
-    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
-    git(["init", "-q", "--bare", "-b", "main"], origin);
-    git(["remote", "add", "origin", origin], repo);
-    git(["push", "-q", "-u", "origin", "main"], repo);
-
-    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
-    git(["clone", "-q", origin, other], repo);
-    git(["config", "user.email", "test@example.com"], other);
-    git(["config", "user.name", "Test"], other);
-    await writeFile(path.join(other, "README.md"), "origin change\n");
-    git(["add", "."], other);
-    git(["commit", "-q", "-m", "origin edits README"], other);
-    git(["push", "-q", "origin", "main"], other);
-    git(["fetch", "-q", "origin"], repo);
-
-    await writeFile(path.join(repo, "README.md"), "local change\n");
-    git(["add", "."], repo);
-    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local edits README"], repo);
-
-    const real = createGitRunner();
-    // Everything runs for real (a genuine conflict) except the recovery abort itself, which the real
-    // sidecar could still hit (e.g. a lock file, disk pressure) even though it's rare in practice.
-    const abortFails: GitRunner = {
-      git: (args, opts) =>
-        args[0] === "rebase" && args[1] === "--abort"
-          ? Promise.resolve({ code: 1, stdout: "", stderr: "fatal: no rebase in progress?" })
-          : real.git(args, opts),
-      gh: (args, opts) => real.gh(args, opts),
-    };
-    const store = newStore(repo, abortFails);
-    const { watcher } = fakeWatcher();
-    const service = createGitStatusService({ git: abortFails, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
-
-    const result = await service.updateRoot(true);
-    expect(result.ok).toBe(false);
-    expect((result as { error: string }).error).toMatch(/abort.*also failed/);
-    expect((result as { error: string }).error).not.toMatch(/root is unchanged/); // never a false all-clear.
   });
 
   it("refuses (and never mutates) when the root worktree is checked out to a branch other than sessionBranch", async () => {
@@ -813,6 +773,104 @@ describe("createGitStatusService — updateRoot", () => {
 
     const result = await service.updateRoot(true);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("createGitStatusService — abortRoot", () => {
+  let repo: string | undefined;
+  let origin: string | undefined;
+  let other: string | undefined;
+
+  afterEach(async () => {
+    if (other) await rm(other, { recursive: true, force: true });
+    if (origin) await rm(origin, { recursive: true, force: true });
+    if (repo) await rm(repo, { recursive: true, force: true });
+    repo = origin = other = undefined;
+  });
+
+  /** Leaves `repo` genuinely mid-rebase and conflicted in README.md, via a real updateRoot(true) call
+   *  (mirrors the "hands a real conflict to F4" fixture above). */
+  async function makeConflictedRoot(): Promise<GitStatusService> {
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo!);
+    git(["push", "-q", "-u", "origin", "main"], repo!);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo!);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "README.md"), "origin change\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "origin edits README"], other);
+    git(["push", "-q", "origin", "main"], other);
+    git(["fetch", "-q", "origin"], repo!);
+
+    await writeFile(path.join(repo!, "README.md"), "local change\n");
+    git(["add", "."], repo!);
+    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local edits README"], repo!);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo!, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo!, sessionBranch: "main", watcher, publish: () => {} });
+    const result = await service.updateRoot(true);
+    if (!(result.ok && result.result === "conflicted")) throw new Error(`expected a conflict, got ${JSON.stringify(result)}`);
+    return service;
+  }
+
+  it("aborts a conflicted rebase, restoring the pre-rebase tip", async () => {
+    repo = await makeRepo();
+    const service = await makeConflictedRoot();
+
+    const result = await service.abortRoot();
+    expect(result).toEqual({ ok: true });
+    expect(gitOut(["status", "--porcelain"], repo)).toBe("");
+    expect(gitOut(["symbolic-ref", "--short", "HEAD"], repo)).toBe("main"); // no longer detached mid-rebase.
+  });
+
+  it("folds resolvingRoot into a conflicted rebase, reporting 'resolving'", async () => {
+    repo = await makeRepo();
+    const service = await makeConflictedRoot();
+
+    service.setResolvingRoot(true);
+    expect((await service.snapshot()).primary.rebase).toEqual({ phase: "resolving", conflictedFiles: ["README.md"] });
+  });
+
+  it("clears resolvingRoot so a later snapshot reports idle, not resolving", async () => {
+    repo = await makeRepo();
+    const service = await makeConflictedRoot();
+    service.setResolvingRoot(true);
+
+    await service.abortRoot();
+
+    expect((await service.snapshot()).primary.rebase).toEqual({ phase: "idle", conflictedFiles: [] });
+  });
+
+  it("reports an error without crashing when 'git rebase --abort' itself fails", async () => {
+    repo = await makeRepo();
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+    await makeConflictedRoot(); // leaves `repo` genuinely mid-rebase; the returned service is unused here.
+
+    // The abort itself can still fail in the real sidecar (e.g. a lock file, disk pressure), rare as
+    // that is; a rejecting/erroring git call must surface as an error, not a thrown exception.
+    // abortRoot() reads/writes only the repoRoot on disk, not the injected store, so a fresh service
+    // pointed at the same repoRoot is equivalent to reusing the one that created the conflict.
+    const real = createGitRunner();
+    const abortFails: GitRunner = {
+      git: (args, opts) =>
+        args[0] === "rebase" && args[1] === "--abort"
+          ? Promise.resolve({ code: 1, stdout: "", stderr: "fatal: no rebase in progress?" })
+          : real.git(args, opts),
+      gh: (args, opts) => real.gh(args, opts),
+    };
+    const store = newStore(repo, abortFails);
+    const { watcher } = fakeWatcher();
+    const failingService = createGitStatusService({ git: abortFails, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await failingService.abortRoot();
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("git rebase --abort failed") });
+    expect(gitOut(["rev-parse", "main"], repo)).not.toBe(localMainBefore); // still mid-rebase; never claimed otherwise.
   });
 });
 
@@ -865,5 +923,15 @@ describe("createGitStatusService — primary", () => {
     const after = (await service.snapshot()).primary.headSha;
     expect(after).not.toBe(before);
     expect(after).toBe(gitOut(["rev-parse", "--short", "HEAD"], repo));
+  });
+
+  it("reports rebase idle when the root isn't mid-rebase", async () => {
+    repo = await makeRepo();
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    expect((await service.snapshot()).primary.rebase).toEqual({ phase: "idle", conflictedFiles: [] });
   });
 });

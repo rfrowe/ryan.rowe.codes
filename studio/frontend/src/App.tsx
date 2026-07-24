@@ -25,7 +25,7 @@ import { rootConflictPhase } from "./turnSelectors";
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
-import { fetchRemote, getLossPreview, rebaseAbort, saveDraft, update, updateRoot } from "./api";
+import { abortUpdateRoot, fetchRemote, getLossPreview, rebaseAbort, saveDraft, update, updateRoot } from "./api";
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import { EMPTY_GIT, selectRootName } from "./gitSelectors";
@@ -1001,27 +1001,49 @@ export default function App() {
   // The explicit "Update root from origin" affordance: fetchOrigin's own reactive ff-only advance
   // already handles a clean advance, so reaching here at all means the root has diverged. Confirms
   // replaying the local-only commits onto origin before rebasing; never automatic, never destructive.
-  const onUpdateRoot = useCallback(() => {
-    updateRoot(false)
-      .then(async (res) => {
-        if (res.ok) {
-          if (res.result === "up-to-date") showNotice("Root is already up to date.");
-          return;
-        }
-        if (!("ahead" in res)) {
-          showNotice(`Update root failed: ${res.error}`);
-          return;
-        }
-        const rootName = selectRootName(state.git);
-        const proceed = window.confirm(
-          `${rootName} has ${res.ahead} local commit(s) not on origin. Rebase them onto origin/${rootName}?`,
-        );
-        if (!proceed) return;
-        const confirmed = await updateRoot(true);
-        if (!confirmed.ok) showNotice(`Update root failed: ${confirmed.error}`);
-      })
-      .catch((e: unknown) => showNotice(e instanceof Error ? `Update root failed: ${e.message}` : "Update root failed."));
+  // A real conflict hands off to F4 for root (result:"conflicted", ok:true) rather than erroring, so
+  // the `!confirmed.ok` branch below no longer fires for it -- the root-conflict banner (rootPhase)
+  // takes over reactively from there, with no further wiring needed here.
+  //
+  // updateRootPending marks the trigger busy the instant it fires, mirroring onUpdate's own
+  // Q1-responsiveness; TabBar derives the actual label from this and rootPhase together.
+  const [updateRootPending, setUpdateRootPending] = useState(false);
+  const onUpdateRoot = useCallback(async () => {
+    setUpdateRootPending(true);
+    try {
+      const res = await updateRoot(false);
+      if (res.ok) {
+        if (res.result === "up-to-date") showNotice("Root is already up to date.");
+        return;
+      }
+      if (!("ahead" in res)) {
+        showNotice(`Update root failed: ${res.error}`);
+        return;
+      }
+      const rootName = selectRootName(state.git);
+      const proceed = window.confirm(
+        `${rootName} has ${res.ahead} local commit(s) not on origin. Rebase them onto origin/${rootName}?`,
+      );
+      if (!proceed) return;
+      const confirmed = await updateRoot(true);
+      if (!confirmed.ok) showNotice(`Update root failed: ${confirmed.error}`);
+    } catch (e: unknown) {
+      showNotice(e instanceof Error ? `Update root failed: ${e.message}` : "Update root failed.");
+    } finally {
+      setUpdateRootPending(false);
+    }
   }, [showNotice, state.git]);
+
+  // Abort update (F6 for root): returns the root to its pre-update tip. The root's own F4 resolver
+  // also auto-aborts once it exhausts its retry, so this is for bailing out sooner, not the only
+  // thing standing between the root and being stranded mid-rebase.
+  const onAbortUpdateRoot = useCallback(() => {
+    abortUpdateRoot()
+      .then((res) => {
+        if (!res.ok) showNotice(`Abort failed: ${res.error}`);
+      })
+      .catch((e: unknown) => showNotice(e instanceof Error ? `Abort failed: ${e.message}` : "Abort failed."));
+  }, [showNotice]);
 
   // Update/Pull (F3): flush first so the rebase carries the newest keystrokes rather than dropping them
   // or rebasing against stale content, same as revert/delete/save-draft. git.state reflects the outcome
@@ -1214,6 +1236,8 @@ export default function App() {
           turn={state.turn}
           turnStarted={state.turnStarted}
           updatePending={updatePending}
+          rootPhase={rootPhase}
+          updateRootPending={updateRootPending}
           onSelect={openPost}
           onClose={onCloseTab}
           onNewPost={() => openNewPost("")}
@@ -1223,6 +1247,7 @@ export default function App() {
           onDelete={onDeletePost}
           onFetch={onFetch}
           onUpdateRoot={onUpdateRoot}
+          onAbortUpdateRoot={onAbortUpdateRoot}
           onUpdate={onUpdate}
           onAbortUpdate={onAbortUpdate}
         />

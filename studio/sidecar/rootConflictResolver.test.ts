@@ -163,7 +163,7 @@ describe("createRootConflictResolver", () => {
     expect(dispatchSystemPrompt).toHaveBeenCalledTimes(1); // no re-prompt needed.
   });
 
-  it("re-prompts once when the agent's turn ends with the conflict still unresolved, then falls back", async () => {
+  it("re-prompts once when the agent's turn ends with the conflict still unresolved, then auto-aborts", async () => {
     const c = await makeConflictedRoot();
     repo = c.repo;
     origin = c.origin;
@@ -180,11 +180,13 @@ describe("createRootConflictResolver", () => {
     expect(dispatchSystemPrompt.mock.calls[1][0].text).toContain("still conflicted");
     expect(git(["status", "--porcelain"], c.repo)).toContain("UU astro.config.mjs"); // rebase untouched.
 
-    // The retry's turn also ends unresolved: falls back, no third dispatch.
+    // The retry's turn also ends unresolved: falls back, no third dispatch. Unlike a post (which
+    // leaves it conflicted for a manual F6), root auto-aborts here so it's never stranded.
     await resolver.onTurnEnd("p1");
 
     expect(dispatchSystemPrompt).toHaveBeenCalledTimes(2);
-    expect(git(["status", "--porcelain"], c.repo)).toContain("UU astro.config.mjs"); // still conflicted, for F6.
+    expect(git(["status", "--porcelain"], c.repo).trim()).toBe(""); // aborted back to the pre-rebase tip.
+    expect(git(["symbolic-ref", "--short", "HEAD"], c.repo).trim()).toBe("main"); // no longer detached mid-rebase.
 
     // Guard: resolving is cleared on every turn-end, including the two that led to fallback -- the
     // root can never be stuck showing "resolving" after the state machine gives up.
