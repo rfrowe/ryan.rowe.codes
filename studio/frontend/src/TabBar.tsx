@@ -9,7 +9,7 @@ import type { SocketStatus } from "./ws";
 import { kebabSlug, slugFromPath } from "./slug";
 import { Lifebar } from "./Lifebar";
 import { selectPost, selectPushable, selectRebase, selectRootName, selectUncommitted, selectUpdatable } from "./gitSelectors";
-import { updateTriggerLabel } from "./turnSelectors";
+import { updateRootTriggerLabel, updateTriggerLabel, type RootConflictPhase } from "./turnSelectors";
 import { useCommand } from "./useCommand";
 import type { GitState } from "../../shared/protocol";
 
@@ -59,6 +59,10 @@ interface TabBarProps {
   /** Paths with an Update REST call in flight, set the instant the trigger fires (before any server
    *  round trip), so the trigger reads "Updating…" immediately rather than as a dead click. */
   updatePending: Set<string>;
+  /** The root-conflict banner's phase (queued/resolving/done), for the "Update root" row's own label. */
+  rootPhase: RootConflictPhase;
+  /** Set the instant "Update root" fires, before any server round trip. */
+  updateRootPending: boolean;
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
   onNewPost: () => void;
@@ -73,6 +77,8 @@ interface TabBarProps {
   /** The explicit "Update root from origin" affordance, for when a fetch's own reactive ff-only
    *  advance can't land (a genuine divergence). Shown in the status popover when primary.behind > 0. */
   onUpdateRoot: () => void;
+  /** Abort an in-progress root rebase (F6 for root), returning it to its pre-update tip. */
+  onAbortUpdateRoot: () => void;
   /** Update/Pull (F3): fetch this post's base then rebase onto it. */
   onUpdate: (path: string) => void;
   /** Abort an in-progress rebase (F6), returning the post to its pre-update tip. */
@@ -88,6 +94,8 @@ export function TabBar({
   turn,
   turnStarted,
   updatePending,
+  rootPhase,
+  updateRootPending,
   onSelect,
   onClose,
   onNewPost,
@@ -97,6 +105,7 @@ export function TabBar({
   onDelete,
   onFetch,
   onUpdateRoot,
+  onAbortUpdateRoot,
   onUpdate,
   onAbortUpdate,
 }: TabBarProps) {
@@ -294,13 +303,29 @@ export function TabBar({
               </span>
             )}
           </div>
-          {git.primary.behind > 0 && (
-            // fetchOrigin's own reactive ff-only advance already handles a clean advance; reaching
-            // here means the root has diverged, so this is the deliberate, confirmed path.
-            <button type="button" className="statuspop__row statuspop__row--action" onClick={onUpdateRoot}>
+          {git.primary.behind > 0 &&
+            (() => {
+              const label = updateRootTriggerLabel(rootPhase, updateRootPending);
+              return (
+                // fetchOrigin's own reactive ff-only advance already handles a clean advance; reaching
+                // here means the root has diverged, so this is the deliberate, confirmed path.
+                <button
+                  type="button"
+                  className="statuspop__row statuspop__row--action"
+                  onClick={onUpdateRoot}
+                  disabled={label !== "Update root"}
+                >
+                  <span className="statuspop__dot statuspop__dot--down" aria-hidden="true" />
+                  <span className="statuspop__label">{git.primary.behind} behind origin</span>
+                  <span className="statuspop__state statuspop__state--action">{label}</span>
+                </button>
+              );
+            })()}
+          {git.primary.rebase.phase !== "idle" && (
+            <button type="button" className="statuspop__row statuspop__row--action" onClick={onAbortUpdateRoot}>
               <span className="statuspop__dot statuspop__dot--down" aria-hidden="true" />
-              <span className="statuspop__label">{git.primary.behind} behind origin</span>
-              <span className="statuspop__state statuspop__state--action">Update root</span>
+              <span className="statuspop__label">Root rebase conflicted</span>
+              <span className="statuspop__state statuspop__state--action">Abort</span>
             </button>
           )}
           {stackStatus.map((c) => (

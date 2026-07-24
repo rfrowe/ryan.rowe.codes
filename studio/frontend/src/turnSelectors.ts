@@ -24,6 +24,18 @@ export function rootConflictPhase(
   return "done";
 }
 
+export type UpdateRootTriggerLabel = "Update root" | "Updating…" | "Queued…";
+
+/** The "Update root" status-popover row's label/disabled state. Reuses rootConflictPhase directly:
+ *  once a conflict hands off, the root's own queued/resolving state IS this trigger's busy state, no
+ *  separate signal needed. `localPending` covers the window between the click and that hand-off (or
+ *  a clean fast-forward/rebase) landing, before any conflict is even known. */
+export function updateRootTriggerLabel(rootPhase: RootConflictPhase, localPending: boolean): UpdateRootTriggerLabel {
+  if (rootPhase === "queued") return "Queued…";
+  if (rootPhase === "resolving") return "Updating…";
+  return localPending ? "Updating…" : "Update root";
+}
+
 export type UpdateTriggerLabel = "Update" | "Updating…" | "Queued…";
 
 /** The per-post Update trigger's label/disabled state. `phase` is that post's own git.state rebase

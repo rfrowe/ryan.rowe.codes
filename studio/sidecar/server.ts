@@ -73,6 +73,8 @@ export interface ServerOptions {
   fetchRemote?: () => Promise<FetchResponse>;
   /** The explicit "Update root from origin" affordance; backs `POST /update-root`. */
   updateRoot?: (confirm: boolean) => Promise<UpdateRootResponse>;
+  /** F6 for root; backs `POST /rebase-abort-root`. */
+  abortUpdateRoot?: () => Promise<RebaseAbortResponse>;
 }
 
 export function createServer(services: StudioServices, opts: ServerOptions): StudioServer {
@@ -246,7 +248,17 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         // clean, else reports the divergence so the client can confirm a rebase (never automatic).
         const body = await readJson<UpdateRootRequest>(req);
         const result = (await opts.updateRoot?.(body.confirm)) ?? { ok: false, error: "update-root is unavailable" };
+        // A conflict hands off to F4 for root, mirroring POST /update's own hand-off for a post.
+        if (result.ok && result.result === "conflicted") {
+          services.rootConflictResolver.onConflict(result.conflictedFiles);
+        }
         return sendJson(res, 200, result satisfies UpdateRootResponse);
+      }
+
+      case "POST /rebase-abort-root": {
+        // F6 for root: abort an in-progress root rebase, returning it to its pre-update tip.
+        const result = (await opts.abortUpdateRoot?.()) ?? { ok: false, error: "rebase-abort-root is unavailable" };
+        return sendJson(res, 200, result satisfies RebaseAbortResponse);
       }
 
       case "POST /update": {

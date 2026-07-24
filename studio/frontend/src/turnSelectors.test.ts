@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { rootConflictPhase, updateTriggerLabel } from "./turnSelectors";
+import { rootConflictPhase, updateRootTriggerLabel, updateTriggerLabel } from "./turnSelectors";
 
 const ROOT = "/repo";
 
@@ -53,5 +53,24 @@ describe("updateTriggerLabel", () => {
 
   it("is Update when conflicted but not yet dispatched (rebase.phase never resolving here)", () => {
     expect(updateTriggerLabel("conflicted", false, false, false)).toBe("Update");
+  });
+});
+
+describe("updateRootTriggerLabel", () => {
+  it("is Queued when rootConflictPhase is queued, regardless of local pending", () => {
+    expect(updateRootTriggerLabel("queued", false)).toBe("Queued…");
+    expect(updateRootTriggerLabel("queued", true)).toBe("Queued…");
+  });
+
+  it("is Updating when rootConflictPhase is resolving, regardless of local pending", () => {
+    expect(updateRootTriggerLabel("resolving", false)).toBe("Updating…");
+  });
+
+  it("is Updating from the instant the trigger fires, before any conflict is known", () => {
+    expect(updateRootTriggerLabel("done", true)).toBe("Updating…");
+  });
+
+  it("is Update root when done and nothing is locally pending", () => {
+    expect(updateRootTriggerLabel("done", false)).toBe("Update root");
   });
 });

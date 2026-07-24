@@ -24,6 +24,7 @@ import { resolveSessionBranch } from "./sessionBranch";
 import { createGitStatusService } from "./gitStatus";
 import { createGitOpsService } from "./gitOps";
 import { createConflictResolver } from "./conflictResolver";
+import { createRootConflictResolver } from "./rootConflictResolver";
 import { createShipService } from "./ship";
 import { createSessionsService } from "./sessions";
 import { createStudioTools } from "../mcp/tools";
@@ -35,7 +36,7 @@ import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
 import { copyWorktreeIncludes } from "./worktreeInclude";
 import { logUncaughtException, logUnhandledRejection } from "./processGuards";
-import type { ConflictResolverService, StudioServices } from "../shared/services";
+import type { ConflictResolverService, RootConflictResolverService, StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -165,10 +166,12 @@ async function main(): Promise<void> {
     void astro.switchTo(info.worktreePath);
   });
 
-  // agentHost.onTurnEnd needs conflictResolver, and conflictResolver needs agentHost.dispatchSystemPrompt:
-  // a box breaks the cycle, since conflictResolver is only constructed (and the box filled) after agentHost.
-  // onTurnEnd never fires before a turn has actually run, by which point this is filled.
+  // agentHost.onTurnEnd needs conflictResolver/rootConflictResolver, and each needs
+  // agentHost.dispatchSystemPrompt: a box per resolver breaks the cycle, since each is only
+  // constructed (and its box filled) after agentHost. onTurnEnd never fires before a turn has
+  // actually run, by which point both are filled.
   const conflictResolverBox: { current?: ConflictResolverService } = {};
+  const rootConflictResolverBox: { current?: RootConflictResolverService } = {};
 
   const agentHost = createAgentHost({
     tools,
@@ -184,6 +187,7 @@ async function main(): Promise<void> {
     onTurnEnd: (promptId) => {
       docSync?.dispatch({ type: "agent.turn.end" });
       void conflictResolverBox.current?.onTurnEnd(promptId);
+      void rootConflictResolverBox.current?.onTurnEnd(promptId);
     },
   });
 
@@ -196,6 +200,16 @@ async function main(): Promise<void> {
     publish: (msg) => store.publish(msg),
   });
   conflictResolverBox.current = conflictResolver;
+
+  const rootConflictResolver = createRootConflictResolver({
+    git,
+    rootWorktreePath: REPO_ROOT,
+    sessionBranch,
+    dispatchSystemPrompt: (input) => agentHost.dispatchSystemPrompt(input),
+    setResolving: (resolving) => gitStatus.setResolvingRoot(resolving),
+    publish: (msg) => store.publish(msg),
+  });
+  rootConflictResolverBox.current = rootConflictResolver;
 
   // `post.renamed` is the single migration signal: the SPA follows a tab's transcript to the new
   // path, and the SDK session must follow too so the resumable conversation isn't orphaned. Covers
@@ -218,7 +232,7 @@ async function main(): Promise<void> {
     console.error(`[sidecar] no .mdx post found under ${BLOG_CONTENT_ROOT}; starting with no active post.`);
   }
 
-  const services: StudioServices = { store, agentHost, tools, ship, sessions, gitOps, conflictResolver };
+  const services: StudioServices = { store, agentHost, tools, ship, sessions, gitOps, conflictResolver, rootConflictResolver };
 
   // ---- start faces ----
   const web = createServer(services, {
@@ -228,6 +242,7 @@ async function main(): Promise<void> {
     lspConnect: (ws) => lspBridge.connect(ws),
     fetchRemote: () => gitStatus.fetch(),
     updateRoot: (confirm) => gitStatus.updateRoot(confirm),
+    abortUpdateRoot: () => gitStatus.abortRoot(),
   });
   await web.listen();
   const mcp = createMcpHttpServer(tools, { token, instructions: conventions, port: MCP_PORT });
