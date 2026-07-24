@@ -43,6 +43,10 @@ function detail(stderr: string, code: number): string {
 
 export function createGitOpsService(deps: GitOpsDeps): GitOpsService {
   const { git, store, sessionBranch } = deps;
+  // Guards a second Update firing for a post while its first is still running: two concurrent
+  // `git fetch`/`git rebase` calls against the same worktree race on git's own ref locks, surfacing
+  // a raw "cannot lock ref 'HEAD'" failure instead of a clean refusal.
+  const updating = new Set<string>();
 
   /** The post's worktree, opening it first if it isn't already (F3's "closed post" precondition). */
   async function ensureOpen(canonicalPath: string): Promise<{ worktreePath: string } | null> {
@@ -53,43 +57,49 @@ export function createGitOpsService(deps: GitOpsDeps): GitOpsService {
   }
 
   async function update(canonicalPath: string): Promise<UpdateResponse> {
-    let wt: { worktreePath: string } | null;
+    if (updating.has(canonicalPath)) return { ok: false, error: "an update is already in progress for this post" };
+    updating.add(canonicalPath);
     try {
-      wt = await ensureOpen(canonicalPath);
-    } catch (e) {
-      return { ok: false, error: `failed to open the post: ${errorMessage(e)}` };
+      let wt: { worktreePath: string } | null;
+      try {
+        wt = await ensureOpen(canonicalPath);
+      } catch (e) {
+        return { ok: false, error: `failed to open the post: ${errorMessage(e)}` };
+      }
+      if (!wt) return { ok: false, error: "post not found" };
+      const cwd = wt.worktreePath;
+
+      // The pull half: this post's base only, never the global --prune fetch (that's F2's job).
+      const fetchRes = await git.git(["fetch", "origin", sessionBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
+      if (fetchRes.code !== 0) {
+        return { ok: false, error: `git fetch origin ${sessionBranch} failed: ${detail(fetchRes.stderr, fetchRes.code)}` };
+      }
+
+      const beforeRes = await git.git(["rev-parse", "HEAD"], { cwd });
+      const before = beforeRes.stdout.trim();
+
+      const rebaseRes = await git.git(
+        ["-c", `user.name=${PINNED_NAME}`, "-c", `user.email=${PINNED_EMAIL}`, "rebase", `origin/${sessionBranch}`],
+        { cwd },
+      );
+      if (rebaseRes.code === 0) {
+        const afterRes = await git.git(["rev-parse", "HEAD"], { cwd });
+        const after = afterRes.stdout.trim();
+        if (after === before) return { ok: true, result: "up-to-date" };
+        const baseRes = await git.git(["rev-parse", `origin/${sessionBranch}`], { cwd });
+        return { ok: true, result: after === baseRes.stdout.trim() ? "fast-forward" : "rebased" };
+      }
+
+      // Non-zero exit: a real conflict hands off to F4; anything else aborts rather than leaving the
+      // worktree mid-rebase for no reason (git refusing to start, e.g. on a dirty tree, included).
+      const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd });
+      const conflictedFiles = parseConflictedPaths(statusRes.stdout);
+      if (conflictedFiles.length > 0) return { ok: true, result: "conflicted", conflictedFiles };
+      await git.git(["rebase", "--abort"], { cwd });
+      return { ok: false, error: `git rebase origin/${sessionBranch} failed: ${detail(rebaseRes.stderr, rebaseRes.code)}` };
+    } finally {
+      updating.delete(canonicalPath);
     }
-    if (!wt) return { ok: false, error: "post not found" };
-    const cwd = wt.worktreePath;
-
-    // The pull half: this post's base only, never the global --prune fetch (that's F2's job).
-    const fetchRes = await git.git(["fetch", "origin", sessionBranch], { cwd, timeoutMs: NETWORK_TIMEOUT_MS });
-    if (fetchRes.code !== 0) {
-      return { ok: false, error: `git fetch origin ${sessionBranch} failed: ${detail(fetchRes.stderr, fetchRes.code)}` };
-    }
-
-    const beforeRes = await git.git(["rev-parse", "HEAD"], { cwd });
-    const before = beforeRes.stdout.trim();
-
-    const rebaseRes = await git.git(
-      ["-c", `user.name=${PINNED_NAME}`, "-c", `user.email=${PINNED_EMAIL}`, "rebase", `origin/${sessionBranch}`],
-      { cwd },
-    );
-    if (rebaseRes.code === 0) {
-      const afterRes = await git.git(["rev-parse", "HEAD"], { cwd });
-      const after = afterRes.stdout.trim();
-      if (after === before) return { ok: true, result: "up-to-date" };
-      const baseRes = await git.git(["rev-parse", `origin/${sessionBranch}`], { cwd });
-      return { ok: true, result: after === baseRes.stdout.trim() ? "fast-forward" : "rebased" };
-    }
-
-    // Non-zero exit: a real conflict hands off to F4; anything else aborts rather than leaving the
-    // worktree mid-rebase for no reason (git refusing to start, e.g. on a dirty tree, included).
-    const statusRes = await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd });
-    const conflictedFiles = parseConflictedPaths(statusRes.stdout);
-    if (conflictedFiles.length > 0) return { ok: true, result: "conflicted", conflictedFiles };
-    await git.git(["rebase", "--abort"], { cwd });
-    return { ok: false, error: `git rebase origin/${sessionBranch} failed: ${detail(rebaseRes.stderr, rebaseRes.code)}` };
   }
 
   async function rebaseAbort(canonicalPath: string): Promise<RebaseAbortResponse> {

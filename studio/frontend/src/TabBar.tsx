@@ -131,6 +131,14 @@ export function TabBar({
     if (menu && !tabs.some((t) => t.path === menu.path)) setMenu(null);
   }, [tabs, menu]);
 
+  // Nothing else re-renders TabBar on its own between fetches, so the fetch button's "refs as of
+  // Xm ago" text would otherwise freeze at whatever it read on the last render triggered elsewhere.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   function beginRename(path: string): void {
     renameTargetRef.current = path;
     setDraft(slugFromPath(path));
@@ -158,13 +166,16 @@ export function TabBar({
 
   const root = selectRootName(git);
   const { inFlight: fetching, at } = git.fetch;
+  // Shared by the fetch button's title and aria-label, so a screen reader hears the same freshness
+  // info a sighted user reads in the tooltip.
+  const fetchLabel = fetching ? "Fetching…" : at != null ? `Fetch from origin (refs as of ${ago(at)})` : "Fetch from origin";
 
   useCommand({
     id: "git.fetch",
     chord: "mod+shift+f",
     label: "Fetch from origin",
     group: "Git",
-    when: () => status === "open",
+    when: () => status === "open" && !fetching,
     run: onFetch,
   });
 
@@ -244,8 +255,8 @@ export function TabBar({
         className={`tabbar__fetch ${fetching ? "tabbar__fetch--busy" : ""}`}
         onClick={onFetch}
         disabled={fetching}
-        title={fetching ? "Fetching…" : at != null ? `Fetch from origin (refs as of ${ago(at)})` : "Fetch from origin"}
-        aria-label="Fetch from origin"
+        title={fetchLabel}
+        aria-label={fetchLabel}
       >
         <span aria-hidden="true">↻</span>
       </button>
