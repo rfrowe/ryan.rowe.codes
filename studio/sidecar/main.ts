@@ -10,7 +10,7 @@
 // target post via `--post <path>` / STUDIO_POST; otherwise the newest post is opened).
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, readdir, rename, rm, stat, symlink } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,7 @@ import { createMdxLspServer } from "./lspServer";
 import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
 import { copyWorktreeIncludes } from "./worktreeInclude";
+import { ensureNodeModules } from "./nodeModulesSync";
 import { logUncaughtException, logUnhandledRejection } from "./processGuards";
 import type { ConflictResolverService, StudioServices } from "../shared/services";
 
@@ -42,6 +43,7 @@ const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url))
 const BLOG_CONTENT_ROOT = path.join(REPO_ROOT, "src", "content", "blog");
 const NODE_MODULES = path.join(REPO_ROOT, "node_modules");
 const ASTRO_BIN_NAME = process.platform === "win32" ? "astro.cmd" : "astro";
+const NPM_BIN_NAME = process.platform === "win32" ? "npm.cmd" : "npm";
 // Ports come from the orchestrator (a free set per launch, so studios run side by side); the defaults
 // let `npm run studio:sidecar` run standalone.
 const WEB_PORT = Number(process.env.STUDIO_WEB_PORT) || 4319;
@@ -78,10 +80,10 @@ async function main(): Promise<void> {
   // would otherwise rebase/ship/save-draft against the wrong branch silently.
   const sessionBranch = await resolveSessionBranch(git, REPO_ROOT);
 
-  // Prepare a freshly-created/reused worktree: symlink node_modules, then copy the .worktreeinclude
+  // Prepare a freshly-created/reused worktree: ready node_modules, then copy the .worktreeinclude
   // files so gitignored local config (e.g. .env.local) is present in the worktree too.
   const prepareWorktree = async (worktreePath: string): Promise<void> => {
-    await linkNodeModules(worktreePath);
+    await prepareNodeModules(worktreePath);
     await copyWorktreeIncludes({ git, srcRoot: REPO_ROOT, worktreePath });
   };
 
@@ -185,6 +187,13 @@ async function main(): Promise<void> {
       docSync?.dispatch({ type: "agent.turn.end" });
       void conflictResolverBox.current?.onTurnEnd(promptId);
     },
+    // npm promotes the worktree's node_modules symlink to a real directory the moment the agent's own
+    // `npm install` needs to touch it; restart the preview so it resolves modules against that fresh
+    // install instead of whatever Vite/Node had already cached from the old symlink target. Only if
+    // that worktree is still the active one — the human may have switched posts while the turn ran.
+    onDependenciesInstalled: (cwd) => {
+      if (store.getActiveWorktree()?.worktreePath === cwd) void astro.switchTo(cwd);
+    },
   });
 
   const conflictResolver = createConflictResolver({
@@ -262,19 +271,14 @@ async function main(): Promise<void> {
   process.on("SIGHUP", () => void shutdown());
 }
 
-/** Ensure `<worktree>/node_modules` symlinks to the repo's (worktrees are gitignored, no deps). */
-async function linkNodeModules(worktreePath: string): Promise<void> {
-  const link = path.join(worktreePath, "node_modules");
-  if (existsSync(link)) return;
-  try {
-    await symlink(NODE_MODULES, link, "dir");
-  } catch (err) {
-    // A race or pre-existing entry is fine; anything else is logged but non-fatal (Astro/agent
-    // tooling fails more loudly if deps are missing).
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-      console.error(`[sidecar] could not link node_modules into ${worktreePath}: ${(err as Error).message}`);
-    }
-  }
+/** Ready `<worktreePath>/node_modules`: symlinked to the repo's shared install, or its own real one
+ *  when its package.json diverges (see `ensureNodeModules`'s doc comment for why). */
+function prepareNodeModules(worktreePath: string): Promise<void> {
+  return ensureNodeModules({
+    worktreePath,
+    repoRoot: REPO_ROOT,
+    runNpmInstall: (cwd) => runToExit(NPM_BIN_NAME, ["install"], cwd),
+  });
 }
 
 /**
@@ -323,7 +327,7 @@ function createAstroManager(worktreesRoot: string) {
         if (current && current !== worktreePath) await stopAt(current);
         // Clean restart in the target too, so a memoized getStaticPaths can't hide a new route.
         await stopAt(worktreePath);
-        await linkNodeModules(worktreePath);
+        await prepareNodeModules(worktreePath);
         const bin = path.join(worktreePath, "node_modules", ".bin", ASTRO_BIN_NAME);
         if (!existsSync(bin)) {
           current = null;

@@ -4,7 +4,11 @@
 // the extracted helpers; that block mocks the SDK's `query` export, since it's the one behavior
 // (draining a queued system prompt once an in-flight turn ends) that only exists inside `runTurn`.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HookInput, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -14,6 +18,7 @@ import {
   createAgentHost,
   decisionToPermissionResult,
   mutationTarget,
+  nodeModulesPromotedHook,
   reduceHistory,
   withinAnyDir,
   worktreeAskHook,
@@ -29,6 +34,17 @@ const WT = "/repo/.worktrees/blog/2026-07-10_a-post";
 /** A minimal PreToolUse HookInput for the jail hook. */
 function preToolUse(toolName: string, toolInput: Record<string, unknown>): HookInput {
   return { hook_event_name: "PreToolUse", tool_name: toolName, tool_input: toolInput } as unknown as HookInput;
+}
+
+/** A minimal PostToolUse HookInput for a Bash call rooted at `cwd`. */
+function postToolUseBash(cwd: string, command: string): HookInput {
+  return {
+    hook_event_name: "PostToolUse",
+    tool_name: "Bash",
+    tool_input: { command },
+    tool_response: {},
+    cwd,
+  } as unknown as HookInput;
 }
 
 describe("decisionToPermissionResult", () => {
@@ -222,6 +238,79 @@ describe("worktreeAskHook", () => {
     const hook = worktreeAskHook(() => [WT]);
     expect(await hook(preToolUse("Bash", { command: "rm -rf ~/important" }))).toEqual({});
     expect(await hook(preToolUse("Read", { file_path: "/etc/passwd" }))).toEqual({});
+  });
+});
+
+describe("nodeModulesPromotedHook", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "node-modules-promoted-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("fires when an npm install command left a real (non-symlink) node_modules", async () => {
+    await mkdir(path.join(dir, "node_modules"));
+    const onPromoted = vi.fn();
+
+    const out = await nodeModulesPromotedHook(onPromoted)(postToolUseBash(dir, "npm install framer-motion"));
+
+    expect(out).toEqual({});
+    expect(onPromoted).toHaveBeenCalledWith(dir);
+  });
+
+  it("does not fire when node_modules is still a symlink", async () => {
+    const target = await mkdtemp(path.join(tmpdir(), "shared-node-modules-"));
+    await symlink(target, path.join(dir, "node_modules"), "dir");
+    const onPromoted = vi.fn();
+
+    await nodeModulesPromotedHook(onPromoted)(postToolUseBash(dir, "npm install framer-motion"));
+
+    expect(onPromoted).not.toHaveBeenCalled();
+    await rm(target, { recursive: true, force: true });
+  });
+
+  it("does not fire when node_modules is a stray file rather than a directory", async () => {
+    await writeFile(path.join(dir, "node_modules"), "");
+    const onPromoted = vi.fn();
+
+    await nodeModulesPromotedHook(onPromoted)(postToolUseBash(dir, "npm install framer-motion"));
+
+    expect(onPromoted).not.toHaveBeenCalled();
+  });
+
+  it("does not fire for a command that isn't an npm dependency mutation", async () => {
+    await mkdir(path.join(dir, "node_modules"));
+    const onPromoted = vi.fn();
+
+    await nodeModulesPromotedHook(onPromoted)(postToolUseBash(dir, "npm test"));
+    await nodeModulesPromotedHook(onPromoted)(postToolUseBash(dir, "git status"));
+
+    expect(onPromoted).not.toHaveBeenCalled();
+  });
+
+  it("never fires for a non-Bash tool", async () => {
+    await mkdir(path.join(dir, "node_modules"));
+    const onPromoted = vi.fn();
+
+    const out = await nodeModulesPromotedHook(onPromoted)({
+      hook_event_name: "PostToolUse",
+      tool_name: "Write",
+      tool_input: { command: "npm install" },
+      tool_response: {},
+      cwd: dir,
+    } as unknown as HookInput);
+
+    expect(out).toEqual({});
+    expect(onPromoted).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op without an onPromoted callback", async () => {
+    await mkdir(path.join(dir, "node_modules"));
+    await expect(nodeModulesPromotedHook()(postToolUseBash(dir, "npm install framer-motion"))).resolves.toEqual({});
   });
 });
 

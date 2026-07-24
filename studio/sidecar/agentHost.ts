@@ -7,6 +7,7 @@
 // right worktree regardless of mode. MCP servers toggle on/off via mcp.status / mcp.setEnabled.
 
 import { randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
@@ -48,6 +49,9 @@ export interface AgentHostDeps {
   defaultEffort?: EffortLevel;
   /** Dirs editable beyond the worktree at launch; seeds the granted-dir set. */
   additionalDirectories?: string[];
+  /** Fires after a Bash call whose cwd's node_modules stopped being a symlink to the shared repo
+   *  install (npm materialized a real one there, e.g. reifying a dependency the agent just added). */
+  onDependenciesInstalled?: (cwd: string) => void;
   /** Seam over the SDK's `getSessionMessages` for testing; defaults to the real SDK call. */
   getSessionMessagesImpl?: typeof getSessionMessages;
 }
@@ -430,6 +434,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
       // Mode-proof: forces an edit escaping the allowed set (worktree plus granted dirs) to `ask`.
       hooks: {
         PreToolUse: [{ hooks: [worktreeAskHook(() => [cwd, ...this.grantedDirs])] }],
+        PostToolUse: [{ hooks: [nodeModulesPromotedHook(this.deps.onDependenciesInstalled)] }],
       },
       // Load the author's normal config: "user" brings global ~/.claude (their MCP servers, skills,
       // CLAUDE.md, rules); "project"/"local" bring the worktree's .claude. Our studio server merges in.
@@ -851,6 +856,40 @@ export function mutationTarget(toolName: string, input: Record<string, unknown>)
 /** True when `target` resolves inside any of `dirs`. */
 export function withinAnyDir(target: string, dirs: string[]): boolean {
   return dirs.some((dir) => withinDir(target, dir));
+}
+
+// ---- node_modules promotion (PostToolUse hook) ----
+
+/** A Bash command that could reify node_modules (add/remove/update a dependency). */
+const NPM_MUTATION_RE = /\bnpm\b\s+(install|i|ci|add|remove|rm|uninstall|un|update|up)\b/;
+
+/**
+ * PostToolUse hook: after a Bash call that looks like it could have changed dependencies, checks
+ * whether the session's node_modules stopped being a symlink to the shared repo install. npm promotes
+ * it to a real directory the instant its own reify needs to touch anything (even a plain `npm install`
+ * with nothing to change does this), so a real `node_modules` here means the agent's command actually
+ * ran one, and the running preview needs restarting to resolve modules against the fresh install
+ * instead of whatever it had already cached from the old symlink target.
+ */
+export function nodeModulesPromotedHook(onPromoted?: (cwd: string) => void) {
+  return async (input: HookInput): Promise<HookJSONOutput> => {
+    if (input.hook_event_name !== "PostToolUse" || input.tool_name !== "Bash" || !onPromoted) return {};
+    const command = (input.tool_input as Record<string, unknown> | undefined)?.command;
+    if (typeof command !== "string" || !NPM_MUTATION_RE.test(command)) return {};
+    if (isRealNodeModules(input.cwd)) onPromoted(input.cwd);
+    return {};
+  };
+}
+
+/** True when `<cwd>/node_modules` exists and is a real directory rather than a symlink. */
+function isRealNodeModules(cwd: string): boolean {
+  const link = path.join(cwd, "node_modules");
+  try {
+    const stat = lstatSync(link);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /** True when `target` (resolved against `dir`) stays inside `dir` (lexical; no symlink walk). */
