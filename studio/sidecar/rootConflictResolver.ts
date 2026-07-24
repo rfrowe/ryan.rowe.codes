@@ -6,7 +6,7 @@
 
 import type { GitRunner } from "../shared/seams";
 import type { RootConflictResolverService } from "../shared/services";
-import type { ServerMessage } from "../shared/protocol";
+import type { RebaseAbortResponse, ServerMessage } from "../shared/protocol";
 import { PINNED_EMAIL, PINNED_NAME, parseConflictedPaths } from "./gitOps";
 
 export interface RootConflictResolverDeps {
@@ -18,6 +18,9 @@ export interface RootConflictResolverDeps {
   dispatchSystemPrompt: (input: { path: string; text: string }) => Promise<{ promptId: string; dispatched: boolean }>;
   setResolving: (resolving: boolean) => void;
   publish: (msg: ServerMessage) => void;
+  /** gitStatus's own F6, reused here on retry exhaustion so the abort and its schedule()/resolvingRoot
+   *  bookkeeping live in one place instead of two separate `rebase --abort` call sites. */
+  abortRoot: () => Promise<RebaseAbortResponse>;
 }
 
 function composePrompt(sessionBranch: string, conflictedFiles: string[], retry: boolean): string {
@@ -35,7 +38,7 @@ function composePrompt(sessionBranch: string, conflictedFiles: string[], retry: 
 }
 
 export function createRootConflictResolver(deps: RootConflictResolverDeps): RootConflictResolverService {
-  const { git, rootWorktreePath, sessionBranch, dispatchSystemPrompt, setResolving, publish } = deps;
+  const { git, rootWorktreePath, sessionBranch, dispatchSystemPrompt, setResolving, publish, abortRoot } = deps;
   // promptId to attempt count; onTurnEnd is a no-op for any promptId not in here. At most one entry:
   // the root has a single session, not a per-post map.
   const episodes = new Map<string, { attempts: number }>();
@@ -111,16 +114,12 @@ export function createRootConflictResolver(deps: RootConflictResolverDeps): Root
       }
       // Exhausted the one retry: unlike a post (which has a human watching its own tab and a manual
       // F6), the root has no session of its own to notice it's stuck, so never leave it mid-rebase.
-      // Abort automatically, restoring the pre-rebase tip; a manual "Abort update" still exists for
-      // the human to bail out sooner.
-      const abortRes = await git.git(
-        ["-c", `user.name=${PINNED_NAME}`, "-c", `user.email=${PINNED_EMAIL}`, "rebase", "--abort"],
-        { cwd },
-      );
-      if (abortRes.code !== 0) {
-        console.error(
-          `[rootConflictResolver] auto-abort failed after exhausting retries: ${abortRes.stderr.trim() || abortRes.stdout.trim() || `exit ${abortRes.code}`}`,
-        );
+      // Abort automatically, restoring the pre-rebase tip; going through gitStatus's own abortRoot()
+      // (rather than a second `rebase --abort` call site here) keeps the schedule()/resolvingRoot
+      // bookkeeping in one place. A manual "Abort update" still exists for the human to bail out sooner.
+      const abortRes = await abortRoot();
+      if (!abortRes.ok) {
+        console.error(`[rootConflictResolver] auto-abort failed after exhausting retries: ${abortRes.error}`);
       }
     } catch (err) {
       // The root worktree can't be removed out from under this the way a post's can, but a git call
