@@ -599,6 +599,15 @@ body {
 .statuspop__row:hover {
   background: var(--bg-hover);
 }
+.statuspop__row--action {
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 .statuspop__dot {
   flex: 0 0 auto;
   width: 9px;
@@ -640,6 +649,12 @@ body {
 }
 .statuspop__state--disabled {
   color: var(--fg-faint);
+}
+.statuspop__state--action {
+  color: var(--accent);
+}
+.statuspop__row--action:hover .statuspop__state--action {
+  text-decoration: underline;
 }
 .statuspop__endpoint {
   flex: 0 0 auto;

@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -378,7 +378,7 @@ describe("createGitStatusService — fetch", () => {
     repo = origin = other = undefined;
   });
 
-  it("pulls a root advance from origin and republishes so primary.behind reflects it, with one call", async () => {
+  it("ff's the local root onto a clean origin advance, so primary.behind reads 0 after the fetch", async () => {
     repo = await makeRepo();
     origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
     git(["init", "-q", "--bare", "-b", "main"], origin);
@@ -408,15 +408,138 @@ describe("createGitStatusService — fetch", () => {
     const result = await service.fetch();
     expect(result).toEqual({ ok: true });
 
+    // The local root ff'd onto origin's new tip: a brand-new post forking from it now starts even,
+    // not born behind. Verified two ways: primary.behind itself, and the local ref's own sha.
     const after = await service.snapshot();
-    expect(after.primary.behind).toBe(1);
+    expect(after.primary.behind).toBe(0);
     expect(after.fetch.inFlight).toBe(false);
     expect(after.fetch.at).not.toBeNull();
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(gitOut(["rev-parse", "origin/main"], repo));
 
     // The fetch call itself already republished reactively; a caller needs no follow-up snapshot.
     const publishedStates = publish.mock.calls.map((c) => c[0] as { fetch: { inFlight: boolean }; primary: { behind: number } });
     expect(publishedStates.some((s) => s.fetch.inFlight)).toBe(true);
-    expect(publishedStates.at(-1)?.primary.behind).toBe(1);
+    expect(publishedStates.at(-1)?.primary.behind).toBe(0);
+  });
+
+  it("does not ff when the root worktree is checked out to a branch other than sessionBranch", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "root-change.txt"), "x\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "root advances"], other);
+    git(["push", "-q", "origin", "main"], other);
+
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+    // elsewhere forks from main's still-stale tip, so it's itself ff-able onto origin/main: this
+    // proves the guard blocks the merge attempt outright, not just that main specifically is spared.
+    git(["checkout", "-q", "-b", "elsewhere"], repo); // rootMoved: not on sessionBranch anymore.
+    const elsewhereBefore = gitOut(["rev-parse", "elsewhere"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.fetch();
+    expect(result).toEqual({ ok: true });
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore);
+    expect(gitOut(["rev-parse", "elsewhere"], repo)).toBe(elsewhereBefore); // nothing checked out gets ff'd either.
+  });
+
+  it("does not ff when the root worktree has uncommitted changes", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "root-change.txt"), "x\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "root advances"], other);
+    git(["push", "-q", "origin", "main"], other);
+
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+    await writeFile(path.join(repo, "README.md"), "dirty\n"); // uncommitted; root ff must not touch it.
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.fetch();
+    expect(result).toEqual({ ok: true });
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore);
+  });
+
+  it("does not ff (and logs, never forces) when the local root has diverged from origin", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "root-change.txt"), "x\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "root advances"], other);
+    git(["push", "-q", "origin", "main"], other);
+
+    // The local root gets its own commit origin never sees: a genuine divergence, not just "behind".
+    await writeFile(path.join(repo, "local-only.txt"), "y\n");
+    git(["add", "."], repo);
+    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local diverges"], repo);
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.fetch();
+    expect(result).toEqual({ ok: true }); // the fetch itself succeeded; only the ff was refused.
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore); // never force-moved.
+    expect(errorSpy).toHaveBeenCalled();
+
+    errorSpy.mockRestore();
+  });
+
+  it("does not ff (and does not error) when sessionBranch has no origin counterpart yet", async () => {
+    repo = await makeRepo(); // no origin remote at all: an unpushed session branch.
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo); // origin exists, but nothing has ever been pushed to it.
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.fetch();
+    expect(result).toEqual({ ok: true });
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore);
+    expect(errorSpy).not.toHaveBeenCalled(); // routine (nothing to ff onto yet), not a failure.
+
+    errorSpy.mockRestore();
   });
 
   it("reports a git-level failure without leaving inFlight stuck true", async () => {
@@ -457,6 +580,239 @@ describe("createGitStatusService — fetch", () => {
     expect(first).toEqual({ ok: true });
     expect(second).toEqual({ ok: true });
     expect(fetchCalls).toBe(1);
+  });
+});
+
+describe("createGitStatusService — updateRoot", () => {
+  let repo: string | undefined;
+  let origin: string | undefined;
+  let other: string | undefined;
+
+  afterEach(async () => {
+    if (other) await rm(other, { recursive: true, force: true });
+    if (origin) await rm(origin, { recursive: true, force: true });
+    if (repo) await rm(repo, { recursive: true, force: true });
+    repo = origin = other = undefined;
+  });
+
+  /** Pushes `repo`'s main to a fresh bare origin, then advances origin's main by one commit from a
+   *  separate clone, so `repo`'s already-fetched view of origin is one commit behind. */
+  async function advanceOrigin(): Promise<void> {
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo!);
+    git(["push", "-q", "-u", "origin", "main"], repo!);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo!);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "root-change.txt"), "x\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "root advances"], other);
+    git(["push", "-q", "origin", "main"], other);
+    git(["fetch", "-q", "origin"], repo!); // repo now sees the advance, but hasn't ff'd onto it.
+  }
+
+  it("ff's the root onto a clean origin advance", async () => {
+    repo = await makeRepo();
+    await advanceOrigin();
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(false);
+    expect(result).toEqual({ ok: true, result: "updated" });
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(gitOut(["rev-parse", "origin/main"], repo));
+  });
+
+  it("reports up-to-date without mutating anything when the root already matches origin", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(false);
+    expect(result).toEqual({ ok: true, result: "up-to-date" });
+  });
+
+  it("reports the divergence without mutating anything when called without confirm", async () => {
+    repo = await makeRepo();
+    await advanceOrigin();
+    // The local root gets its own commit origin never sees: a genuine divergence, not just "behind".
+    await writeFile(path.join(repo, "local-only.txt"), "y\n");
+    git(["add", "."], repo);
+    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local diverges"], repo);
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(false);
+    expect(result).toEqual({ ok: false, error: "diverged", behind: 1, ahead: 1 });
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore); // never touched without confirm.
+  });
+
+  it("rebases the root's local-only commit onto origin, preserving it, once confirm:true is sent", async () => {
+    repo = await makeRepo();
+    await advanceOrigin();
+    await writeFile(path.join(repo, "local-only.txt"), "y\n");
+    git(["add", "."], repo);
+    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local diverges"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(true);
+    expect(result).toEqual({ ok: true, result: "updated" });
+    git(["merge-base", "--is-ancestor", "origin/main", "main"], repo); // throws if not an ancestor.
+    expect(await readFile(path.join(repo, "local-only.txt"), "utf8")).toBe("y\n"); // replayed, not discarded.
+    // Rebase preserves the original author but sets a fresh committer; the pinned identity checks that.
+    expect(gitOut(["log", "-1", "--format=%cn <%ce>"], repo)).toBe("Ryan Rowe <ryan@rowe.codes>");
+  });
+
+  it("aborts a conflicted rebase, restoring the pre-rebase state, rather than leaving the root mid-rebase", async () => {
+    repo = await makeRepo();
+    // Both origin and the local root touch the same line of the same file: a genuine conflict.
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "README.md"), "origin change\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "origin edits README"], other);
+    git(["push", "-q", "origin", "main"], other);
+    git(["fetch", "-q", "origin"], repo);
+
+    await writeFile(path.join(repo, "README.md"), "local change\n");
+    git(["add", "."], repo);
+    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local edits README"], repo);
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(true);
+    expect(result.ok).toBe(false);
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore); // aborted back to the pre-rebase tip.
+    expect(gitOut(["status", "--porcelain"], repo)).toBe(""); // clean; no lingering rebase state.
+  });
+
+  it("rejects a second updateRoot while one is already running, rather than racing git", async () => {
+    repo = await makeRepo();
+    await advanceOrigin();
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const [first, second] = await Promise.all([service.updateRoot(false), service.updateRoot(false)]);
+    expect(first).toEqual({ ok: true, result: "updated" });
+    expect(second).toEqual({ ok: false, error: "an update is already in progress for the root" });
+  });
+
+  it("does not claim the root is unchanged when the recovery 'rebase --abort' itself fails", async () => {
+    repo = await makeRepo();
+    origin = await mkdtemp(path.join(tmpdir(), "gitstatus-origin-"));
+    git(["init", "-q", "--bare", "-b", "main"], origin);
+    git(["remote", "add", "origin", origin], repo);
+    git(["push", "-q", "-u", "origin", "main"], repo);
+
+    other = await mkdtemp(path.join(tmpdir(), "gitstatus-other-"));
+    git(["clone", "-q", origin, other], repo);
+    git(["config", "user.email", "test@example.com"], other);
+    git(["config", "user.name", "Test"], other);
+    await writeFile(path.join(other, "README.md"), "origin change\n");
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "origin edits README"], other);
+    git(["push", "-q", "origin", "main"], other);
+    git(["fetch", "-q", "origin"], repo);
+
+    await writeFile(path.join(repo, "README.md"), "local change\n");
+    git(["add", "."], repo);
+    git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "local edits README"], repo);
+
+    const real = createGitRunner();
+    // Everything runs for real (a genuine conflict) except the recovery abort itself, which the real
+    // sidecar could still hit (e.g. a lock file, disk pressure) even though it's rare in practice.
+    const abortFails: GitRunner = {
+      git: (args, opts) =>
+        args[0] === "rebase" && args[1] === "--abort"
+          ? Promise.resolve({ code: 1, stdout: "", stderr: "fatal: no rebase in progress?" })
+          : real.git(args, opts),
+      gh: (args, opts) => real.gh(args, opts),
+    };
+    const store = newStore(repo, abortFails);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: abortFails, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(true);
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toMatch(/abort.*also failed/);
+    expect((result as { error: string }).error).not.toMatch(/root is unchanged/); // never a false all-clear.
+  });
+
+  it("refuses (and never mutates) when the root worktree is checked out to a branch other than sessionBranch", async () => {
+    repo = await makeRepo();
+    await advanceOrigin();
+    git(["checkout", "-q", "-b", "elsewhere"], repo);
+    const elsewhereBefore = gitOut(["rev-parse", "elsewhere"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(true); // even with confirm, the branch guard must still hold.
+    expect(result.ok).toBe(false);
+    expect(gitOut(["rev-parse", "elsewhere"], repo)).toBe(elsewhereBefore);
+  });
+
+  it("refuses (and never mutates) when the root worktree has uncommitted changes", async () => {
+    repo = await makeRepo();
+    await advanceOrigin();
+    await writeFile(path.join(repo, "README.md"), "dirty\n");
+    const localMainBefore = gitOut(["rev-parse", "main"], repo);
+
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(true);
+    expect(result.ok).toBe(false);
+    expect(gitOut(["rev-parse", "main"], repo)).toBe(localMainBefore);
+  });
+
+  it("refuses when sessionBranch has no origin counterpart yet", async () => {
+    repo = await makeRepo(); // no origin remote at all.
+    const gitRunner = createGitRunner();
+    const store = newStore(repo, gitRunner);
+    const { watcher } = fakeWatcher();
+    const service = createGitStatusService({ git: gitRunner, store, repoRoot: repo, sessionBranch: "main", watcher, publish: () => {} });
+
+    const result = await service.updateRoot(true);
+    expect(result.ok).toBe(false);
   });
 });
 

@@ -24,10 +24,10 @@ import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveCo
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
-import { fetchRemote, getLossPreview, rebaseAbort, saveDraft, update } from "./api";
+import { fetchRemote, getLossPreview, rebaseAbort, saveDraft, update, updateRoot } from "./api";
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
-import { EMPTY_GIT } from "./gitSelectors";
+import { EMPTY_GIT, selectRootName } from "./gitSelectors";
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { DiffResponse, GitState, PromptContext, ServerMessage } from "../../shared/protocol";
 
@@ -936,6 +936,31 @@ export default function App() {
       .catch((e: unknown) => showNotice(e instanceof Error ? `Fetch failed: ${e.message}` : "Fetch failed."));
   }, [state.git.fetch.inFlight, showNotice]);
 
+  // The explicit "Update root from origin" affordance: fetchOrigin's own reactive ff-only advance
+  // already handles a clean advance, so reaching here at all means the root has diverged. Confirms
+  // replaying the local-only commits onto origin before rebasing; never automatic, never destructive.
+  const onUpdateRoot = useCallback(() => {
+    updateRoot(false)
+      .then(async (res) => {
+        if (res.ok) {
+          if (res.result === "up-to-date") showNotice("Root is already up to date.");
+          return;
+        }
+        if (!("ahead" in res)) {
+          showNotice(`Update root failed: ${res.error}`);
+          return;
+        }
+        const rootName = selectRootName(state.git);
+        const proceed = window.confirm(
+          `${rootName} has ${res.ahead} local commit(s) not on origin. Rebase them onto origin/${rootName}?`,
+        );
+        if (!proceed) return;
+        const confirmed = await updateRoot(true);
+        if (!confirmed.ok) showNotice(`Update root failed: ${confirmed.error}`);
+      })
+      .catch((e: unknown) => showNotice(e instanceof Error ? `Update root failed: ${e.message}` : "Update root failed."));
+  }, [showNotice, state.git]);
+
   // Update/Pull (F3): flush first so the rebase carries the newest keystrokes rather than dropping them
   // or rebasing against stale content, same as revert/delete/save-draft. git.state reflects the outcome
   // reactively (behind clears, or rebase.phase flips to "conflicted" for F4 to pick up); a notice here
@@ -1095,6 +1120,7 @@ export default function App() {
           onRevert={onRevertPost}
           onDelete={onDeletePost}
           onFetch={onFetch}
+          onUpdateRoot={onUpdateRoot}
           onUpdate={onUpdate}
           onAbortUpdate={onAbortUpdate}
         />

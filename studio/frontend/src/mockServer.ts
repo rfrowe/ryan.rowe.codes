@@ -8,7 +8,7 @@
 import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState } from "../../shared/types";
 import type { ClientMessage, PostSummaryDTO, PutDocRequest, PutDocResponse, ServerMessage, SessionHistoryItem } from "../../shared/protocol";
 import type { SessionListItem } from "../../sessions/pickerViewModel";
-import type { DiffResponse, FetchResponse, SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse } from "../../shared/protocol";
+import type { DiffResponse, FetchResponse, SaveDraftRequest, SaveDraftResponse, ShipRequest, ShipResponse, UpdateRootResponse } from "../../shared/protocol";
 import { isValidSlug, postStem } from "../../shared/slug";
 import { REST_BASE, WS_BASE } from "./config";
 
@@ -244,6 +244,17 @@ class MockBackend {
 
   fetchRemote(): FetchResponse {
     return { ok: true };
+  }
+
+  // Demoable divergence -> conflict path (?mock never runs real git): the first call (unconfirmed)
+  // reports a divergence, the confirmed retry reports the conflict-then-abort outcome, so both of
+  // updateRoot's real failure shapes are reachable from the affordance without a real repo.
+  updateRoot(confirm: boolean): UpdateRootResponse {
+    if (!confirm) return { ok: false, error: "diverged", behind: 2, ahead: 2 };
+    return {
+      ok: false,
+      error: "rebase onto origin/main conflicted in: README.md. Aborted, so the root is unchanged; resolve manually and try again.",
+    };
   }
 
   // Name-sync for a doc: compare the frontmatter-derived stem to the path stem. A bad slug/date is
@@ -841,6 +852,7 @@ export function installMock(): void {
     if (method === "POST" && path === "/ship") return ok(backend.ship(body as ShipRequest));
     if (method === "POST" && path === "/save-draft") return ok(backend.saveDraft(body as SaveDraftRequest));
     if (method === "POST" && path === "/fetch") return ok(backend.fetchRemote());
+    if (method === "POST" && path === "/update-root") return ok(backend.updateRoot((body as { confirm: boolean }).confirm));
 
     return ok({ error: `mock: no route for ${method} ${path}` }, 404);
   };

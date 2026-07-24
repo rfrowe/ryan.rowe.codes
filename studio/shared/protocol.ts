@@ -268,3 +268,16 @@ export interface RebaseAbortRequest {
   path: string;
 }
 export type RebaseAbortResponse = { ok: true } | { ok: false; error: string };
+
+// Update root: the deliberate counterpart to fetchOrigin's own reactive ff-only advance, for when a
+// genuine divergence stops that from ever landing. ff's onto origin/<sessionBranch> when clean;
+// reports the divergence (no mutation yet) so the client can confirm rebasing the local-only
+// commits onto it, then rebases only once confirm:true is sent, aborting safely on any conflict.
+// Never force-pushes; targets only the root's own sessionBranch ref, never a post branch.
+export interface UpdateRootRequest {
+  confirm: boolean;
+}
+export type UpdateRootResponse =
+  | { ok: true; result: "updated" | "up-to-date" }
+  | { ok: false; error: "diverged"; behind: number; ahead: number }
+  | { ok: false; error: string };
