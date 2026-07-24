@@ -7,8 +7,10 @@ import mdx from "@astrojs/mdx";
 import expressiveCode from "astro-expressive-code";
 import { vanillaExtractPlugin } from "@vanilla-extract/vite-plugin";
 import remarkMath from "remark-math";
+import remarkDirective from "remark-directive";
 import rehypeKatex from "rehype-katex";
 import rehypeFigure from "rehype-figure";
+import remarkDirectiveRender from "./src/lib/remarkDirectiveRender.ts";
 
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 // The studio previews each post from a git worktree whose node_modules symlinks to the main repo's.
@@ -43,10 +45,10 @@ export default defineConfig({
     expressiveCode(),
     react(),
     mdx(),
-    watchLocalConfigFiles([]),
+    watchLocalConfigFiles(["./src/lib/remarkDirectiveRender.ts"]),
   ],
   markdown: {
-    remarkPlugins: [remarkMath],
+    remarkPlugins: [remarkMath, remarkDirective, remarkDirectiveRender],
     rehypePlugins: [rehypeKatex, rehypeFigure],
   },
   vite: {
@@ -59,3 +61,4 @@ export default defineConfig({
     },
   },
 });
+
