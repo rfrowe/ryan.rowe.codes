@@ -4,6 +4,15 @@
 # dependencies, then hands off to the same orchestrator local dev uses.
 set -euo pipefail
 
+# `gh` (and, via the credential helper this wires up, plain `git`) reads GH_TOKEN directly -- no
+# `gh auth login` needed for headless use. Must run before the clone/fetch below, or a private
+# GIT_REPO_URL has no credentials to authenticate with.
+if [ -n "${GH_TOKEN:-}" ]; then
+  gh auth setup-git
+else
+  echo "[entrypoint] GH_TOKEN is not set; ship/save-draft's git push and gh pr create will fail." >&2
+fi
+
 if [ ! -d "$REPO_DIR/.git" ]; then
   echo "[entrypoint] cloning $GIT_REPO_URL ($GIT_BRANCH) into $REPO_DIR"
   git clone --recursive --branch "$GIT_BRANCH" "$GIT_REPO_URL" "$REPO_DIR"
@@ -13,14 +22,6 @@ else
   git -C "$REPO_DIR" checkout "$GIT_BRANCH"
   git -C "$REPO_DIR" pull --ff-only origin "$GIT_BRANCH"
   git -C "$REPO_DIR" submodule update --init --recursive
-fi
-
-# `gh` (and, via the credential helper this wires up, plain `git push`) reads GH_TOKEN directly --
-# no `gh auth login` needed for headless use.
-if [ -n "${GH_TOKEN:-}" ]; then
-  gh auth setup-git
-else
-  echo "[entrypoint] GH_TOKEN is not set; ship/save-draft's git push and gh pr create will fail." >&2
 fi
 
 cd "$REPO_DIR"
