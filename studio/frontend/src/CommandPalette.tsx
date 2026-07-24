@@ -1,14 +1,21 @@
 // ⌘P command palette: a fuzzy-filterable list of open tabs and every existing post, plus a
 // "create new post" command. Selecting a post opens (or focuses) it; the create command opens
 // the New Post dialog seeded with the search term. Type to filter, ↑/↓ to move, Enter, Esc.
+//
+// The post roster is three sources merged by path: open tabs (this session's own state) ∪ the
+// main tree (scanPosts, everything merged into the checked-out branch) ∪ git-known drafts
+// (git.state.posts, which also reaches local/remote branches with no worktree and nothing merged
+// yet). Without the third source a post pushed from another session or device is invisible here
+// until it's merged, even though opening it already works (store.openPost adopts a remote-only
+// branch on demand).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPosts } from "./api";
 import { slugFromPath } from "./slug";
 import { Lifebar } from "./Lifebar";
-import { selectPost, selectRootName, selectUpdatable } from "./gitSelectors";
+import { selectPalette, selectPost, selectRootName, selectUpdatable } from "./gitSelectors";
 import type { TabDescriptor } from "./TabBar";
-import type { GitState } from "../../shared/protocol";
+import type { GitPostState, GitState } from "../../shared/protocol";
 
 interface PaletteEntry {
   path: string;
@@ -25,19 +32,25 @@ function emptyEntry(path: string, title = ""): PaletteEntry {
 
 /**
  * Every row keyed by canonical path: open tabs first (carrying their live title), then every post
- * in the main tree layered on top (a post known to both keeps the open tab's title). Each row's
- * git facts (the lifebar) are looked up separately at render time from `git.state`, not merged in
- * here, since not every post in the main tree has a matching entry there.
+ * in the main tree layered on top (a post known to both keeps the open tab's title), then any
+ * remaining git-known post (a draft with no worktree, not merged, not currently open) added with
+ * no title of its own to read from — falls back to its slug, same as an untitled open tab would.
+ * Each row's full git facts (the lifebar) are still looked up separately at render time from
+ * `git.state`, not merged in here; this only uses it to learn which posts exist.
  */
 export function mergePaletteEntries(
   openTabs: readonly TabDescriptor[],
   posts: readonly { path: string; title: string }[] | null,
+  gitPosts: readonly GitPostState[],
 ): PaletteEntry[] {
   const byPath = new Map<string, PaletteEntry>();
   for (const t of openTabs) byPath.set(t.path, { ...emptyEntry(t.path, t.title), open: true });
   for (const p of posts ?? []) {
     const existing = byPath.get(p.path);
     byPath.set(p.path, { ...(existing ?? emptyEntry(p.path)), title: existing?.open ? existing.title : p.title });
+  }
+  for (const gp of gitPosts) {
+    if (!byPath.has(gp.path)) byPath.set(gp.path, emptyEntry(gp.path, slugFromPath(gp.path)));
   }
   return [...byPath.values()];
 }
@@ -93,7 +106,10 @@ export function CommandPalette({ openTabs, activePath, git, onSelect, onCreate, 
   }, []);
 
   const root = selectRootName(git);
-  const entries = useMemo(() => mergePaletteEntries(openTabs, posts), [openTabs, posts]);
+  const entries = useMemo(
+    () => mergePaletteEntries(openTabs, posts, selectPalette(git)),
+    [openTabs, posts, git],
+  );
 
   const filtered = useMemo(
     () => entries.filter((e) => fuzzyMatch(`${e.title} ${slugFromPath(e.path)}`, query.trim())),
