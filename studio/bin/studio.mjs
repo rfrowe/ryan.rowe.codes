@@ -57,7 +57,9 @@ function note(message) {
   console.log(`${TAG} ${message}`);
 }
 
-/** The branch the studio launched on, for display (mirrors the sidecar's resolution). */
+// The branch the studio launched on, for display (mirrors the sidecar's resolution). Display-only:
+// it doesn't enforce that STUDIO_PRIMARY_BRANCH matches the checked-out HEAD branch, unlike the
+// sidecar, which refuses to start on a mismatch (sessionBranch.ts).
 function sessionBranchForDisplay() {
   const override = process.env.STUDIO_PRIMARY_BRANCH?.trim();
   if (override) return override;

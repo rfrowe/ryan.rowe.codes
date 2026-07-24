@@ -20,6 +20,7 @@ import { createStore } from "../state/store";
 import { createDocSync, type DocSync } from "./docSync";
 import { createGitRunner } from "./gitRunner";
 import { createGitWatch } from "./gitWatch";
+import { resolveSessionBranch } from "./sessionBranch";
 import { createGitStatusService } from "./gitStatus";
 import { createGitOpsService } from "./gitOps";
 import { createConflictResolver } from "./conflictResolver";
@@ -73,7 +74,9 @@ async function main(): Promise<void> {
   // Watches the repo's common .git dir once for the whole sidecar lifetime.
   const gitWatcher = createGitWatch(REPO_ROOT);
   // The branch the studio launched on: the fork base for new post worktrees and the ship target.
-  const sessionBranch = await resolveSessionBranch(git);
+  // Guards against a STUDIO_PRIMARY_BRANCH override that disagrees with the checked-out HEAD, which
+  // would otherwise rebase/ship/save-draft against the wrong branch silently.
+  const sessionBranch = await resolveSessionBranch(git, REPO_ROOT);
 
   // Prepare a freshly-created/reused worktree: symlink node_modules, then copy the .worktreeinclude
   // files so gitignored local config (e.g. .env.local) is present in the worktree too.
@@ -411,20 +414,6 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<boolean> {
     }
   }
   return false;
-}
-
-/**
- * The branch the studio launched on, the "primary" branch. `STUDIO_PRIMARY_BRANCH` overrides it; a
- * detached HEAD (no branch name) falls back to the short commit SHA so it still namespaces cleanly.
- */
-async function resolveSessionBranch(git: ReturnType<typeof createGitRunner>): Promise<string> {
-  const override = process.env.STUDIO_PRIMARY_BRANCH?.trim();
-  if (override) return override;
-  const head = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: REPO_ROOT });
-  const name = head.stdout.trim();
-  if (head.code === 0 && name && name !== "HEAD") return name;
-  const sha = await git.git(["rev-parse", "--short", "HEAD"], { cwd: REPO_ROOT });
-  return sha.stdout.trim() || "HEAD";
 }
 
 /** Parse `--post <path>` or `--post=<path>` from argv. */
