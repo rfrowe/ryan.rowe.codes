@@ -10,9 +10,9 @@ on:
     branches: [main]
 
 jobs:
-  # Every PR and push: the deterministic UI journeys. The conflict journey's paid agent resolution is
+  # Every PR and push: the deterministic UI journeys. Both conflict journeys' paid agent resolution is
   # gated behind STUDIO_E2E_AGENT (unset here), so this never spends credits and never flakes on the
-  # model — it still asserts the conflict is handed to the agent (the system note + the conflicted tree).
+  # model. Each still asserts the conflict is handed to the agent (the system note + the conflicted tree).
   ui:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -48,10 +48,12 @@ jobs:
         if: always()
         run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* || true
 
-  # The conflict journey's agent resolution drives a real, paid Claude turn (pinned to Sonnet + low
+  # The root-conflict journey's agent resolution drives a real, paid Claude turn (pinned to Sonnet + low
   # effort), so it runs ONLY in trusted contexts — a push to main, or a maintainer's `integration-agent`
   # label on a SAME-REPO PR (never a fork). The key step no-ops without the secret, and STUDIO_E2E_AGENT
-  # gates it, so money is only ever spent from prod or an explicit maintainer opt-in.
+  # gates it, so money is only ever spent from prod or an explicit maintainer opt-in. The grep below
+  # selects only the root journey, not the post-side conflict journey (both titles contain "conflict"),
+  # so a single push never fires two paid turns.
   agent:
     if: >-
       ${{ github.event_name == 'push'
@@ -86,10 +88,10 @@ jobs:
           else
             echo "no ANTHROPIC_API_KEY secret configured; the agent resolution will be skipped"
           fi
-      - name: Studio e2e — agent conflict resolution 🤖
+      - name: Studio e2e — agent root-conflict resolution 🤖
         env:
           STUDIO_E2E_AGENT: "1"
-        run: npm run studio:e2e -- -g conflict
+        run: npm run studio:e2e -- -g "root agent"
       - name: Clean up 🧹
         if: always()
         run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* /tmp/anthropic_key.txt || true

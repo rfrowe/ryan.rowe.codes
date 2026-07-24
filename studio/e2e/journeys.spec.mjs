@@ -2,7 +2,8 @@
 // asserting on rendered UI AND git ground-truth in the isolated sandbox. Each journey creates its own
 // post (unique slug) so they stay independent despite sharing one booted studio.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { test, expect, RUN_AGENT } from "./fixtures.mjs";
 
@@ -156,4 +157,50 @@ test("reload rehydrates the studio from the connect snapshot", async ({ studioPa
   // A dropped/reloaded socket re-renders purely from the sidecar's connect snapshot.
   await page.reload({ waitUntil: "load" });
   await expect(page.locator(".cm-editor").first()).toBeVisible({ timeout: 20_000 });
+});
+
+// Last in the file on purpose: unlike a post's conflict (isolated to that post's own worktree), a root
+// conflict leaves the studio's own root worktree (sb.repo) mid-rebase with conflict markers on disk for
+// the deterministic (non-agent) half of this journey, so nothing later in a shared-studio run should
+// depend on the root being clean afterward.
+test("update the studio root whose base moved → conflict handed to the root agent (banner) → resolves", async ({ studioPage: page, studio }) => {
+  const { gh } = studio;
+  const conflictFile = path.join(gh.sb.repo, "conflict.txt");
+
+  // A local commit directly on the root's own branch (not through the studio)...
+  writeFileSync(conflictFile, "base\nroot-local change\n");
+  gh.git(["add", "--", "conflict.txt"], gh.sb.repo);
+  gh.git(["commit", "-q", "-m", "root: local change"], gh.sb.repo);
+  // ...then origin/main moves too, touching the same lines differently, so updating conflicts.
+  gh.advanceMain({ "conflict.txt": "base\norigin-side change\n" }, "origin: conflicting change");
+
+  // Pin Sonnet + low effort (model/effort are global session state, not per-post, so this affects the
+  // root's turn exactly as it would a post's).
+  if (RUN_AGENT) {
+    await page.getByTitle("Model", { exact: true }).click();
+    await page.getByText("Sonnet 5").click();
+    await page.getByTitle("Reasoning effort", { exact: true }).click();
+    await page.getByRole("dialog", { name: "Reasoning effort" }).getByText("low", { exact: true }).click();
+  }
+
+  // Fetch surfaces the divergence (git.primary.behind > 0), which is what gates the status popover's
+  // "Update root" row; accept the native confirm() onUpdateRoot raises for a non-fast-forward root.
+  await page.keyboard.press("ControlOrMeta+Shift+f");
+  await page.locator(".tabbar__status").hover();
+  const updateRootBtn = page.getByRole("button", { name: "Update root" });
+  await expect(updateRootBtn).toBeVisible({ timeout: 20_000 });
+  page.once("dialog", (dialog) => dialog.accept());
+  await updateRootBtn.click();
+
+  // Deterministic (no key needed): the conflict is handed to the root's own agent. A system note
+  // appears in the root-conflict banner, and the root worktree is left mid-rebase with conflict markers.
+  await expect(page.locator(".rootconflict .msg--system").first()).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => { try { return readFileSync(conflictFile, "utf8"); } catch { return ""; } }, { timeout: 20_000, message: "root rebase conflicted in the worktree" }).toContain("<<<<<<<");
+
+  // The paid half (only with a funded key + STUDIO_E2E_AGENT=1): the agent resolves and the studio
+  // finishes the rebase, so the root ends up containing origin/main with the markers gone.
+  if (RUN_AGENT) {
+    await expect.poll(() => gh.containsOrigin("HEAD"), { timeout: 240_000, intervals: [2000], message: "agent resolves + rebase --continue completes" }).toBeTruthy();
+    expect(readFileSync(conflictFile, "utf8"), "markers gone after resolution").not.toContain("<<<<<<<");
+  }
 });
