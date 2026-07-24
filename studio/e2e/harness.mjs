@@ -78,6 +78,10 @@ export function buildSandbox(ref = REF) {
   const refSha = git(["rev-parse", ref], HARNESS_REPO);
   git(["init", "--bare", "-q", originGit], root);
   git(["symbolic-ref", "HEAD", "refs/heads/main"], originGit);
+  // CI's checkout of a PR merge ref is sometimes shallow (GitHub can serve a synthetic merge SHA as a
+  // graft), which git push otherwise refuses with "shallow update not allowed". Harmless here: the
+  // sandbox only ever builds forward from this tip, never walks HARNESS_REPO's ancestor history.
+  git(["config", "receive.shallowUpdate", "true"], originGit);
   git(["push", "-q", originGit, `${refSha}:refs/heads/main`], HARNESS_REPO);
   git(["clone", "-q", originGit, repo], root);
   git(["clone", "-q", originGit, mover], root);
