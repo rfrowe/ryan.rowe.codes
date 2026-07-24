@@ -34,6 +34,14 @@ whose path escapes the worktree prompt the human, so keep edits inside it.
 Resolve "here" / "this" / "the title" against the editor state before editing,
 and don't reformat lines you weren't asked to touch.
 
+### Seeing a change live
+
+Saving a file is the entire verification loop — the author's preview hot-reloads
+on its own. Never run `astro build`, `astro dev`, `astro check`, or `rm -rf
+.astro`/`dist` in this worktree. For static verification use `npx tsc --noEmit`
+/ `npx eslint <path>` and `mcp__studio__preview_status`; for "does this render
+right," ask the author to check their live preview.
+
 ### The Studio MCP toolkit (`mcp__studio__*`)
 
 Six tools, all auto-approved (they never prompt):
@@ -208,6 +216,71 @@ different words:
 ```mdx
 Back in my <PostLink slug="hello-world">first attempt</PostLink>, I…
 ```
+
+## Directives
+
+`remark-directive` plus a local transform (`src/lib/remarkDirectiveRender.ts`,
+wired into `astro.config.mjs`'s `remarkPlugins`) unlocks `:::name{...}` container
+syntax. Two modes, picked by directive name:
+
+- **Generic wrap** — any name other than `class` renders a real element named
+  after the directive, wrapping its content; attributes pass straight through
+  (`.class` / `#id` shorthand, or `key=value`):
+
+  ```mdx
+  :::note{.warning}
+  Don't do this.
+  :::
+  ```
+
+  renders `<note class="warning">Don't do this.</note>`. `note` isn't a real
+  HTML tag until you map it to a component in `mdx-components.ts` — until then
+  it's inert markup. Reach for plain MDX (`<SomeComponent>`) instead when you
+  already have or want a real component; this mode is for occasional one-off
+  wrapping without a named import.
+- **`:::class{...}`** — applies the directive's classes to the wrapped
+  content's own element instead of introducing a wrapper. Use this for styling
+  *native* markdown syntax (lists, tables, blockquotes) where a wrapper would
+  sit outside the element the CSS actually needs to target:
+
+  ```mdx
+  :::class{.spaced}
+  - one
+  - two
+  :::
+  ```
+
+  renders `<ul class="spaced">` directly, no wrapping `<div>`. Multiple classes
+  compose in the same braces, space- or dot-separated (both work identically):
+
+  ```mdx
+  :::class{.spaced .em-bullet}
+  - one
+  - two
+  :::
+  ```
+
+  renders `<ul class="spaced em-bullet">`. It requires exactly **one** child
+  block — wrapping more than one, only the first receives the classes (the
+  transform throws if there's no child at all).
+
+  `remark-directive` has no anonymous `:::{...}` or `:::[...]` form (a name is
+  required to parse at all — verified against the library directly), so
+  `class` is a reserved marker name for this unwrap behavior — don't reuse it
+  as a real wrap-mode tag.
+
+Known classes (styled in `Prose.css.ts`, selectors keyed on the literal class
+name since it's authored, not vanilla-extract-generated):
+
+| Class | Applies to | Effect | Opt-in? |
+| --- | --- | --- | --- |
+| `.spaced` | `ul` | doubles the gap between `<li>`s | opt-in |
+| `.em-bullet` | `ul` | em dash (`—`) bullet marker | **default** — applies even with no class |
+| `.en-bullet` | `ul` | en dash (`–`) bullet marker | opt-in |
+| `.bullet` | `ul` | traditional round bullet (`•`) | opt-in |
+
+Add a new class to this table (and to `Prose.css.ts`) rather than inventing a
+one-off inline wrapper when the thing being styled is native markdown syntax.
 
 ## Math and code
 

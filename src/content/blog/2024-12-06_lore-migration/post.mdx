@@ -11,12 +11,12 @@ Luckily, I had a second bird in the bush to kill with my stone, Lore.
 
 I've been meaning to upgrade my Docker application server for a while.
 Since 2016 I've been rocking a Supermicro X10SDV-TLN4F-O in a Supermicro CSE-505-203B 1U chassis.
-This thing, with its 8-core Intel&reg; Xeon&reg; D-1451, is no joke especially with a nice helping of 128GiB ECC DDR4 memory.
+This thing, with its 8-core Intel&reg; Xeon&reg; D-1541, is no joke especially with a nice helping of 128GiB ECC DDR4 memory.
 However, one thing that's not a joke are the three Supermicro FAN-0061L4 fans with a max speed of 13,000 RPM.
 
 
 All was fun and games, living with what at idle sounded like a small bee hive in my living room.
-However, once I stood up a Minecraft server for myself and my friends, the relatively low single-core clock speed (2.1GHz) combined with the 40mm fan form factor quickly lead to, as my partner so lovingly described, an urgently untenable situation.
+However, once I stood up a Minecraft server for myself and my friends, the relatively low single-core clock speed (2.1GHz) combined with the 40mm fan form factor quickly led to, as my partner so lovingly described, an urgently untenable situation.
 Once I started investigating its performance, I noticed several IPMI alerts from over the years of **critical CPU temps over 80°C** which were never delivered over e-mail due to a misconfiguration.
 
 ![The rack before: a Supermicro 1U, Synology DS1515+, and the rest of the fleet.](./rack-before.webp)
@@ -29,7 +29,7 @@ Specifically, I'm looking for:
 
 **0. A Larger Form Factor.**
 The 1U restriction is the heart of my issues here.
-40mm ain't much to work with, so allowing 3U or 4U means larger fans and therefore more mass airflow per revolution of the blades.
+40mm ain't much to work with, so allowing 3U means larger fans and therefore more mass airflow per revolution of the blades.
 The added headroom also means I can use an active CPU cooler, rather than relying on a heat sink.
 With these changes, my server should run both cooler and quieter.
 
@@ -43,9 +43,9 @@ This means an iGPU can transcode for Plex faster than a discrete GPU and with le
 
 **2. A Honkin' GPU.**
 Adding a GPU to my setup was obviously essential for my gaming dreams.
-What remained non-obvious was how to cram a full height graphics card into 3U or 4U.
+What remained non-obvious was how to cram a full height graphics card into 3U.
 Thankfully, Sliger came to my rescue with the Sliger CX3150a.
-This beast boasts a 4U form factor with room for a full height GPU via PCIe riser.
+This beast boasts a 3U form factor with room for a full height GPU via PCIe riser.
 Now, this would have been enough but this fantastic machine also supports 120mm AIO cooling, a novelty in rack-mount hardware that's sure to get the most out of my CPU.
 
 **3. Out of Band Management.**
@@ -80,7 +80,7 @@ Making a list of requirements is the easy part. Building a parts list that met t
 | PSU | 750 W | [Corsair SF750 80 PLUS Platinum](https://www.corsair.com/us/en/p/psu/cp-9020186-na/sf-series-sf750-750-watt-80-plus-platinum-certified-high-performance-sfx-psu-cp-9020186-na) |
 
 ## The Build
-This was absolutely the most fun part of this whole experience. It's certainly a tight fit in this 3U chassis and I had to get creative. Cramming the GPU and IPMI card in the vertically stacked expansion slots required a x16 PCIe riser cable _and_ a x4 PCIe riser for the IPMI card. Wiring got to be quite complicated but I'm proud of the cable management--though the airflow through the GPU fans is partially obstructed. Despite this, the airflow through the chassis via the 360mm AIO with Noctua fans is radically effective at cooling both the CPU and GPU.
+This was absolutely the most fun part of this whole experience. It's certainly a tight fit in this 3U chassis and I had to get creative. Cramming the GPU and IPMI card in the vertically stacked expansion slots required an x16 PCIe riser cable _and_ an x4 PCIe riser for the IPMI card. Wiring got to be quite complicated but I'm proud of the cable management--though the airflow through the GPU fans is partially obstructed. Despite this, the airflow through the chassis via the 360mm AIO with Noctua fans is radically effective at cooling both the CPU and GPU.
 
 ![Lore's internals: the ProArt Z790 crammed into 3U with the 3070FE and ASUS IPMI card cooled by the 360mm AIO.](./lore-internals.webp)
 
@@ -98,11 +98,14 @@ And the best part: all of this was configurable remotely via IPMI, where I can a
 ![The ASMB10-iKVM dashboard: firmware info, the ProArt Z790-CREATOR WIFI, power-on hours, and all sensors healthy.](./ipmi-dashboard.webp)
 
 As a bonus:
+
+:::class{.spaced}
 - All of my CPU load driven by Plex transcoding fell off, now delegated by the iGPU
 - I have 4TB of SSD space to use as `/dev/shm` for hosting low-latency Minecraft worlds and fast storage for Usenet article downloading and unpacking.
 - Through Docker, I can host a KDE desktop and play Steam games via Proton from my desk with near-zero latency over Thunderbolt.
 - Over the LAN, I can play containerized Steam games with 7ms latency to my Steam Deck over wired LAN and 20ms over 5GHz WLAN via Moonlight.
 - Remote access to my host via IPMI and _properly configured_ e-mail alerts for any future sensor abnormalities.
+:::
 
 That last point--running a full Steam library from inside a container and streaming it across the house--turned into a rabbit hole deep enough to deserve its own post. Coaxing GPU access, Proton, and Moonlight into cooperating inside Docker was equal parts miraculous and cursed, and I'll get into how the whole thing fits together in a follow-up.
 

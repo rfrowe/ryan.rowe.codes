@@ -46,3 +46,40 @@ export const figcaption = style({
   textAlign: "center",
   fontStyle: "italic",
 });
+
+// `ul.spaced` is authored via `:::class{.spaced}` (see remarkDirectiveRender.ts), which
+// lands the class directly on the `ul` - no wrapper element to style instead.
+globalStyle("ul.spaced li", {
+  margin: spacing(1, 0),
+});
+
+// `::marker` can't take margin/width, so the bullet is a positioned `::before` instead.
+globalStyle("ul", {
+  listStyle: "none",
+  paddingLeft: "1.5em",
+});
+
+// `li` padding is the bullet-to-text gap only; `ul`'s padding above positions the bullet.
+globalStyle("ul li", {
+  position: "relative",
+  paddingLeft: "1.5em",
+});
+
+// Em dash is the default bullet; `.em-bullet` names it explicitly, `.en-bullet`/`.bullet` opt into an alternate.
+globalStyle("ul li::before", {
+  content: '"—"',
+  position: "absolute",
+  left: 0,
+});
+
+globalStyle("ul.em-bullet li::before", {
+  content: '"—"',
+});
+
+globalStyle("ul.en-bullet li::before", {
+  content: '"–"',
+});
+
+globalStyle("ul.bullet li::before", {
+  content: '"•"',
+});
