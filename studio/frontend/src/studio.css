@@ -2348,7 +2348,7 @@ body {
   color: var(--fg-faint);
 }
 
-/* ---- shortcuts panel (⌘?) ---- */
+/* ---- shortcuts panel (⌘/) ---- */
 .shortcuts__scrim {
   position: fixed;
   inset: 0;

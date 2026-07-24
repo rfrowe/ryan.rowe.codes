@@ -1,4 +1,4 @@
-// ⌘? shortcuts panel: every registered keymap command, grouped, with its chord and live enabled
+// ⌘/ shortcuts panel: every registered keymap command, grouped, with its chord and live enabled
 // state. Doubles as a command menu: clicking a row runs it and closes. Type to filter, Esc closes.
 // Mounted once, unconditionally, near the App root: it owns its own open/closed state so its
 // help.shortcuts binding (which opens it) is always registered, not only while it's already open.
@@ -37,7 +37,7 @@ export function ShortcutsPanel({ git: _git }: ShortcutsPanelProps) {
   const [open, setOpen] = useState(false);
   useCommand({
     id: "help.shortcuts",
-    chord: "mod+shift+?",
+    chord: "mod+/",
     label: "Keyboard shortcuts",
     group: "Navigation",
     run: () => setOpen((o) => !o),
