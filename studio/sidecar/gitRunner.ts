@@ -21,8 +21,19 @@ interface RunOpts {
   timeoutMs?: number;
 }
 
-function run(bin: "git" | "gh", args: readonly string[], opts: RunOpts): Promise<RunResult> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+// A worktree's own cwd can transiently ENOENT a spawn moments after another process (a `git
+// worktree add`, say) finished writing it: confirmed by instrumenting the exact spawn instant
+// against a real crash, existsSync read false right there, then true again under two seconds
+// later, with nothing in this codebase ever having removed the path. That's a virtualized
+// filesystem's write-visibility lag, not a missing worktree, so it's worth a few quick retries
+// before surfacing the failure to whatever guard is a caller's own last resort.
+const SPAWN_ENOENT_RETRY_DELAYS_MS = [50, 150, 300];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runOnce(bin: "git" | "gh", args: readonly string[], opts: RunOpts, timeoutMs: number): Promise<RunResult> {
   return new Promise<RunResult>((resolve, reject) => {
     execFile(
       bin,
@@ -54,6 +65,19 @@ function run(bin: "git" | "gh", args: readonly string[], opts: RunOpts): Promise
       },
     );
   });
+}
+
+async function run(bin: "git" | "gh", args: readonly string[], opts: RunOpts): Promise<RunResult> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await runOnce(bin, args, opts, timeoutMs);
+    } catch (err) {
+      const isSpawnEnoent = (err as NodeJS.ErrnoException).code === "ENOENT";
+      if (!isSpawnEnoent || attempt >= SPAWN_ENOENT_RETRY_DELAYS_MS.length) throw err;
+      await sleep(SPAWN_ENOENT_RETRY_DELAYS_MS[attempt]);
+    }
+  }
 }
 
 /**
