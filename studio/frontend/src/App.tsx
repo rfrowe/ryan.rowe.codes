@@ -27,8 +27,8 @@ import { fetchRemote, getLossPreview, rebaseAbort, saveDraft, update, updateRoot
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import { EMPTY_GIT, selectRootName } from "./gitSelectors";
-import { DEFAULT_MODEL } from "../../shared/types";
-import type { AgentState, ClaudeModel, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
+import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../../shared/types";
+import type { AgentState, ClaudeModel, DocRev, EffortLevel, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { DiffResponse, GitState, PromptContext, ServerMessage } from "../../shared/protocol";
 
 interface DocState {
@@ -75,6 +75,8 @@ interface StudioState {
   mode: PermissionMode;
   /** Authoritative model (from `model.status`), shown + edited via the model chip. */
   model: ClaudeModel;
+  /** Authoritative reasoning effort (from `effort.status`), shown + edited via the effort chip. */
+  effort: EffortLevel;
   /** The single in-flight turn (the backend serializes one at a time) and the tab that owns it. */
   turn: { promptId: string; path: string } | null;
   /** promptId to owning tab path. Outlives `turn` so a stale done/error still routes correctly. */
@@ -142,6 +144,7 @@ const initialState: StudioState = {
   mcp: [],
   mode: "auto",
   model: DEFAULT_MODEL,
+  effort: DEFAULT_EFFORT,
   turn: null,
   promptOwners: {},
   git: EMPTY_GIT,
@@ -423,6 +426,9 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
 
     case "model.status":
       return { ...state, model: msg.model };
+
+    case "effort.status":
+      return { ...state, effort: msg.effort };
 
     case "git.state":
       // Publish-on-change means each push is already the full truth: replace the slice wholesale.
@@ -1013,6 +1019,11 @@ export default function App() {
     socketRef.current?.send({ type: "model.set", model });
   }, []);
 
+  // Switch the reasoning effort; the sidecar echoes effort.status back to the chip.
+  const onSetEffort = useCallback((effort: EffortLevel) => {
+    socketRef.current?.send({ type: "effort.set", effort });
+  }, []);
+
   // Answer a permission prompt. The card lives on the active tab, so the active path is the owner.
   // Drop it locally only once the response is sent; a dropped socket leaves it up for resetTurn to clear.
   const onPermission = useCallback((requestId: string, decision: PermissionDecision) => {
@@ -1220,6 +1231,8 @@ export default function App() {
               onSetMode={onSetMode}
               model={state.model}
               onSetModel={onSetModel}
+              effort={state.effort}
+              onSetEffort={onSetEffort}
               onSend={onChatSend}
               onCancel={onCancel}
             />

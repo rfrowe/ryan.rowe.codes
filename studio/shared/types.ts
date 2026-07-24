@@ -55,6 +55,15 @@ export type ClaudeModel = "claude-opus-4-8" | "claude-sonnet-5" | "claude-haiku-
 /** The model a fresh session starts on until the chip changes it. */
 export const DEFAULT_MODEL: ClaudeModel = "claude-opus-4-8";
 
+/**
+ * Reasoning-effort levels the studio's effort chip surfaces, fed to `query()`'s `effort` option.
+ * The SDK silently falls back on models that don't support a level (e.g. `xhigh` to `high`).
+ */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** The effort a fresh session starts on until the chip changes it. */
+export const DEFAULT_EFFORT: EffortLevel = "medium";
+
 /** A human's answer to a `permission.request`: allow once, allow and remember, or deny. */
 export type PermissionDecision = "allow" | "always" | "deny";
 
