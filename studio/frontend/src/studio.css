@@ -2175,6 +2175,94 @@ body {
   color: var(--fg-faint);
 }
 
+/* ---- effort chip + popover (mirrors the model chip) ---- */
+.effort {
+  position: relative;
+}
+.effort__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.effort__chip:hover,
+.effort__chip--open {
+  background: var(--bg-2);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.effort__icon {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+  color: var(--accent);
+}
+.effort__popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: 264px;
+  padding: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  z-index: 60;
+}
+.effort__popover-head {
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-faint);
+}
+.effort__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.effort__option:hover {
+  background: var(--bg-3);
+}
+.effort__option--active {
+  border-color: var(--border-strong);
+}
+.effort__option .effort__icon {
+  margin-top: 2px;
+}
+.effort__option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.effort__option-label {
+  font-size: 13px;
+}
+.effort__option-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
 /* ---- permission prompt (chat, above the composer) ---- */
 .perm-list {
   display: flex;

@@ -325,6 +325,7 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     ws.send(JSON.stringify({ type: "mcp.status", servers: agentHost.getMcpStatus() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "mode.status", mode: agentHost.getPermissionMode() } satisfies ServerMessage));
     ws.send(JSON.stringify({ type: "model.status", model: agentHost.getModel() } satisfies ServerMessage));
+    ws.send(JSON.stringify({ type: "effort.status", effort: agentHost.getEffort() } satisfies ServerMessage));
     // The cached git.state snapshot, if the first one has landed; omitted otherwise rather than
     // blocking the rest of the connect snapshot on a fresh git re-query.
     const gitState = store.getGitState();
@@ -545,6 +546,11 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       // Set the model for subsequent turns; the agent host broadcasts the authoritative model.status.
       case "model.set":
         agentHost.setModel(message.model);
+        return;
+
+      // Set the reasoning effort for subsequent turns; the agent host broadcasts effort.status.
+      case "effort.set":
+        agentHost.setEffort(message.effort);
         return;
 
       // Answer an in-flight permission prompt: unblocks the awaiting canUseTool in the agent host.

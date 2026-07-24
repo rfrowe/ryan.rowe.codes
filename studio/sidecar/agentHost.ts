@@ -13,8 +13,8 @@ import type { HookInput, HookJSONOutput, Options, SDKMessage, SessionMessage } f
 
 import type { AgentHost, StudioTools } from "../shared/services";
 import type { PromptContext, ServerMessage, SessionHistoryItem, SessionHistoryTool } from "../shared/protocol";
-import type { ClaudeModel, PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
-import { DEFAULT_MODEL } from "../shared/types";
+import type { ClaudeModel, EffortLevel, PermissionDecision, PermissionMode, Range, SessionMode } from "../shared/types";
+import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../shared/types";
 import type { ActiveWorktree } from "../state/store";
 import { STUDIO_MCP_SERVER_NAME, STUDIO_TOOL_WILDCARD } from "../shared/mcpTools";
 import { createInProcessMcp } from "../mcp/inProcess";
@@ -40,6 +40,8 @@ export interface AgentHostDeps {
   defaultPermissionMode?: PermissionMode;
   /** Model chip default; defaults to `DEFAULT_MODEL`. */
   defaultModel?: ClaudeModel;
+  /** Effort chip default; defaults to `DEFAULT_EFFORT`. */
+  defaultEffort?: EffortLevel;
   /** Dirs editable beyond the worktree at launch; seeds the granted-dir set. */
   additionalDirectories?: string[];
   /** Seam over the SDK's `getSessionMessages` for testing; defaults to the real SDK call. */
@@ -57,6 +59,9 @@ export interface StudioAgentHost extends AgentHost {
   /** Set the model for subsequent turns and broadcast the authoritative `model.status`. */
   setModel(model: ClaudeModel): void;
   getModel(): ClaudeModel;
+  /** Set the reasoning effort for subsequent turns and broadcast the authoritative `effort.status`. */
+  setEffort(effort: EffortLevel): void;
+  getEffort(): EffortLevel;
   /** Resolve an in-flight `permission.request` with the human's decision. */
   resolvePermission(requestId: string, decision: PermissionDecision): void;
   /**
@@ -100,6 +105,8 @@ class EmbeddedAgentHost implements StudioAgentHost {
   private currentMode: PermissionMode;
   /** Model applied to every turn's `query()`. */
   private currentModel: ClaudeModel;
+  /** Reasoning effort applied to every turn's `query()`. */
+  private currentEffort: EffortLevel;
   /** Dirs beyond the worktree edits may target without asking (grown via "always allow"). */
   private readonly grantedDirs: Set<string>;
   /** In-flight prompts: requestId to the resolver awaited inside `canUseTool`. */
@@ -112,6 +119,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     this.deps = deps;
     this.currentMode = deps.defaultPermissionMode ?? "auto";
     this.currentModel = deps.defaultModel ?? DEFAULT_MODEL;
+    this.currentEffort = deps.defaultEffort ?? DEFAULT_EFFORT;
     this.grantedDirs = new Set(deps.additionalDirectories ?? []);
   }
 
@@ -246,6 +254,15 @@ class EmbeddedAgentHost implements StudioAgentHost {
 
   getModel(): ClaudeModel {
     return this.currentModel;
+  }
+
+  setEffort(effort: EffortLevel): void {
+    this.currentEffort = effort;
+    this.deps.emit({ type: "effort.status", effort });
+  }
+
+  getEffort(): EffortLevel {
+    return this.currentEffort;
   }
 
   resolvePermission(requestId: string, decision: PermissionDecision): void {
@@ -385,6 +402,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
       cwd,
       abortController: abort,
       model: this.currentModel,
+      effort: this.currentEffort,
       // The studio-tool wildcard is always auto-approved so the panel's own tools never prompt.
       // `additionalDirectories` are the dirs the human granted beyond the worktree.
       permissionMode: this.currentMode,

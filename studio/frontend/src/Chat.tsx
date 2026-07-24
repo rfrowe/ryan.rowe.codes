@@ -22,8 +22,9 @@ import { ToolDetailView } from "./ToolDetailView";
 import { AskUserQuestionCard } from "./AskUserQuestion";
 import { ModeChip } from "./ModeChip";
 import { ModelChip } from "./ModelChip";
+import { EffortChip } from "./EffortChip";
 import { parseAskQuestions, type AskQuestionItem } from "./toolDetails";
-import type { ClaudeModel, PermissionDecision, PermissionMode } from "../../shared/types";
+import type { ClaudeModel, EffortLevel, PermissionDecision, PermissionMode } from "../../shared/types";
 
 // Re-exported so App's `import { ChatItem } from "./Chat"` and its reducer are
 // untouched by the UI swap.
@@ -49,11 +50,13 @@ type ChatProps = StudioChatRuntimeOptions & {
   onAnswerQuestion: (requestId: string, toolUseId: string | undefined, answers: Record<string, string>) => void;
   /** The active post's worktree root, so file paths in tool calls drop that prefix. */
   cwd?: string;
-  /** Permission mode + model, surfaced by the chips in the composer's bottom-right. */
+  /** Permission mode + model + effort, surfaced by the chips in the composer's bottom-right. */
   mode: PermissionMode;
   onSetMode: (mode: PermissionMode) => void;
   model: ClaudeModel;
   onSetModel: (model: ClaudeModel) => void;
+  effort: EffortLevel;
+  onSetEffort: (effort: EffortLevel) => void;
 };
 
 /** `mcp__studio__foo` becomes `studio · foo`; other MCP tools drop their server prefix. */
@@ -265,12 +268,16 @@ function Composer({
   onSetMode,
   model,
   onSetModel,
+  effort,
+  onSetEffort,
 }: {
   connected: boolean;
   mode: PermissionMode;
   onSetMode: (mode: PermissionMode) => void;
   model: ClaudeModel;
   onSetModel: (model: ClaudeModel) => void;
+  effort: EffortLevel;
+  onSetEffort: (effort: EffortLevel) => void;
 }) {
   return (
     <ComposerPrimitive.Root className="chat__composer">
@@ -290,9 +297,10 @@ function Composer({
           <ComposerPrimitive.Cancel className="btn btn--danger">Cancel</ComposerPrimitive.Cancel>
         </ThreadPrimitive.If>
         <span className="chat__hint">↵ to send · Shift+↵ for a newline</span>
-        {/* Model + mode, ragged right on the same row as Send. Popovers open upward, clear of the composer. */}
+        {/* Model + effort + mode, ragged right on the same row as Send. Popovers open upward, clear of the composer. */}
         <div className="chat__selectors">
           <ModelChip model={model} onSetModel={onSetModel} />
+          <EffortChip effort={effort} onSetEffort={onSetEffort} />
           <ModeChip mode={mode} onSetMode={onSetMode} />
         </div>
       </div>
@@ -361,6 +369,8 @@ export function Chat(props: ChatProps) {
               onSetMode={props.onSetMode}
               model={props.model}
               onSetModel={props.onSetModel}
+              effort={props.effort}
+              onSetEffort={props.onSetEffort}
             />
           </ThreadPrimitive.Root>
         </AssistantRuntimeProvider>
