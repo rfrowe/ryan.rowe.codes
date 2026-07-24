@@ -2,21 +2,25 @@
 // root-conflict banner and the per-post Update trigger so both read "queued" the same way. Neither a
 // dispatched-but-not-yet-content-producing system prompt nor a fresh REST call has any dedicated
 // backend signal distinguishing "queued behind another turn" from "just hasn't streamed its first
-// token yet" — both render as "queued" here, which is honest either way and needs no wire changes.
+// token yet"; both render as "queued" here, which is honest either way and needs no wire changes.
 
 import type { RebaseState } from "../../shared/protocol";
 
 export type RootConflictPhase = "queued" | "resolving" | "done";
 
-/** The root-conflict banner's phase. "queued"/"resolving" only while `turn` is root's own turn;
- *  otherwise "done", so the banner shows whatever its last episode left in the transcript rather than
- *  a stale spinner once some other turn (or none) holds the latch. */
+/** The root-conflict banner's phase. "resolving" once root's own turn is producing content; "queued"
+ *  either while root holds the latch but hasn't started, or while another turn holds the latch and
+ *  root has a dispatch still waiting behind it (`rootQueued`); otherwise "done", so the banner shows
+ *  whatever its last episode left in the transcript rather than a stale spinner. */
 export function rootConflictPhase(
   turn: { promptId: string; path: string } | null,
   turnStarted: boolean,
   rootPath: string,
+  rootQueued: boolean,
 ): RootConflictPhase {
-  if (turn && rootPath !== "" && turn.path === rootPath) return turnStarted ? "resolving" : "queued";
+  if (rootPath === "") return "done";
+  if (turn && turn.path === rootPath) return turnStarted ? "resolving" : "queued";
+  if (rootQueued) return "queued";
   return "done";
 }
 

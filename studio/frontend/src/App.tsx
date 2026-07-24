@@ -95,6 +95,11 @@ export interface StudioState {
   turnStarted: boolean;
   /** promptId to owning tab path. Outlives `turn` so a stale done/error still routes correctly. */
   promptOwners: Record<string, string>;
+  /** promptId to owning path, for a system dispatch that arrived queued behind another live turn
+   *  (chat.injected's early-return branch) and hasn't since started or finished. promptOwners alone
+   *  can't tell a dispatch still waiting its turn from one whose episode is long over, since it never
+   *  expires; this does, by being cleared the moment the prompt starts (claimTurn) or ends. */
+  queuedSystemPrompts: Record<string, string>;
   /** Every git fact (from `git.state`), replaced wholesale on each push. */
   git: GitState;
   rootConflict: RootConflictState;
@@ -165,6 +170,7 @@ export const initialState: StudioState = {
   turn: null,
   turnStarted: false,
   promptOwners: {},
+  queuedSystemPrompts: {},
   git: EMPTY_GIT,
   rootConflict: EMPTY_ROOT_CONFLICT,
 };
@@ -245,7 +251,15 @@ function claimTurn(state: StudioState, promptId: string): StudioState {
   if (state.turn?.promptId === promptId) return state.turnStarted ? state : { ...state, turnStarted: true };
   const path = state.promptOwners[promptId];
   if (path === undefined) return state; // no known owner (e.g. a stale replay); leave turn alone.
-  return { ...state, turn: { promptId, path }, turnStarted: true };
+  return dropQueued({ ...state, turn: { promptId, path }, turnStarted: true }, promptId);
+}
+
+/** Removes `promptId` from queuedSystemPrompts: it has either started (claimTurn) or ended (done/
+ *  error) without ever starting, so it's no longer a dispatch still waiting its turn. */
+function dropQueued(state: StudioState, promptId: string): StudioState {
+  if (!(promptId in state.queuedSystemPrompts)) return state;
+  const { [promptId]: _dropped, ...queuedSystemPrompts } = state.queuedSystemPrompts;
+  return { ...state, queuedSystemPrompts };
 }
 
 /** Whether a revert-scope /diff response is still the one most recently requested. A rapid
@@ -388,12 +402,17 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
     case "chat.injected": {
       // A server-composed prompt (no client sendPrompt action fired it): insert the bubble and
       // register the owner unconditionally. Only take the global latch if nothing else currently
-      // holds it — the backend already commits to this dispatch before knowing whether the agent is
+      // holds it; the backend already commits to this dispatch before knowing whether the agent is
       // busy, so a dispatch that's actually queued behind a still-running turn must not steal that
       // turn's busy indicator (claimTurn takes the latch back once this one's own content arrives).
       const next = patchOwnerChat(state, msg.path, (chat) => [...chat, { kind: "system", id: nid(), text: msg.text }]);
       const promptOwners = { ...next.promptOwners, [msg.promptId]: msg.path };
-      if (next.turn && next.turn.promptId !== msg.promptId) return { ...next, promptOwners };
+      if (next.turn && next.turn.promptId !== msg.promptId) {
+        // Genuinely queued behind another turn: record it so a selector (e.g. rootConflictPhase) can
+        // tell "still waiting its turn" from "episode over", which promptOwners alone can't.
+        const queuedSystemPrompts = { ...next.queuedSystemPrompts, [msg.promptId]: msg.path };
+        return { ...next, promptOwners, queuedSystemPrompts };
+      }
       return { ...next, turn: { promptId: msg.promptId, path: msg.path }, turnStarted: false, promptOwners };
     }
 
@@ -405,7 +424,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
         : state;
       // Only release the latch for our in-flight turn; a done for a stale/rebroadcast prompt must not.
       if (next.turn && msg.promptId === next.turn.promptId) next = { ...next, turn: null, turnStarted: false };
-      return next;
+      return dropQueued(next, msg.promptId);
     }
 
     case "error": {
@@ -420,7 +439,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       if (next.turn && (msg.promptId === undefined || msg.promptId === next.turn.promptId)) {
         next = { ...next, turn: null, turnStarted: false };
       }
-      return next;
+      return msg.promptId !== undefined ? dropQueued(next, msg.promptId) : next;
     }
 
     case "post.renamed": {
@@ -1196,10 +1215,11 @@ export default function App() {
   useCommand({ id: "agent.directive", chord: "mod+k", label: "Agent directive", group: "Agent", run: () => editorRef.current?.openPrompt() });
 
   const tabDescriptors = useMemo(() => state.tabs.map((t) => ({ path: t.path, title: t.title })), [state.tabs]);
-  const rootPhase = useMemo(
-    () => rootConflictPhase(state.turn, state.turnStarted, state.git.primary.worktree),
-    [state.turn, state.turnStarted, state.git.primary.worktree],
-  );
+  const rootPhase = useMemo(() => {
+    const rootPath = state.git.primary.worktree;
+    const rootQueued = Object.values(state.queuedSystemPrompts).includes(rootPath);
+    return rootConflictPhase(state.turn, state.turnStarted, rootPath, rootQueued);
+  }, [state.turn, state.turnStarted, state.git.primary.worktree, state.queuedSystemPrompts]);
 
   return (
     <KeymapProvider>

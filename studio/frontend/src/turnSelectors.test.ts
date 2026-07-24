@@ -6,23 +6,27 @@ const ROOT = "/repo";
 
 describe("rootConflictPhase", () => {
   it("is queued when root's turn is latched but hasn't produced content yet", () => {
-    expect(rootConflictPhase({ promptId: "p1", path: ROOT }, false, ROOT)).toBe("queued");
+    expect(rootConflictPhase({ promptId: "p1", path: ROOT }, false, ROOT, false)).toBe("queued");
   });
 
   it("is resolving once root's turn has produced content", () => {
-    expect(rootConflictPhase({ promptId: "p1", path: ROOT }, true, ROOT)).toBe("resolving");
+    expect(rootConflictPhase({ promptId: "p1", path: ROOT }, true, ROOT, false)).toBe("resolving");
   });
 
-  it("is done when no turn is latched", () => {
-    expect(rootConflictPhase(null, false, ROOT)).toBe("done");
+  it("is done when no turn is latched and root has no queued dispatch", () => {
+    expect(rootConflictPhase(null, false, ROOT, false)).toBe("done");
   });
 
-  it("is done when a different post's turn holds the latch, not root's", () => {
-    expect(rootConflictPhase({ promptId: "p1", path: "/repo/src/content/blog/a.mdx" }, true, ROOT)).toBe("done");
+  it("is done when a different post's turn holds the latch and root has no queued dispatch", () => {
+    expect(rootConflictPhase({ promptId: "p1", path: "/repo/src/content/blog/a.mdx" }, true, ROOT, false)).toBe("done");
   });
 
-  it("is done when rootPath is empty (no git.state has landed yet)", () => {
-    expect(rootConflictPhase({ promptId: "p1", path: "" }, false, "")).toBe("done");
+  it("is queued when a different post's turn holds the latch but root has a dispatch waiting behind it", () => {
+    expect(rootConflictPhase({ promptId: "p1", path: "/repo/src/content/blog/a.mdx" }, true, ROOT, true)).toBe("queued");
+  });
+
+  it("is done when rootPath is empty (no git.state has landed yet), even with a queued dispatch", () => {
+    expect(rootConflictPhase({ promptId: "p1", path: "" }, false, "", true)).toBe("done");
   });
 });
 

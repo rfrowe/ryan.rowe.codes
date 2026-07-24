@@ -1,7 +1,7 @@
 // Persistent banner surfacing the studio root's own agent-assisted rebase-conflict resolution (F4 for
 // the root worktree, dispatched by gitStatus.ts's updateRoot). The root has no tab of its own, so this
 // is its only visible conversation surface: a status line plus a compact transcript, reusing the same
-// message/tool styling as the per-post chat panel. No composer — root's turns are always
+// message/tool styling as the per-post chat panel. No composer: root's turns are always
 // server-dispatched, never human-typed.
 
 import type { ChatItem } from "./chatRuntime";

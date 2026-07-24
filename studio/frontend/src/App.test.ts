@@ -87,6 +87,8 @@ describe("reducer: chat.injected routing (root vs. post)", () => {
     expect(next.promptOwners["root-1"]).toBe(ROOT);
     // ...but the busy indicator stays on the turn that's actually running.
     expect(next.turn).toEqual({ promptId: "human-1", path: TAB_B });
+    // Recorded as genuinely queued, so a selector can tell this apart from a finished episode.
+    expect(next.queuedSystemPrompts["root-1"]).toBe(ROOT);
   });
 
   it("claims the turn once a queued dispatch's own content proves it actually started", () => {
@@ -94,6 +96,7 @@ describe("reducer: chat.injected routing (root vs. post)", () => {
     state = reducer(state, { type: "sendPrompt", promptId: "human-1", text: "hi", path: TAB_A });
     state = reducer(state, { type: "server", msg: { type: "chat.injected", promptId: "root-1", path: ROOT, text: "resolve", kind: "system" } });
     expect(state.turn).toEqual({ promptId: "human-1", path: TAB_A }); // still queued, not live.
+    expect(state.queuedSystemPrompts["root-1"]).toBe(ROOT);
 
     // The human's turn ends (its own done fires), then the queued root dispatch actually starts.
     state = reducer(state, { type: "server", msg: { type: "done", promptId: "human-1", stopReason: "end_turn" } });
@@ -103,6 +106,20 @@ describe("reducer: chat.injected routing (root vs. post)", () => {
     expect(started.turn).toEqual({ promptId: "root-1", path: ROOT });
     expect(started.turnStarted).toBe(true);
     expect(started.rootConflict.chat.some((it) => it.kind === "tool")).toBe(true);
+    // No longer queued once its own content proves it's actually running.
+    expect(started.queuedSystemPrompts).not.toHaveProperty("root-1");
+  });
+
+  it("clears the queued marker if a queued dispatch ends without ever starting", () => {
+    let state = withRoot(withTab(initialState, TAB_A), ROOT);
+    state = reducer(state, { type: "sendPrompt", promptId: "human-1", text: "hi", path: TAB_A });
+    state = reducer(state, { type: "server", msg: { type: "chat.injected", promptId: "root-1", path: ROOT, text: "resolve", kind: "system" } });
+    expect(state.queuedSystemPrompts["root-1"]).toBe(ROOT);
+
+    // The queued dispatch fails once drained (its target vanished, say) without ever claiming the latch.
+    const errored = reducer(state, { type: "server", msg: { type: "error", promptId: "root-1", message: "cannot dispatch" } });
+    expect(errored.turn).toEqual({ promptId: "human-1", path: TAB_A }); // the still-live turn is untouched.
+    expect(errored.queuedSystemPrompts).not.toHaveProperty("root-1");
   });
 
   it("is idempotent once a turn is already claimed and started", () => {
