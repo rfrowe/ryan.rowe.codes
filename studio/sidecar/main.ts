@@ -170,6 +170,7 @@ async function main(): Promise<void> {
   const agentHost = createAgentHost({
     tools,
     getActiveWorktree: () => store.getActiveWorktree(),
+    rootWorktreePath: REPO_ROOT,
     skillInstructions: conventions,
     // The store is the single event bus: the agent host's stream reaches the browser through the
     // same store.subscribe fan-out the web server listens on.

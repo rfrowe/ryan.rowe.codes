@@ -4,7 +4,7 @@
 // the extracted helpers; that block mocks the SDK's `query` export, since it's the one behavior
 // (draining a queued system prompt once an in-flight turn ends) that only exists inside `runTurn`.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HookInput, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -226,6 +226,10 @@ describe("worktreeAskHook", () => {
 });
 
 describe("dispatchSystemPrompt", () => {
+  const ROOT = "/repo";
+  // Several of these tests assert on `query`'s call count; without a reset, mock implementations and
+  // call history would leak across tests sharing this module-level mock.
+  beforeEach(() => vi.mocked(query).mockReset());
   const activeWorktree: ActiveWorktree = {
     slug: "a",
     branch: "blog/a",
@@ -235,7 +239,7 @@ describe("dispatchSystemPrompt", () => {
     canonicalPath: "/repo/src/content/blog/a.mdx",
   };
 
-  function makeHost() {
+  function makeHost(opts: { rootWorktreePath?: string } = {}) {
     const emitted: unknown[] = [];
     const turnEnds: string[] = [];
     const host = createAgentHost({
@@ -244,6 +248,7 @@ describe("dispatchSystemPrompt", () => {
       skillInstructions: "",
       emit: (m) => emitted.push(m),
       onTurnEnd: (promptId) => turnEnds.push(promptId),
+      rootWorktreePath: opts.rootWorktreePath,
     });
     return { host, emitted, turnEnds };
   }
@@ -252,14 +257,28 @@ describe("dispatchSystemPrompt", () => {
     const { host } = makeHost();
     // A regular prompt is mid-flight; poke the private latch directly rather than driving a real
     // query() call, since only the queuing decision is under test here.
-    const internals = host as unknown as { current: unknown; pendingSystemPrompt: unknown };
+    const internals = host as unknown as { current: unknown; pendingSystemPrompts: unknown[] };
     internals.current = { promptId: "human-1", abort: new AbortController() };
 
     const { promptId } = await host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "resolve" });
 
     expect(promptId).toBeTruthy();
     expect(promptId).not.toBe("human-1");
-    expect(internals.pendingSystemPrompt).toEqual({ promptId, path: activeWorktree.canonicalPath, text: "resolve" });
+    expect(internals.pendingSystemPrompts).toEqual([{ promptId, path: activeWorktree.canonicalPath, text: "resolve" }]);
+  });
+
+  it("queues multiple dispatches behind a busy turn in FIFO order rather than overwriting the pending one", async () => {
+    const { host } = makeHost();
+    const internals = host as unknown as { current: unknown; pendingSystemPrompts: unknown[] };
+    internals.current = { promptId: "human-1", abort: new AbortController() };
+
+    const first = await host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "first" });
+    const second = await host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "second" });
+
+    expect(internals.pendingSystemPrompts).toEqual([
+      { promptId: first.promptId, path: activeWorktree.canonicalPath, text: "first" },
+      { promptId: second.promptId, path: activeWorktree.canonicalPath, text: "second" },
+    ]);
   });
 
   it("drains a queued system prompt once the in-flight turn ends, even though that turn errors", async () => {
@@ -285,14 +304,14 @@ describe("dispatchSystemPrompt", () => {
     mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
 
     const { host, turnEnds } = makeHost();
-    const internals = host as unknown as { current: unknown; pendingSystemPrompt: unknown };
+    const internals = host as unknown as { current: unknown; pendingSystemPrompts: unknown[] };
     const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
     await new Promise((r) => setTimeout(r, 0)); // let prompt()'s synchronous prefix set `current`, then park on the gate.
     expect(internals.current).toMatchObject({ promptId: "human-1" });
 
     // Queued while "human-1" is genuinely still current: dispatchSystemPrompt must not reject or run inline.
     const dispatched = host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "resolve the conflict" });
-    expect(internals.pendingSystemPrompt).toMatchObject({ path: activeWorktree.canonicalPath });
+    expect(internals.pendingSystemPrompts).toEqual([expect.objectContaining({ path: activeWorktree.canonicalPath })]);
     expect(mockedQuery).toHaveBeenCalledTimes(1); // not yet drained; the human turn hasn't ended.
 
     releaseHumanTurn();
@@ -301,5 +320,97 @@ describe("dispatchSystemPrompt", () => {
 
     expect(turnEnds).toEqual(["human-1", promptId]); // both turns reached onTurnEnd, never just the first.
     expect(mockedQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("drains queued system prompts in FIFO order across successive turn ends, not last-write-wins", async () => {
+    const mockedQuery = vi.mocked(query);
+    let releaseHumanTurn: () => void = () => {};
+    const humanTurnGate = new Promise<void>((resolve) => (releaseHumanTurn = resolve));
+    mockedQuery.mockImplementationOnce((() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          await humanTurnGate;
+          return { done: true, value: undefined };
+        },
+      }),
+    })) as unknown as typeof query);
+    // Both queued system turns drain cleanly.
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+
+    const { host, turnEnds } = makeHost();
+    const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const first = await host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "first" });
+    const second = await host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "second" });
+
+    releaseHumanTurn();
+    await humanTurn;
+    while (turnEnds.length < 3) await new Promise((r) => setTimeout(r, 0)); // let the drain chain settle.
+
+    expect(turnEnds).toEqual(["human-1", first.promptId, second.promptId]);
+  });
+
+  it("still rejects a path that is neither the active post nor a configured root", async () => {
+    const { host, emitted } = makeHost({ rootWorktreePath: ROOT });
+    const { dispatched, promptId } = await host.dispatchSystemPrompt({ path: "/somewhere/else.mdx", text: "x" });
+    expect(dispatched).toBe(false);
+    expect(emitted).toContainEqual({
+      type: "error",
+      promptId,
+      message: "cannot dispatch: /somewhere/else.mdx is not the active post",
+    });
+  });
+
+  it("rejects a dispatch to the root path when no rootWorktreePath is configured", async () => {
+    const { host, emitted } = makeHost();
+    const { dispatched, promptId } = await host.dispatchSystemPrompt({ path: ROOT, text: "x" });
+    expect(dispatched).toBe(false);
+    expect(emitted).toContainEqual({ type: "error", promptId, message: `cannot dispatch: ${ROOT} is not the active post` });
+  });
+
+  it("dispatches immediately to the studio root when the path matches rootWorktreePath, even though it isn't the active post", async () => {
+    const mockedQuery = vi.mocked(query);
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+    const { host } = makeHost({ rootWorktreePath: ROOT });
+
+    const { dispatched } = await host.dispatchSystemPrompt({ path: ROOT, text: "resolve the root rebase" });
+
+    expect(dispatched).toBe(true);
+    expect(mockedQuery).toHaveBeenCalledTimes(1);
+    const call = mockedQuery.mock.calls[0][0] as { options: { cwd: string } };
+    expect(call.options.cwd).toBe(ROOT); // root has no worktreePath of its own; cwd is the root path itself.
+  });
+
+  it("queues a root dispatch behind a busy post turn and later runs it against the root, not the post", async () => {
+    const mockedQuery = vi.mocked(query);
+    let releaseHumanTurn: () => void = () => {};
+    const humanTurnGate = new Promise<void>((resolve) => (releaseHumanTurn = resolve));
+    mockedQuery.mockImplementationOnce((() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          await humanTurnGate;
+          return { done: true, value: undefined };
+        },
+      }),
+    })) as unknown as typeof query);
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+
+    const { host, turnEnds } = makeHost({ rootWorktreePath: ROOT });
+    const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const dispatched = host.dispatchSystemPrompt({ path: ROOT, text: "resolve root rebase" });
+    expect(mockedQuery).toHaveBeenCalledTimes(1); // not yet drained.
+
+    releaseHumanTurn();
+    await humanTurn;
+    const { promptId } = await dispatched;
+
+    expect(turnEnds).toEqual(["human-1", promptId]);
+    expect(mockedQuery).toHaveBeenCalledTimes(2);
+    const rootCall = mockedQuery.mock.calls[1][0] as { options: { cwd: string } };
+    expect(rootCall.options.cwd).toBe(ROOT);
   });
 });
