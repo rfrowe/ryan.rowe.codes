@@ -83,41 +83,48 @@ export function createConflictResolver(deps: ConflictResolverDeps): ConflictReso
     if (!wt) return; // the post closed mid-turn; its worktree may already be gone.
     const cwd = wt.worktreePath;
 
-    let conflicted = parseConflictedPaths(
-      (await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd })).stdout,
-    );
-
-    if (conflicted.length === 0) {
-      // core.editor=true stands in for GIT_EDITOR=true: --continue must never block on an interactive
-      // commit-message editor with no terminal attached.
-      const continueRes = await git.git(
-        [
-          "-c",
-          "core.editor=true",
-          "-c",
-          `user.name=${PINNED_NAME}`,
-          "-c",
-          `user.email=${PINNED_EMAIL}`,
-          "rebase",
-          "--continue",
-        ],
-        { cwd },
-      );
-      if (continueRes.code === 0) return; // done; the ref move reaches git.state via the doorbell.
-      // A multi-commit rebase can apply cleanly here and then hit a conflict on the *next* commit;
-      // treat that exactly like the agent's own edits not having fully resolved things.
-      conflicted = parseConflictedPaths(
+    try {
+      let conflicted = parseConflictedPaths(
         (await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd })).stdout,
       );
-      if (conflicted.length === 0) return; // --continue failed for some other reason; nothing more to hand the agent.
-    }
 
-    if (attempts < 1) {
-      dispatch(path, stem, conflicted, attempts + 1);
-      return;
+      if (conflicted.length === 0) {
+        // core.editor=true stands in for GIT_EDITOR=true: --continue must never block on an interactive
+        // commit-message editor with no terminal attached.
+        const continueRes = await git.git(
+          [
+            "-c",
+            "core.editor=true",
+            "-c",
+            `user.name=${PINNED_NAME}`,
+            "-c",
+            `user.email=${PINNED_EMAIL}`,
+            "rebase",
+            "--continue",
+          ],
+          { cwd },
+        );
+        if (continueRes.code === 0) return; // done; the ref move reaches git.state via the doorbell.
+        // A multi-commit rebase can apply cleanly here and then hit a conflict on the *next* commit;
+        // treat that exactly like the agent's own edits not having fully resolved things.
+        conflicted = parseConflictedPaths(
+          (await git.git(["-c", "core.quotePath=false", "status", "--porcelain"], { cwd })).stdout,
+        );
+        if (conflicted.length === 0) return; // --continue failed for some other reason; nothing more to hand the agent.
+      }
+
+      if (attempts < 1) {
+        dispatch(path, stem, conflicted, attempts + 1);
+        return;
+      }
+      // Fall back: rebase.phase reports "conflicted" again (the marker is still there, just no longer
+      // resolving); the human's way out from here is "Abort update" (F6).
+    } catch (err) {
+      // getWorktreeFor is a synchronous map read; deletePost can remove this worktree out from under
+      // the git calls above (not gated on an in-flight turn), rejecting rather than just failing.
+      // resolving is already cleared, so fall back the same as an ordinary --continue failure.
+      console.error(`[conflictResolver] handleTurnEnd failed for ${stem}:`, err instanceof Error ? err.message : err);
     }
-    // Fall back: rebase.phase reports "conflicted" again (the marker is still there, just no longer
-    // resolving); the human's way out from here is "Abort update" (F6).
   }
 
   return { onConflict, onTurnEnd: handleTurnEnd };

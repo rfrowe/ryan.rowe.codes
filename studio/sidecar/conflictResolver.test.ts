@@ -198,6 +198,40 @@ describe("createConflictResolver", () => {
     ]);
   });
 
+  it("does not crash and leaves resolving cleared when a git call rejects mid-handleTurnEnd (worktree removed underneath it)", async () => {
+    const c = await makeConflicted();
+    repo = c.repo;
+    origin = c.origin;
+    const setResolvingCalls: Array<[string, boolean]> = [];
+    const dispatchSystemPrompt = vi.fn(async () => ({ promptId: "p0", dispatched: true }));
+    const gitRunner = createGitRunner();
+    // The TOCTOU: getWorktreeFor already returned the worktree, but deletePost removes the directory
+    // before the first git call actually runs, so gitRunner.git rejects (spawn ENOENT), not just a
+    // nonzero exit code.
+    const gitSpy = vi.spyOn(gitRunner, "git").mockRejectedValueOnce(new Error("spawn git ENOENT"));
+    const resolver = createConflictResolver({
+      git: gitRunner,
+      sessionBranch: "main",
+      getWorktreeFor: (p) => (p === c.canonical ? { worktreePath: c.wtPath } : null),
+      dispatchSystemPrompt,
+      setResolving: (stem, resolving) => setResolvingCalls.push([stem, resolving]),
+      publish: () => {},
+    });
+
+    resolver.onConflict(c.canonical, ["README.md"]);
+    await flush();
+
+    // Without the fix, onTurnEnd's returned promise rejects here, which in production reaches
+    // agentHost's fire-and-forget void call with no handler and crashes the sidecar.
+    await expect(resolver.onTurnEnd("p0")).resolves.toBeUndefined();
+
+    expect(setResolvingCalls).toEqual([
+      ["foo", true],
+      ["foo", false],
+    ]); // cleared before the git calls, as always -- unaffected by the later rejection.
+    expect(gitSpy).toHaveBeenCalledTimes(1); // rejected on the very first call; nothing after it ran.
+  });
+
   it("clears resolving without touching git when the post closed before the turn ended", async () => {
     const c = await makeConflicted();
     repo = c.repo;
