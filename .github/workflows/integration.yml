@@ -48,18 +48,17 @@ jobs:
         if: always()
         run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* || true
 
-  # The root-conflict journey's agent resolution drives a real, paid Claude turn (pinned to Sonnet + low
-  # effort), so it runs ONLY in trusted contexts — a push to main, or a maintainer's `integration-agent`
-  # label on a SAME-REPO PR (never a fork). The key step no-ops without the secret, and STUDIO_E2E_AGENT
-  # gates it, so money is only ever spent from prod or an explicit maintainer opt-in. The grep below
-  # selects only the root journey, not the post-side conflict journey (both titles contain "conflict"),
-  # so a single push never fires two paid turns.
+  # Both conflict journeys' agent resolution drives a real, paid Claude turn each (pinned to Sonnet + low
+  # effort), so this job runs ONLY on a maintainer's `integration-agent` label on a same-repo PR, never a
+  # fork and never automatically on a push to main. The key step no-ops without the secret, and
+  # STUDIO_E2E_AGENT gates it, so money is only ever spent on an explicit maintainer opt-in. The grep
+  # below matches both conflict-journey titles, so one labeled push validates the post-side and
+  # root-side resolution in a single paid run.
   agent:
     if: >-
-      ${{ github.event_name == 'push'
-          || (github.event_name == 'pull_request'
-              && github.event.pull_request.head.repo.full_name == github.repository
-              && contains(github.event.pull_request.labels.*.name, 'integration-agent')) }}
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && contains(github.event.pull_request.labels.*.name, 'integration-agent') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -88,10 +87,10 @@ jobs:
           else
             echo "no ANTHROPIC_API_KEY secret configured; the agent resolution will be skipped"
           fi
-      - name: Studio e2e — agent root-conflict resolution 🤖
+      - name: Studio e2e — agent conflict resolution 🤖
         env:
           STUDIO_E2E_AGENT: "1"
-        run: npm run studio:e2e -- -g "root agent"
+        run: npm run studio:e2e -- -g conflict
       - name: Clean up 🧹
         if: always()
         run: rm -rf "$(dirname "$GITHUB_WORKSPACE")"/.studio-e2e-* /tmp/anthropic_key.txt || true
