@@ -155,16 +155,14 @@ export function createGitStatusService(deps: GitStatusServiceDeps): GitStatusSer
   async function computePrimary(): Promise<GitPrimaryState> {
     const headRes = await git.git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot });
     const headName = headRes.stdout.trim();
-    const head =
-      headRes.code === 0 && headName && headName !== "HEAD"
-        ? headName
-        : (await git.git(["rev-parse", "--short", "HEAD"], { cwd: repoRoot })).stdout.trim();
+    const headSha = (await git.git(["rev-parse", "--short", "HEAD"], { cwd: repoRoot })).stdout.trim();
+    const head = headRes.code === 0 && headName && headName !== "HEAD" ? headName : headSha;
     const onOrigin = await originRefExists(git, repoRoot, sessionBranch);
     const [behind, ahead] = onOrigin ? await leftRightCount(git, repoRoot, `origin/${sessionBranch}`, "HEAD") : [0, 0];
     // Display label for the root worktree's own branch, not the target-node label (always
     // sessionBranch): origin/<branch> when in sync with or behind origin, else the bare name.
     const ref = onOrigin && ahead === 0 ? `origin/${sessionBranch}` : head;
-    return { sessionBranch, head, rootMoved: head !== sessionBranch, ref, onOrigin, ahead, behind, worktree: repoRoot };
+    return { sessionBranch, head, rootMoved: head !== sessionBranch, ref, headSha, onOrigin, ahead, behind, worktree: repoRoot };
   }
 
   async function computePosts(base: string): Promise<GitPostState[]> {

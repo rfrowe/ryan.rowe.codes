@@ -82,6 +82,8 @@ export interface GitPrimaryState {
   // Display label for the root worktree's branch (status popover, the rootMoved restart prompt).
   // Not the target-node label; that's always sessionBranch.
   ref: string;
+  // Root worktree HEAD's short sha, always populated (equal to `head` when detached).
+  headSha: string;
   onOrigin: boolean; // origin/<sessionBranch> exists.
   ahead: number;
   behind: number; // root worktree vs origin/<sessionBranch>. Informational, not the ship gate.
