@@ -17,7 +17,6 @@ import { KeymapProvider } from "./keymap";
 import { useCommand } from "./useCommand";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { McpStatusBar, type McpServerStatus } from "./McpStatusBar";
-import { ModeChip } from "./ModeChip";
 import { Modal } from "./Modal";
 import { WarnIcon } from "./WarnIcon";
 import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveConfirm";
@@ -28,7 +27,8 @@ import { fetchRemote, getLossPreview, rebaseAbort, saveDraft, update, updateRoot
 import { slugFromPath } from "./slug";
 import { PREVIEW_ENDPOINT, SIDECAR_ENDPOINT } from "./config";
 import { EMPTY_GIT, selectRootName } from "./gitSelectors";
-import type { AgentState, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
+import { DEFAULT_MODEL } from "../../shared/types";
+import type { AgentState, ClaudeModel, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "../../shared/types";
 import type { DiffResponse, GitState, PromptContext, ServerMessage } from "../../shared/protocol";
 
 interface DocState {
@@ -73,6 +73,8 @@ interface StudioState {
   mcp: McpServerStatus[];
   /** Authoritative permission mode (from `mode.status`), shown + edited via the mode chip. */
   mode: PermissionMode;
+  /** Authoritative model (from `model.status`), shown + edited via the model chip. */
+  model: ClaudeModel;
   /** The single in-flight turn (the backend serializes one at a time) and the tab that owns it. */
   turn: { promptId: string; path: string } | null;
   /** promptId to owning tab path. Outlives `turn` so a stale done/error still routes correctly. */
@@ -139,6 +141,7 @@ const initialState: StudioState = {
   activePath: null,
   mcp: [],
   mode: "auto",
+  model: DEFAULT_MODEL,
   turn: null,
   promptOwners: {},
   git: EMPTY_GIT,
@@ -417,6 +420,9 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
 
     case "mode.status":
       return { ...state, mode: msg.mode };
+
+    case "model.status":
+      return { ...state, model: msg.model };
 
     case "git.state":
       // Publish-on-change means each push is already the full truth: replace the slice wholesale.
@@ -1002,6 +1008,11 @@ export default function App() {
     socketRef.current?.send({ type: "mode.set", mode });
   }, []);
 
+  // Switch the model; the sidecar echoes model.status back to the chip.
+  const onSetModel = useCallback((model: ClaudeModel) => {
+    socketRef.current?.send({ type: "model.set", model });
+  }, []);
+
   // Answer a permission prompt. The card lives on the active tab, so the active path is the owner.
   // Drop it locally only once the response is sent; a dropped socket leaves it up for resetTurn to clear.
   const onPermission = useCallback((requestId: string, decision: PermissionDecision) => {
@@ -1205,6 +1216,10 @@ export default function App() {
               onPermission={onPermission}
               onAnswerQuestion={onAnswerQuestion}
               cwd={activeTab?.worktreePath ?? undefined}
+              mode={state.mode}
+              onSetMode={onSetMode}
+              model={state.model}
+              onSetModel={onSetModel}
               onSend={onChatSend}
               onCancel={onCancel}
             />
@@ -1244,7 +1259,6 @@ export default function App() {
             Open… <kbd className="kbd">⌘P</kbd>
           </button>
           <span className="studio__spacer" />
-          <ModeChip mode={state.mode} onSetMode={onSetMode} />
           <McpStatusBar servers={state.mcp} onToggle={onMcpToggle} />
         </footer>
 

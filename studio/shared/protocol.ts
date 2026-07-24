@@ -1,7 +1,7 @@
 // Frozen wire protocol between the studio SPA and the sidecar: a WebSocket for the agent
 // stream + doc-sync pushes, plus REST DTOs. Imported by both sides.
 
-import type { DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "./types";
+import type { ClaudeModel, DocRev, PermissionDecision, PermissionMode, PreviewState, Range, SessionMode } from "./types";
 import type { SessionListItem } from "../sessions/pickerViewModel";
 
 export interface PromptContext {
@@ -47,6 +47,8 @@ export type ClientMessage =
   | { type: "mcp.setEnabled"; requestId: string; server: string; enabled: boolean }
   // Set the permission mode (takes effect next turn); the sidecar echoes it back as mode.status.
   | { type: "mode.set"; mode: PermissionMode }
+  // Set the model for subsequent turns; the sidecar echoes it back as model.status.
+  | { type: "model.set"; model: ClaudeModel }
   // Answer an in-flight permission.request: allow once, allow and remember (widen permissions), or deny.
   | { type: "permission.response"; requestId: string; decision: PermissionDecision }
   // Answer an in-flight AskUserQuestion permission.request with the human's picks, keyed by each
@@ -156,6 +158,8 @@ export type ServerMessage =
   | { type: "mcp.status"; servers: { name: string; status: string; enabled: boolean }[] }
   // Authoritative permission mode, broadcast on connect and whenever it changes.
   | { type: "mode.status"; mode: PermissionMode }
+  // Authoritative model, broadcast on connect and whenever it changes.
+  | { type: "model.status"; model: ClaudeModel }
   // The agent wants to run a tool the current mode won't auto-approve. promptId routes the card to the
   // owning tab; title/description/reason are the SDK's prompt text. toolUseId matches the tool.start
   // for the same call, if any, so the client can attach the human's answer back onto that transcript

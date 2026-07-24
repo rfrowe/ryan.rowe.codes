@@ -45,6 +45,16 @@ export type SessionMode = "new" | "resume" | "fork";
  */
 export type PermissionMode = "auto" | "acceptEdits" | "default";
 
+/**
+ * The Claude models the studio's model chip surfaces, by Agent SDK model id (fed straight to
+ * `query()`'s `model` option). A deliberately small set spanning the capability/speed tradeoff;
+ * Opus 4.8 is the default.
+ */
+export type ClaudeModel = "claude-opus-4-8" | "claude-sonnet-5" | "claude-haiku-4-5";
+
+/** The model a fresh session starts on until the chip changes it. */
+export const DEFAULT_MODEL: ClaudeModel = "claude-opus-4-8";
+
 /** A human's answer to a `permission.request`: allow once, allow and remember, or deny. */
 export type PermissionDecision = "allow" | "always" | "deny";
 
