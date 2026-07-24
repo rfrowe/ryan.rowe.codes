@@ -1,19 +1,16 @@
-// The sidecar's last line of defense against a rejection or exception that slips past every
-// narrower guard elsewhere (docSync's watched-worktree git calls, an unguarded `void` fire-and-
-// forget). The two events get different treatment because they mean different things: a rejected
-// promise's failure is self-contained to whatever awaited it, so nothing else shares mutable state
-// with it and it's safe to log and keep running; a synchronous throw can escape mid-mutation with
-// no promise to contain it, so Node's own guidance against resuming after one still applies.
+// The sidecar's last line of defense against a spawn failure that slips past a narrower guard
+// elsewhere (docSync's watched-worktree git calls, an unguarded `void` fire-and-forget). Both
+// events get the same "log and keep going" answer, specific to this narrow crash class: a failed
+// `git.git()` spawn doesn't corrupt any shared in-memory state (no post/session Map, no half-
+// written file) for either a rejection or a synchronous throw to have escaped mid-mutation, so
+// resuming is safe here in a way it wouldn't be for an arbitrary uncaught exception. A single
+// local-authoring session losing every open post and agent conversation to one such hiccup is
+// worse than logging loudly and limping in a degraded state.
 
-/** A single local-authoring session losing every open post and agent conversation to one rejected
- *  spawn is worse than logging loudly and limping in a possibly degraded state. */
 export function logUnhandledRejection(reason: unknown): void {
   console.error("[sidecar] unhandledRejection (studio stays up):", reason);
 }
 
-/** Tears down through `shutdown` (the same path SIGTERM uses) rather than a bare exit, so the
- *  Astro daemon and watchers still close instead of being left orphaned. */
-export function logUncaughtExceptionAndShutdown(err: unknown, shutdown: () => Promise<void>): void {
-  console.error("[sidecar] uncaughtException (shutting down):", err);
-  void shutdown();
+export function logUncaughtException(err: unknown): void {
+  console.error("[sidecar] uncaughtException (studio stays up):", err);
 }

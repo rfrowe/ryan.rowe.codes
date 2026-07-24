@@ -33,7 +33,7 @@ import { createMdxLspServer } from "./lspServer";
 import { createLspBridge } from "./lspBridge";
 import { createLspWatcher } from "./lspWatcher";
 import { copyWorktreeIncludes } from "./worktreeInclude";
-import { logUncaughtExceptionAndShutdown, logUnhandledRejection } from "./processGuards";
+import { logUncaughtException, logUnhandledRejection } from "./processGuards";
 import type { ConflictResolverService, StudioServices } from "../shared/services";
 
 // studio/sidecar/main.ts, so repo root is two levels up.
@@ -256,11 +256,6 @@ async function main(): Promise<void> {
   // A terminal close sends SIGHUP; shut down the same way so the Astro daemon stops gracefully
   // instead of being left orphaned.
   process.on("SIGHUP", () => void shutdown());
-  // A synchronous throw that escapes every try/catch (e.g. a raw event-emitter callback, not a
-  // promise chain) may have interrupted a mutation mid-way; Node's own guidance is that resuming
-  // isn't safe. Tear down through the same path SIGTERM uses, rather than a bare exit, so the Astro
-  // daemon and watchers still get closed instead of left orphaned.
-  process.on("uncaughtException", (err) => logUncaughtExceptionAndShutdown(err, shutdown));
 }
 
 /** Ensure `<worktree>/node_modules` symlinks to the repo's (worktrees are gitignored, no deps). */
@@ -476,9 +471,14 @@ async function loadSkillBody(skillPath: string): Promise<string> {
   }
 }
 
-// Registered before main() runs anything, not inside it alongside uncaughtException: that handler
-// needs shutdown() to exist first, but a rejection during bootstrap (before shutdown is defined)
-// deserves the same "log and keep going" treatment as one later, not a gap in coverage.
+// Defense in depth: a spawn failure that slips past a narrower guard (docSync's watched-worktree
+// git calls, an unguarded `void` fire-and-forget elsewhere) would otherwise take the whole sidecar
+// down over one bad call. This backstop's "stay up" answer is specific to that narrow crash class:
+// a failed `git.git()` spawn doesn't corrupt any shared state (no in-memory Map, no half-written
+// file) for either a rejection or a synchronous throw to have escaped mid-mutation, so resuming is
+// safe here in a way it wouldn't be for an arbitrary crash. Losing every open post and agent
+// conversation to one such hiccup is worse than logging loudly and limping in a degraded state.
+process.on("uncaughtException", logUncaughtException);
 process.on("unhandledRejection", logUnhandledRejection);
 
 main().catch((err: unknown) => {
