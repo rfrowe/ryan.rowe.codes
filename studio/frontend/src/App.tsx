@@ -1067,7 +1067,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // Listed in the ⌘? panel so it's discoverable there too; the capture-phase listener above
+  // Listed in the ⌘/ panel so it's discoverable there too; the capture-phase listener above
   // already owns ⌘P's actual key handling and always runs first, so the registry's own dispatcher
   // (bubble-phase, and deferring to an already-prevented event) never double-fires this.
   useCommand({ id: "nav.palette", chord: "mod+p", label: "Open or create a post", group: "Navigation", run: () => setShowPalette((o) => !o) });
