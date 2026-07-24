@@ -32,7 +32,9 @@ export interface AgentHostDeps {
   emit: (msg: ServerMessage) => void;
   /** So the doc-sync watcher soft-locks and classifies agent writes for the turn. */
   onTurnStart?: () => void;
-  onTurnEnd?: () => void;
+  /** Fires after every turn, success or failure, so a listener (e.g. the F4 conflict resolver) can
+   *  react to promptId without its own hook into `query()`. */
+  onTurnEnd?: (promptId: string) => void;
   /** Mode chip default; defaults to "auto". */
   defaultPermissionMode?: PermissionMode;
   /** Dirs editable beyond the worktree at launch; seeds the granted-dir set. */
@@ -95,6 +97,8 @@ class EmbeddedAgentHost implements StudioAgentHost {
   /** In-flight prompts: requestId to the resolver awaited inside `canUseTool`. */
   private readonly pendingPermissions = new Map<string, (resolution: PendingResolution) => void>();
   private current: { promptId: string; abort: AbortController } | null = null;
+  /** A system prompt dispatched while a turn was in flight; run once that turn's `finally` clears. */
+  private pendingSystemPrompt: { promptId: string; path: string; text: string } | null = null;
 
   constructor(deps: AgentHostDeps) {
     this.deps = deps;
@@ -166,6 +170,26 @@ class EmbeddedAgentHost implements StudioAgentHost {
           "everything outside the region verbatim and do not reformat unrelated lines.",
       ].join("\n"),
     );
+  }
+
+  async dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string; dispatched: boolean }> {
+    const promptId = randomUUID();
+    // A regular prompt rejects outright when busy (single-threaded session); a system prompt queues
+    // instead, since F3 already committed to this dispatch before the human's turn could be foreseen.
+    if (this.current) {
+      this.pendingSystemPrompt = { promptId, path: input.path, text: input.text };
+      return { promptId, dispatched: true };
+    }
+    // Checked here rather than solely inside runSystemTurn: runTurn/onTurnEnd never fires for a
+    // dispatch that never started, so a caller waiting on onTurnEnd to learn the outcome would wait
+    // forever. `dispatched: false` is the only signal this precondition failure ever gets.
+    const mismatch = this.targetMismatch(input.path);
+    if (mismatch) {
+      this.deps.emit({ type: "error", promptId, message: mismatch });
+      return { promptId, dispatched: false };
+    }
+    void this.runTurn(promptId, () => input.text);
+    return { promptId, dispatched: true };
   }
 
   cancel(promptId: string): void {
@@ -385,6 +409,27 @@ class EmbeddedAgentHost implements StudioAgentHost {
     return options;
   }
 
+  /** Null if `path` is the active post's worktree, else the reason it isn't. */
+  private targetMismatch(path: string): string | null {
+    const wt = this.deps.getActiveWorktree();
+    if (!wt || wt.canonicalPath !== path) return `cannot dispatch: ${path} is not the active post`;
+    return null;
+  }
+
+  /** Runs a system-composed prompt queued behind a prior turn, once that turn's `finally` drains it.
+   *  Unlike `dispatchSystemPrompt`'s own immediate-dispatch check, a mismatch here still reaches
+   *  `onTurnEnd`: the caller already got `dispatched: true` back when this was first queued, so
+   *  `onTurnEnd` is the only signal left for it. */
+  private async runSystemTurn(promptId: string, path: string, text: string): Promise<void> {
+    const mismatch = this.targetMismatch(path);
+    if (mismatch) {
+      this.deps.emit({ type: "error", promptId, message: mismatch });
+      this.deps.onTurnEnd?.(promptId);
+      return;
+    }
+    await this.runTurn(promptId, () => text);
+  }
+
   private async runTurn(promptId: string, buildPrompt: (wt: ActiveWorktree) => string): Promise<void> {
     // A resumed session is single-threaded; reject a second concurrent prompt rather than desync
     // turn state. (The SPA also guards the UI.)
@@ -424,7 +469,14 @@ class EmbeddedAgentHost implements StudioAgentHost {
       // The turn is over and can't answer prompts, so release any still parked before it leaks.
       this.abortPendingPermissions();
       if (this.current?.promptId === promptId) this.current = null;
-      this.deps.onTurnEnd?.();
+      this.deps.onTurnEnd?.(promptId);
+      // Drain a queued system prompt here, not just on success: an errored/aborted turn must not
+      // strand it, since nothing else will ever look at `pendingSystemPrompt` again otherwise.
+      const pending = this.pendingSystemPrompt;
+      if (pending) {
+        this.pendingSystemPrompt = null;
+        void this.runSystemTurn(pending.promptId, pending.path, pending.text);
+      }
     }
   }
 

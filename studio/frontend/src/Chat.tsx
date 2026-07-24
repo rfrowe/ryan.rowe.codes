@@ -11,6 +11,7 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useMessage,
   type TextMessagePartComponent,
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
@@ -231,14 +232,21 @@ const AssistantMessage = () => (
   </MessagePrimitive.Root>
 );
 
-// The stream reducer only emits `error` notices today; both fold to this row.
-const SystemMessage = () => (
-  <MessagePrimitive.Root className="msg msg--error">
-    <div className="msg__body">
-      <MessagePrimitive.Parts components={{ Text: PlainText }} />
-    </div>
-  </MessagePrimitive.Root>
-);
+// A server-composed system prompt (F4's conflict-resolution dispatch) reads as a calm note, distinct
+// from an error notice, even though both fold to assistant-ui's "system" role. It's sent to the agent
+// as a prompt like any other, but it's studio-authored, not the human's own words, so it's labeled
+// "studio" rather than left to read as an unattributed human turn.
+const SystemMessage = () => {
+  const isSystem = useMessage((m) => m.metadata?.custom?.kind === "system");
+  return (
+    <MessagePrimitive.Root className={isSystem ? "msg msg--system" : "msg msg--error"}>
+      {isSystem && <div className="msg__role">studio</div>}
+      <div className="msg__body">
+        <MessagePrimitive.Parts components={{ Text: PlainText }} />
+      </div>
+    </MessagePrimitive.Root>
+  );
+};
 
 const messageComponents = { UserMessage, AssistantMessage, SystemMessage } as const;
 

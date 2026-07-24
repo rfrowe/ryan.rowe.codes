@@ -118,7 +118,14 @@ export function toThreadMessages(items: readonly ChatItem[]): ThreadMessageLike[
       case "error":
       case "system":
         flushAssistant();
-        out.push({ role: "system", id: item.id, content: [{ type: "text", text: item.text }] });
+        // Both fold to assistant-ui's "system" role; metadata.custom carries the distinction back to
+        // Chat.tsx's SystemMessage, which reads it to render a system note calmly rather than as an error.
+        out.push({
+          role: "system",
+          id: item.id,
+          content: [{ type: "text", text: item.text }],
+          metadata: { custom: { kind: item.kind } },
+        });
         break;
     }
   }

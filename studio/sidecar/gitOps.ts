@@ -8,8 +8,10 @@ import type { RebaseAbortResponse, UpdateResponse } from "../shared/protocol";
 import type { StudioStore } from "../state/store";
 import { errorMessage } from "./errorMessage";
 
-const PINNED_NAME = "Ryan Rowe";
-const PINNED_EMAIL = "ryan@rowe.codes";
+// Shared with conflictResolver.ts, which finishes a rebase with `rebase --continue` under the same
+// pinned identity once the agent clears the conflict.
+export const PINNED_NAME = "Ryan Rowe";
+export const PINNED_EMAIL = "ryan@rowe.codes";
 
 // The targeted base fetch is a network round-trip; local rebase steps don't need this headroom.
 const NETWORK_TIMEOUT_MS = 120_000;
