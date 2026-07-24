@@ -20,6 +20,8 @@ import { McpStatusBar, type McpServerStatus } from "./McpStatusBar";
 import { Modal } from "./Modal";
 import { WarnIcon } from "./WarnIcon";
 import { DestructiveConfirm, type DestructiveConfirmData } from "./DestructiveConfirm";
+import { RootConflictBanner } from "./RootConflictBanner";
+import { rootConflictPhase } from "./turnSelectors";
 import type { Scope } from "./ScopeSelector";
 import { StudioSocket, type SocketStatus } from "./ws";
 import { onLspStatus, type LspStatus } from "./lsp/client";
@@ -67,7 +69,15 @@ interface TabState {
   nameSync: NameSync;
 }
 
-interface StudioState {
+/** The root's own conversation: a server-dispatched conflict resolution has no tab of its own, so its
+ *  chat/permissions live here instead of in `tabs`. */
+interface RootConflictState {
+  chat: ChatItem[];
+  permissions: PendingPermission[];
+}
+const EMPTY_ROOT_CONFLICT: RootConflictState = { chat: [], permissions: [] };
+
+export interface StudioState {
   tabs: TabState[];
   activePath: string | null;
   mcp: McpServerStatus[];
@@ -79,13 +89,23 @@ interface StudioState {
   effort: EffortLevel;
   /** The single in-flight turn (the backend serializes one at a time) and the tab that owns it. */
   turn: { promptId: string; path: string } | null;
+  /** Whether `turn`'s own promptId has produced any real content yet (a delta/message/tool.start). A
+   *  system dispatch's chat.injected fires the moment it's queued OR started, so this is the only way
+   *  to tell "genuinely running" from "still waiting behind another live turn". */
+  turnStarted: boolean;
   /** promptId to owning tab path. Outlives `turn` so a stale done/error still routes correctly. */
   promptOwners: Record<string, string>;
+  /** promptId to owning path, for a system dispatch that arrived queued behind another live turn
+   *  (chat.injected's early-return branch) and hasn't since started or finished. promptOwners alone
+   *  can't tell a dispatch still waiting its turn from one whose episode is long over, since it never
+   *  expires; this does, by being cleared the moment the prompt starts (claimTurn) or ends. */
+  queuedSystemPrompts: Record<string, string>;
   /** Every git fact (from `git.state`), replaced wholesale on each push. */
   git: GitState;
+  rootConflict: RootConflictState;
 }
 
-type Action =
+export type Action =
   | { type: "server"; msg: ServerMessage }
   | { type: "sendPrompt"; promptId: string; text: string; path: string }
   // Release a turn whose terminal done/error can no longer arrive (the socket dropped).
@@ -97,7 +117,9 @@ type Action =
   | { type: "dismissExternal"; path: string }
   // Locally drop a permission card once answered (the response is sent over the socket separately).
   // toolUseId/answers, when given, record an AskUserQuestion's picks onto its transcript tool entry.
-  | { type: "answerPermission"; path: string; requestId: string; toolUseId?: string; answers?: Record<string, string> };
+  | { type: "answerPermission"; path: string; requestId: string; toolUseId?: string; answers?: Record<string, string> }
+  // The human dismissed the root-conflict banner's last outcome; clears it back to empty (hidden).
+  | { type: "dismissRootConflict" };
 
 let idSeq = 0;
 function nid(): string {
@@ -138,7 +160,7 @@ function makeTab(path: string, title: string): TabState {
   };
 }
 
-const initialState: StudioState = {
+export const initialState: StudioState = {
   tabs: [],
   activePath: null,
   mcp: [],
@@ -146,8 +168,11 @@ const initialState: StudioState = {
   model: DEFAULT_MODEL,
   effort: DEFAULT_EFFORT,
   turn: null,
+  turnStarted: false,
   promptOwners: {},
+  queuedSystemPrompts: {},
   git: EMPTY_GIT,
+  rootConflict: EMPTY_ROOT_CONFLICT,
 };
 
 // ---- chat transcript helpers (operate on one tab's chat) ----
@@ -191,6 +216,50 @@ function patchTab(state: StudioState, path: string | null, fn: (t: TabState) => 
 /** Which tab a stream message belongs to: its prompt's owner, else the active tab. */
 function ownerOf(state: StudioState, promptId: string): string | null {
   return state.promptOwners[promptId] ?? state.activePath;
+}
+
+/** Whether `path` is the studio root's own worktree rather than a post, so a server-dispatched
+ *  target's stream messages route to the root-conflict banner instead of a (never-matching) tab. */
+function isRootPath(state: StudioState, path: string): boolean {
+  return path !== "" && path === state.git.primary.worktree;
+}
+
+/** Like patchTab, but for a stream message's chat transcript: routes a root-targeted message into the
+ *  root-conflict banner's own transcript instead of a post's tab. */
+function patchOwnerChat(state: StudioState, path: string | null, fn: (chat: ChatItem[]) => ChatItem[]): StudioState {
+  if (path === null) return state;
+  if (isRootPath(state, path)) return { ...state, rootConflict: { ...state.rootConflict, chat: fn(state.rootConflict.chat) } };
+  return patchTab(state, path, (t) => ({ ...t, chat: fn(t.chat) }));
+}
+
+/** Like patchOwnerChat, for a pending-permissions list. */
+function patchOwnerPermissions(
+  state: StudioState,
+  path: string | null,
+  fn: (permissions: PendingPermission[]) => PendingPermission[],
+): StudioState {
+  if (path === null) return state;
+  if (isRootPath(state, path)) return { ...state, rootConflict: { ...state.rootConflict, permissions: fn(state.rootConflict.permissions) } };
+  return patchTab(state, path, (t) => ({ ...t, permissions: fn(t.permissions) }));
+}
+
+/** Marks `promptId`'s turn as the one holding the global lock and having produced real content. A
+ *  system dispatch that arrived queued (chat.injected landed while another turn held the latch, so it
+ *  never took over `turn`) is only provably running once its own content starts arriving; this is
+ *  that proof, and takes over the latch at that point. A no-op past the first call for a given promptId. */
+function claimTurn(state: StudioState, promptId: string): StudioState {
+  if (state.turn?.promptId === promptId) return state.turnStarted ? state : { ...state, turnStarted: true };
+  const path = state.promptOwners[promptId];
+  if (path === undefined) return state; // no known owner (e.g. a stale replay); leave turn alone.
+  return dropQueued({ ...state, turn: { promptId, path }, turnStarted: true }, promptId);
+}
+
+/** Removes `promptId` from queuedSystemPrompts: it has either started (claimTurn) or ended (done/
+ *  error) without ever starting, so it's no longer a dispatch still waiting its turn. */
+function dropQueued(state: StudioState, promptId: string): StudioState {
+  if (!(promptId in state.queuedSystemPrompts)) return state;
+  const { [promptId]: _dropped, ...queuedSystemPrompts } = state.queuedSystemPrompts;
+  return { ...state, queuedSystemPrompts };
 }
 
 /** Whether a revert-scope /diff response is still the one most recently requested. A rapid
@@ -247,36 +316,34 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       }));
     }
 
-    case "assistant.delta":
-      return patchTab(state, ownerOf(state, msg.promptId), (t) => ({
-        ...t,
-        chat: appendAssistant(t.chat, msg.promptId, msg.text),
-      }));
+    case "assistant.delta": {
+      const claimed = claimTurn(state, msg.promptId);
+      return patchOwnerChat(claimed, ownerOf(claimed, msg.promptId), (chat) => appendAssistant(chat, msg.promptId, msg.text));
+    }
 
-    case "assistant.message":
-      return patchTab(state, ownerOf(state, msg.promptId), (t) => ({
-        ...t,
-        chat: finalizeAssistant(t.chat, msg.promptId, msg.text),
-      }));
+    case "assistant.message": {
+      const claimed = claimTurn(state, msg.promptId);
+      return patchOwnerChat(claimed, ownerOf(claimed, msg.promptId), (chat) => finalizeAssistant(chat, msg.promptId, msg.text));
+    }
 
-    case "tool.start":
-      return patchTab(state, ownerOf(state, msg.promptId), (t) => ({
-        ...t,
-        chat: [
-          ...t.chat,
-          { kind: "tool", id: nid(), toolUseId: msg.toolUseId, name: msg.name, input: msg.input, status: "running" },
-        ],
-      }));
+    case "tool.start": {
+      const claimed = claimTurn(state, msg.promptId);
+      return patchOwnerChat(claimed, ownerOf(claimed, msg.promptId), (chat) => [
+        ...chat,
+        { kind: "tool", id: nid(), toolUseId: msg.toolUseId, name: msg.name, input: msg.input, status: "running" },
+      ]);
+    }
 
-    case "tool.end":
-      return patchTab(state, ownerOf(state, msg.promptId), (t) => ({
-        ...t,
-        chat: t.chat.map((it) =>
+    case "tool.end": {
+      const claimed = claimTurn(state, msg.promptId);
+      return patchOwnerChat(claimed, ownerOf(claimed, msg.promptId), (chat) =>
+        chat.map((it) =>
           it.kind === "tool" && it.toolUseId === msg.toolUseId
             ? { ...it, status: "done", isError: msg.isError, exitCode: msg.exitCode, resultPreview: msg.resultPreview }
             : it,
         ),
-      }));
+      );
+    }
 
     case "file.changed": {
       // Route by path. tabs is authoritative: a change for a path with no open tab is ignored
@@ -333,43 +400,46 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       }));
 
     case "chat.injected": {
-      // A server-composed prompt (no client sendPrompt action fired it), so this case does what
-      // sendPrompt's action handler does: insert the bubble, latch the turn, register the owner.
-      const next = patchTab(state, msg.path, (t) => ({
-        ...t,
-        chat: [...t.chat, { kind: "system", id: nid(), text: msg.text }],
-      }));
-      return {
-        ...next,
-        turn: { promptId: msg.promptId, path: msg.path },
-        promptOwners: { ...next.promptOwners, [msg.promptId]: msg.path },
-      };
+      // A server-composed prompt (no client sendPrompt action fired it): insert the bubble and
+      // register the owner unconditionally. Only take the global latch if nothing else currently
+      // holds it; the backend already commits to this dispatch before knowing whether the agent is
+      // busy, so a dispatch that's actually queued behind a still-running turn must not steal that
+      // turn's busy indicator (claimTurn takes the latch back once this one's own content arrives).
+      const next = patchOwnerChat(state, msg.path, (chat) => [...chat, { kind: "system", id: nid(), text: msg.text }]);
+      const promptOwners = { ...next.promptOwners, [msg.promptId]: msg.path };
+      if (next.turn && next.turn.promptId !== msg.promptId) {
+        // Genuinely queued behind another turn: record it so a selector (e.g. rootConflictPhase) can
+        // tell "still waiting its turn" from "episode over", which promptOwners alone can't.
+        const queuedSystemPrompts = { ...next.queuedSystemPrompts, [msg.promptId]: msg.path };
+        return { ...next, promptOwners, queuedSystemPrompts };
+      }
+      return { ...next, turn: { promptId: msg.promptId, path: msg.path }, turnStarted: false, promptOwners };
     }
 
     case "done": {
       const owner = state.promptOwners[msg.promptId] ?? null;
       // A finished turn has no live prompts; drop any pending cards so none dangle unanswerable.
       let next = owner
-        ? patchTab(state, owner, (t) => ({ ...t, chat: stopStreaming(t.chat, msg.promptId), permissions: [] }))
+        ? patchOwnerPermissions(patchOwnerChat(state, owner, (chat) => stopStreaming(chat, msg.promptId)), owner, () => [])
         : state;
       // Only release the latch for our in-flight turn; a done for a stale/rebroadcast prompt must not.
-      if (next.turn && msg.promptId === next.turn.promptId) next = { ...next, turn: null };
-      return next;
+      if (next.turn && msg.promptId === next.turn.promptId) next = { ...next, turn: null, turnStarted: false };
+      return dropQueued(next, msg.promptId);
     }
 
     case "error": {
-      // A promptId-tagged error routes to that prompt's tab; an untagged one is shown on the active tab.
+      // A promptId-tagged error routes to that prompt's owner; an untagged one is shown on the active tab.
       const owner = msg.promptId !== undefined ? ownerOf(state, msg.promptId) : state.activePath;
-      let next = patchTab(state, owner, (t) => ({
-        ...t,
-        chat: [...t.chat, { kind: "error", id: nid(), text: msg.message }],
-        permissions: [],
-      }));
+      let next = patchOwnerPermissions(
+        patchOwnerChat(state, owner, (chat) => [...chat, { kind: "error", id: nid(), text: msg.message }]),
+        owner,
+        () => [],
+      );
       // Release the latch when the error is for our own turn, or carries no prompt id.
       if (next.turn && (msg.promptId === undefined || msg.promptId === next.turn.promptId)) {
-        next = { ...next, turn: null };
+        next = { ...next, turn: null, turnStarted: false };
       }
-      return next;
+      return msg.promptId !== undefined ? dropQueued(next, msg.promptId) : next;
     }
 
     case "post.renamed": {
@@ -435,25 +505,22 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
       return { ...state, git: msg.state };
 
     case "permission.request":
-      // Route to the owning tab (like tool.start). De-dupe on requestId in case a replay repeats it.
-      return patchTab(state, ownerOf(state, msg.promptId), (t) =>
-        t.permissions.some((p) => p.requestId === msg.requestId)
-          ? t
-          : {
-              ...t,
-              permissions: [
-                ...t.permissions,
-                {
-                  requestId: msg.requestId,
-                  toolName: msg.toolName,
-                  input: msg.input,
-                  title: msg.title,
-                  description: msg.description,
-                  reason: msg.reason,
-                  toolUseId: msg.toolUseId,
-                },
-              ],
-            },
+      // Route to the owner (like tool.start). De-dupe on requestId in case a replay repeats it.
+      return patchOwnerPermissions(state, ownerOf(state, msg.promptId), (permissions) =>
+        permissions.some((p) => p.requestId === msg.requestId)
+          ? permissions
+          : [
+              ...permissions,
+              {
+                requestId: msg.requestId,
+                toolName: msg.toolName,
+                input: msg.input,
+                title: msg.title,
+                description: msg.description,
+                reason: msg.reason,
+                toolUseId: msg.toolUseId,
+              },
+            ],
       );
 
     default:
@@ -463,7 +530,7 @@ function reduceServer(state: StudioState, msg: ServerMessage): StudioState {
   }
 }
 
-function reducer(state: StudioState, action: Action): StudioState {
+export function reducer(state: StudioState, action: Action): StudioState {
   switch (action.type) {
     case "server":
       return reduceServer(state, action.msg);
@@ -475,6 +542,7 @@ function reducer(state: StudioState, action: Action): StudioState {
       return {
         ...next,
         turn: { promptId: action.promptId, path: action.path },
+        turnStarted: false,
         promptOwners: { ...next.promptOwners, [action.promptId]: action.path },
       };
     }
@@ -483,16 +551,16 @@ function reducer(state: StudioState, action: Action): StudioState {
       // releases the latch. Clear it, stop the streaming block, and note the interruption.
       if (!state.turn) return state;
       const { promptId, path } = state.turn;
-      const next = patchTab(state, path, (t) => ({
-        ...t,
-        chat: [
-          ...stopStreaming(t.chat, promptId),
+      const next = patchOwnerPermissions(
+        patchOwnerChat(state, path, (chat) => [
+          ...stopStreaming(chat, promptId),
           { kind: "error", id: nid(), text: "Connection lost — the turn was interrupted. Reconnecting…" },
-        ],
+        ]),
         // The reconnected socket is a fresh stream; a parked prompt can never be answered now.
-        permissions: [],
-      }));
-      return { ...next, turn: null };
+        path,
+        () => [],
+      );
+      return { ...next, turn: null, turnStarted: false };
     }
     case "revUpdated":
       return patchTab(state, action.path, (t) => (t.doc ? { ...t, doc: { ...t.doc, rev: action.rev } } : t));
@@ -516,17 +584,18 @@ function reducer(state: StudioState, action: Action): StudioState {
     }
     case "dismissExternal":
       return patchTab(state, action.path, (t) => ({ ...t, externalChange: null }));
-    case "answerPermission":
-      return patchTab(state, action.path, (t) => ({
-        ...t,
-        permissions: t.permissions.filter((p) => p.requestId !== action.requestId),
-        chat:
-          action.toolUseId && action.answers
-            ? t.chat.map((it) =>
-                it.kind === "tool" && it.toolUseId === action.toolUseId ? { ...it, answers: action.answers } : it,
-              )
-            : t.chat,
-      }));
+    case "answerPermission": {
+      const stripped = patchOwnerPermissions(state, action.path, (permissions) =>
+        permissions.filter((p) => p.requestId !== action.requestId),
+      );
+      if (!action.toolUseId || !action.answers) return stripped;
+      const { toolUseId, answers } = action;
+      return patchOwnerChat(stripped, action.path, (chat) =>
+        chat.map((it) => (it.kind === "tool" && it.toolUseId === toolUseId ? { ...it, answers } : it)),
+      );
+    }
+    case "dismissRootConflict":
+      return { ...state, rootConflict: EMPTY_ROOT_CONFLICT };
   }
 }
 
@@ -977,21 +1046,33 @@ export default function App() {
   // or rebasing against stale content, same as revert/delete/save-draft. git.state reflects the outcome
   // reactively (behind clears, or rebase.phase flips to "conflicted" for F4 to pick up); a notice here
   // only covers a transport failure or the no-op "already up to date" result.
+  //
+  // updatePending marks the trigger busy the instant it fires, before the flush/REST round trip even
+  // starts, so ⌘⇧U (or the tab menu's Update…) never reads as a dead click while waiting on the network.
+  const [updatePending, setUpdatePending] = useState<Set<string>>(new Set());
   const onUpdate = useCallback(
     async (path: string) => {
-      if (path === activePathRef.current) {
-        try {
-          await editorRef.current?.flush();
-        } catch {
-          /* proceed; edits still live in the worktree file and any conflict surfaces via the banner */
+      setUpdatePending((prev) => new Set(prev).add(path));
+      try {
+        if (path === activePathRef.current) {
+          try {
+            await editorRef.current?.flush();
+          } catch {
+            /* proceed; edits still live in the worktree file and any conflict surfaces via the banner */
+          }
         }
+        const res = await update(path);
+        if (!res.ok) showNotice(`Update failed: ${res.error}`);
+        else if (res.result === "up-to-date") showNotice("Already up to date.");
+      } catch (e: unknown) {
+        showNotice(e instanceof Error ? `Update failed: ${e.message}` : "Update failed.");
+      } finally {
+        setUpdatePending((prev) => {
+          const next = new Set(prev);
+          next.delete(path);
+          return next;
+        });
       }
-      update(path)
-        .then((res) => {
-          if (!res.ok) showNotice(`Update failed: ${res.error}`);
-          else if (res.result === "up-to-date") showNotice("Already up to date.");
-        })
-        .catch((e: unknown) => showNotice(e instanceof Error ? `Update failed: ${e.message}` : "Update failed."));
     },
     [showNotice],
   );
@@ -1031,6 +1112,17 @@ export default function App() {
     const sent = socketRef.current?.send({ type: "permission.response", requestId, decision }) ?? false;
     if (sent && path) dispatch({ type: "answerPermission", path, requestId });
   }, []);
+
+  // Same as onPermission, but for a card on the root-conflict banner: the banner isn't tied to
+  // whichever tab happens to be active, so its owner is always the root worktree path, not activePath.
+  const onRootPermission = useCallback(
+    (requestId: string, decision: PermissionDecision) => {
+      const path = state.git.primary.worktree;
+      const sent = socketRef.current?.send({ type: "permission.response", requestId, decision }) ?? false;
+      if (sent && path) dispatch({ type: "answerPermission", path, requestId });
+    },
+    [state.git.primary.worktree],
+  );
 
   // Answer an in-flight AskUserQuestion prompt with the human's picks. toolUseId (carried on the
   // pending card) lets the reducer record the answers onto that call's own transcript entry, so the
@@ -1123,6 +1215,11 @@ export default function App() {
   useCommand({ id: "agent.directive", chord: "mod+k", label: "Agent directive", group: "Agent", run: () => editorRef.current?.openPrompt() });
 
   const tabDescriptors = useMemo(() => state.tabs.map((t) => ({ path: t.path, title: t.title })), [state.tabs]);
+  const rootPhase = useMemo(() => {
+    const rootPath = state.git.primary.worktree;
+    const rootQueued = Object.values(state.queuedSystemPrompts).includes(rootPath);
+    return rootConflictPhase(state.turn, state.turnStarted, rootPath, rootQueued);
+  }, [state.turn, state.turnStarted, state.git.primary.worktree, state.queuedSystemPrompts]);
 
   return (
     <KeymapProvider>
@@ -1134,6 +1231,9 @@ export default function App() {
           status={status}
           stackStatus={stackStatus}
           git={state.git}
+          turn={state.turn}
+          turnStarted={state.turnStarted}
+          updatePending={updatePending}
           onSelect={openPost}
           onClose={onCloseTab}
           onNewPost={() => openNewPost("")}
@@ -1145,6 +1245,15 @@ export default function App() {
           onUpdateRoot={onUpdateRoot}
           onUpdate={onUpdate}
           onAbortUpdate={onAbortUpdate}
+        />
+
+        <RootConflictBanner
+          phase={rootPhase}
+          chat={state.rootConflict.chat}
+          permissions={state.rootConflict.permissions}
+          rootPath={state.git.primary.worktree}
+          onPermission={onRootPermission}
+          onDismiss={() => dispatch({ type: "dismissRootConflict" })}
         />
 
         {notice && (
