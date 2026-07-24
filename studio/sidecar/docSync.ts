@@ -12,7 +12,9 @@
 // is either a genuinely external editor or a terminal git operation (checkout/commit/reset) landing
 // under the buffer, told apart by one HEAD rev-parse against the sha seen at the last such change
 // (surfaced as file.changed{external} or {git}, both gated behind the reload banner). Either way
-// disk wins.
+// disk wins. That baseline is kept fresh two ways: eagerly on construction/retarget, and on every
+// git-live doorbell ring, so a HEAD move that never touches the watched file (an amend with no
+// changes to it, a soft reset) doesn't sit stale until whatever disk event comes next.
 //
 // A server-side copy of the pure docSyncMachine is driven alongside so lifecycle events
 // (prompt dispatch through agent-turn end) flip its `locked` flag, which is exactly the signal
@@ -24,7 +26,7 @@ import { watch, type FSWatcher } from "chokidar";
 
 import { sha256Hex } from "./hash";
 import { nodeFs } from "./fsImpl";
-import type { Fs, GitRunner } from "../shared/seams";
+import type { Fs, GitRunner, GitWatcher } from "../shared/seams";
 import type { StudioStore } from "../state/store";
 import {
   initialSyncState,
@@ -58,6 +60,11 @@ export interface DocSyncDeps {
   /** Git-live's manual doorbell, rung on every settled working-file event so `uncommitted` recomputes
    *  without waiting on a ref to move (the doorbell otherwise only watches `.git`). */
   poke?: () => void;
+  /** Git-live's own doorbell, the other direction: reseeds `lastKnownHead` on every ref/HEAD move,
+   *  so a git operation that never touches the watched file (an amend with no changes to it, a
+   *  soft reset, a rebase that leaves this file byte-identical) can't leave the baseline stale for
+   *  whatever real disk event comes next. */
+  watcher?: GitWatcher;
   /** Invoked for each effect a transition produces (banner/reload hints for the caller). */
   onEffect?: (effect: SyncEffect) => void;
 }
@@ -116,6 +123,12 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     if (res.code === 0 && filePath === target) lastKnownHead = res.stdout.trim();
   }
   let headReady = seedHead();
+  // Keeps lastKnownHead fresh independent of file events: a HEAD move that never touches the watched
+  // file would otherwise sit undetected until the next disk event, which would then classify against
+  // a baseline predating the move. Reseeding is exactly seedHead's own job, guard included.
+  const unwatchHead = deps.watcher?.onChange(() => {
+    headReady = seedHead();
+  });
 
   /** External-path classification: a rev-parse against `lastKnownHead`, only ever run off the lock.
    *  `cwd` just needs to sit inside the worktree; git resolves it upward to the right one. */
@@ -274,6 +287,7 @@ export function createDocSync(store: StudioStore, deps: DocSyncDeps = {}): DocSy
     },
     retarget,
     async close() {
+      unwatchHead?.();
       watcher.off("change", onFsEvent);
       watcher.off("add", onFsEvent);
       watcher.off("unlink", onFsEvent);
