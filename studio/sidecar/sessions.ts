@@ -46,8 +46,11 @@ export function createSessionsService(deps: SessionsDeps): SessionsService {
       const perDir = await Promise.all(
         dirs.map(async (dir) => {
           try {
-            // Terminal/IDE-picker parity: skip programmatic/headless sessions.
-            return await list({ dir, includeProgrammatic: false });
+            // The studio's own turns run through the SDK's query() directly — an "sdk-ts" entrypoint,
+            // which the SDK itself classifies as programmatic. Excluding programmatic sessions (as a
+            // terminal/IDE picker would, for parity with /resume) would hide every session the studio
+            // ever creates, leaving its own picker permanently empty.
+            return await list({ dir, includeProgrammatic: true });
           } catch {
             // A missing or unreadable project dir shouldn't sink the whole picker.
             return [];
