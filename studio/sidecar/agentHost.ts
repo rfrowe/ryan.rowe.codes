@@ -1,9 +1,10 @@
-// Embedded Agent SDK host for the studio panel. One `query()` session per open post, each rooted
-// in that post's worktree so sessions don't contend over one working tree. The SDK stream is mapped
-// to the studio's ServerMessage protocol. The human picks the permission mode; whatever the mode
-// won't auto-approve routes to `canUseTool` (the SPA's allow/always/deny). A PreToolUse hook forces
-// any edit targeting outside the worktree (or a granted dir) to `ask`, so edits land in the right
-// worktree regardless of mode. MCP servers toggle on/off via mcp.status / mcp.setEnabled.
+// Embedded Agent SDK host for the studio panel. One `query()` session per open post, each rooted in
+// that post's worktree, or per the studio's own root worktree for a server-dispatched system prompt
+// (e.g. F4's rebase-conflict resolver) — sessions never contend over one working tree. The SDK stream
+// is mapped to the studio's ServerMessage protocol. The human picks the permission mode; whatever the
+// mode won't auto-approve routes to `canUseTool` (the SPA's allow/always/deny). A PreToolUse hook
+// forces any edit targeting outside the worktree (or a granted dir) to `ask`, so edits land in the
+// right worktree regardless of mode. MCP servers toggle on/off via mcp.status / mcp.setEnabled.
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -27,6 +28,9 @@ export interface AgentHostDeps {
   tools: StudioTools;
   /** The active post's worktree (cwd and the file the agent edits); null if none open. */
   getActiveWorktree: () => ActiveWorktree | null;
+  /** The studio's own root worktree: a dispatch target distinct from any post. Root dispatch is
+   *  refused if omitted. */
+  rootWorktreePath?: string;
   /** Authoring rules appended to the system prompt and used as the MCP instructions. */
   skillInstructions: string;
   /** Sink for server-to-client messages. */
@@ -78,14 +82,20 @@ export interface StudioAgentHost extends AgentHost {
   renameSessionKey(oldPath: string, newPath: string): void;
 }
 
-/** One post's SDK session: its id and how the next turn resumes/forks. */
-interface PostSession {
+/** One target's SDK session (a post or the studio root): its id and how the next turn resumes/forks. */
+interface AgentSession {
   sessionId: string;
   mode: SessionMode;
   /** Source to resume from on the first turn (resume/fork); undefined for new. */
   resumeFrom?: string;
   /** Whether the next turn is this session's first. */
   firstTurn: boolean;
+}
+
+/** Where a turn runs: the session map key and the `query()` cwd. */
+interface AgentTarget {
+  sessionKey: string;
+  cwd: string;
 }
 
 export function createAgentHost(deps: AgentHostDeps): StudioAgentHost {
@@ -95,8 +105,8 @@ export function createAgentHost(deps: AgentHostDeps): StudioAgentHost {
 class EmbeddedAgentHost implements StudioAgentHost {
   private readonly deps: AgentHostDeps;
 
-  /** One session per open post, keyed by canonical path. */
-  private readonly sessions = new Map<string, PostSession>();
+  /** One session per open post (keyed by canonical path) or the studio root (keyed by its own path). */
+  private readonly sessions = new Map<string, AgentSession>();
   /** MCP servers observed from session init messages: name to status. */
   private readonly knownServers = new Map<string, string>();
   /** Servers the human toggled off; excluded from each turn's tools. */
@@ -112,8 +122,9 @@ class EmbeddedAgentHost implements StudioAgentHost {
   /** In-flight prompts: requestId to the resolver awaited inside `canUseTool`. */
   private readonly pendingPermissions = new Map<string, (resolution: PendingResolution) => void>();
   private current: { promptId: string; abort: AbortController } | null = null;
-  /** A system prompt dispatched while a turn was in flight; run once that turn's `finally` clears. */
-  private pendingSystemPrompt: { promptId: string; path: string; text: string } | null = null;
+  /** System prompts dispatched while a turn was in flight, FIFO; drained one at a time as each prior
+   *  turn's `finally` clears, so a second dispatch queued behind a first is never dropped. */
+  private readonly pendingSystemPrompts: { promptId: string; path: string; text: string }[] = [];
 
   constructor(deps: AgentHostDeps) {
     this.deps = deps;
@@ -167,7 +178,11 @@ class EmbeddedAgentHost implements StudioAgentHost {
   }
 
   async prompt(input: { promptId: string; text: string; context: PromptContext }): Promise<void> {
-    await this.runTurn(input.promptId, (wt) => this.composePrompt(input.text, input.context, wt));
+    const resolved = this.resolveActiveTarget(input.promptId);
+    if (!resolved) return;
+    await this.runTurn(input.promptId, resolved.target, () =>
+      this.composePrompt(input.text, input.context, resolved.wt),
+    );
   }
 
   async resolveDirective(input: {
@@ -176,7 +191,10 @@ class EmbeddedAgentHost implements StudioAgentHost {
     range: Range;
     instruction: string;
   }): Promise<void> {
-    await this.runTurn(input.promptId, (wt) =>
+    const resolved = this.resolveActiveTarget(input.promptId);
+    if (!resolved) return;
+    const wt = resolved.wt;
+    await this.runTurn(input.promptId, resolved.target, () =>
       [
         "Resolve an inline authoring directive in the active post.",
         `File: ${wt.worktreeFilePath}`,
@@ -192,20 +210,20 @@ class EmbeddedAgentHost implements StudioAgentHost {
   async dispatchSystemPrompt(input: { path: string; text: string }): Promise<{ promptId: string; dispatched: boolean }> {
     const promptId = randomUUID();
     // A regular prompt rejects outright when busy (single-threaded session); a system prompt queues
-    // instead, since F3 already committed to this dispatch before the human's turn could be foreseen.
+    // instead, since F3/F4 already committed to this dispatch before the human's turn could be foreseen.
     if (this.current) {
-      this.pendingSystemPrompt = { promptId, path: input.path, text: input.text };
+      this.pendingSystemPrompts.push({ promptId, path: input.path, text: input.text });
       return { promptId, dispatched: true };
     }
     // Checked here rather than solely inside runSystemTurn: runTurn/onTurnEnd never fires for a
     // dispatch that never started, so a caller waiting on onTurnEnd to learn the outcome would wait
     // forever. `dispatched: false` is the only signal this precondition failure ever gets.
-    const mismatch = this.targetMismatch(input.path);
-    if (mismatch) {
-      this.deps.emit({ type: "error", promptId, message: mismatch });
+    const resolved = this.resolveDispatchTarget(input.path);
+    if (!resolved.ok) {
+      this.deps.emit({ type: "error", promptId, message: resolved.reason });
       return { promptId, dispatched: false };
     }
-    void this.runTurn(promptId, () => input.text);
+    void this.runTurn(promptId, resolved.target, () => input.text);
     return { promptId, dispatched: true };
   }
 
@@ -355,7 +373,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     return wt.canonicalPath;
   }
 
-  private getOrCreateSession(key: string): PostSession {
+  private getOrCreateSession(key: string): AgentSession {
     let session = this.sessions.get(key);
     if (!session) {
       session = { sessionId: randomUUID(), mode: "new", firstTurn: true };
@@ -396,7 +414,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     return lines.join("\n");
   }
 
-  private buildOptions(session: PostSession, cwd: string, abort: AbortController): Options {
+  private buildOptions(session: AgentSession, cwd: string, abort: AbortController): Options {
     const disallowedTools = [...this.disabledServers].map((name) => `mcp__${name}__*`);
     const options: Options = {
       cwd,
@@ -446,11 +464,27 @@ class EmbeddedAgentHost implements StudioAgentHost {
     return options;
   }
 
-  /** Null if `path` is the active post's worktree, else the reason it isn't. */
-  private targetMismatch(path: string): string | null {
+  /** The active post's dispatch target, or null after emitting the standard "no active post" error. */
+  private resolveActiveTarget(promptId: string): { target: AgentTarget; wt: ActiveWorktree } | null {
     const wt = this.deps.getActiveWorktree();
-    if (!wt || wt.canonicalPath !== path) return `cannot dispatch: ${path} is not the active post`;
-    return null;
+    if (!wt) {
+      this.deps.emit({ type: "error", promptId, message: "no active post to prompt" });
+      return null;
+    }
+    return { target: { sessionKey: wt.canonicalPath, cwd: wt.worktreePath }, wt };
+  }
+
+  /** Resolves a dispatched `path` to its session key and cwd: the active post, or the studio root
+   *  when `rootWorktreePath` is configured and matches. Otherwise the reason it can't dispatch. */
+  private resolveDispatchTarget(path: string): { ok: true; target: AgentTarget } | { ok: false; reason: string } {
+    if (this.deps.rootWorktreePath && path === this.deps.rootWorktreePath) {
+      return { ok: true, target: { sessionKey: path, cwd: path } };
+    }
+    const wt = this.deps.getActiveWorktree();
+    if (wt && wt.canonicalPath === path) {
+      return { ok: true, target: { sessionKey: wt.canonicalPath, cwd: wt.worktreePath } };
+    }
+    return { ok: false, reason: `cannot dispatch: ${path} is not the active post` };
   }
 
   /** Runs a system-composed prompt queued behind a prior turn, once that turn's `finally` drains it.
@@ -458,16 +492,16 @@ class EmbeddedAgentHost implements StudioAgentHost {
    *  `onTurnEnd`: the caller already got `dispatched: true` back when this was first queued, so
    *  `onTurnEnd` is the only signal left for it. */
   private async runSystemTurn(promptId: string, path: string, text: string): Promise<void> {
-    const mismatch = this.targetMismatch(path);
-    if (mismatch) {
-      this.deps.emit({ type: "error", promptId, message: mismatch });
+    const resolved = this.resolveDispatchTarget(path);
+    if (!resolved.ok) {
+      this.deps.emit({ type: "error", promptId, message: resolved.reason });
       this.deps.onTurnEnd?.(promptId);
       return;
     }
-    await this.runTurn(promptId, () => text);
+    await this.runTurn(promptId, resolved.target, () => text);
   }
 
-  private async runTurn(promptId: string, buildPrompt: (wt: ActiveWorktree) => string): Promise<void> {
+  private async runTurn(promptId: string, target: AgentTarget, buildPrompt: () => string): Promise<void> {
     // A resumed session is single-threaded; reject a second concurrent prompt rather than desync
     // turn state. (The SPA also guards the UI.)
     if (this.current) {
@@ -481,19 +515,14 @@ class EmbeddedAgentHost implements StudioAgentHost {
       return;
     }
 
-    const wt = this.deps.getActiveWorktree();
-    if (!wt) {
-      this.deps.emit({ type: "error", promptId, message: "no active post to prompt" });
-      return;
-    }
-    const session = this.getOrCreateSession(wt.canonicalPath);
-    const prompt = buildPrompt(wt);
+    const session = this.getOrCreateSession(target.sessionKey);
+    const prompt = buildPrompt();
 
     const abort = new AbortController();
     this.current = { promptId, abort };
     this.deps.onTurnStart?.();
     try {
-      for await (const message of query({ prompt, options: this.buildOptions(session, wt.worktreePath, abort) })) {
+      for await (const message of query({ prompt, options: this.buildOptions(session, target.cwd, abort) })) {
         this.dispatch(promptId, session, message);
       }
     } catch (err) {
@@ -507,17 +536,15 @@ class EmbeddedAgentHost implements StudioAgentHost {
       this.abortPendingPermissions();
       if (this.current?.promptId === promptId) this.current = null;
       this.deps.onTurnEnd?.(promptId);
-      // Drain a queued system prompt here, not just on success: an errored/aborted turn must not
-      // strand it, since nothing else will ever look at `pendingSystemPrompt` again otherwise.
-      const pending = this.pendingSystemPrompt;
-      if (pending) {
-        this.pendingSystemPrompt = null;
-        void this.runSystemTurn(pending.promptId, pending.path, pending.text);
-      }
+      // Drain the queue here, not just on success: an errored/aborted turn must not strand it, since
+      // nothing else will ever look at `pendingSystemPrompts` again otherwise. One at a time, FIFO:
+      // draining a system turn re-enters this same `finally` and pops the next once it too ends.
+      const pending = this.pendingSystemPrompts.shift();
+      if (pending) void this.runSystemTurn(pending.promptId, pending.path, pending.text);
     }
   }
 
-  private dispatch(promptId: string, session: PostSession, message: SDKMessage): void {
+  private dispatch(promptId: string, session: AgentSession, message: SDKMessage): void {
     switch (message.type) {
       case "system":
         if (message.subtype === "init") {
@@ -586,7 +613,7 @@ class EmbeddedAgentHost implements StudioAgentHost {
     }
   }
 
-  private onSessionEstablished(session: PostSession, id: string): void {
+  private onSessionEstablished(session: AgentSession, id: string): void {
     session.firstTurn = false;
     if (id && id !== session.sessionId) {
       session.sessionId = id;
