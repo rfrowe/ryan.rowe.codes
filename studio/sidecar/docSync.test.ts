@@ -16,8 +16,29 @@ import { createGitRunner } from "./gitRunner";
 import { sha256Hex } from "./hash";
 import { SelfWriteGuard } from "../state/store";
 import type { StudioStore } from "../state/store";
-import type { GitRunner } from "../shared/seams";
+import type { GitRunner, GitWatcher } from "../shared/seams";
 import type { ActiveDoc, DocRev } from "../shared/types";
+
+/** A GitWatcher whose doorbell only fires when `ring()` is called; no real chokidar/`.git` watch
+ *  involved (mirrors gitStatus.test.ts's own fakeWatcher). */
+function fakeWatcher(): { watcher: GitWatcher; ring: () => void } {
+  const listeners = new Set<() => void>();
+  return {
+    watcher: {
+      onChange(l) {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      poke() {
+        for (const l of listeners) l();
+      },
+      async close() {},
+    },
+    ring() {
+      for (const l of listeners) l();
+    },
+  };
+}
 
 interface RelayoutCall {
   oldPath: string;
@@ -325,6 +346,40 @@ describe("docSync git-op classification", () => {
 
     await waitFor(() => reloadCalls.length > 1);
     expect(reloadCalls.every((c) => c.origin === "external")).toBe(true);
+  });
+});
+
+describe("docSync HEAD-baseline freshness", () => {
+  let dir: string;
+  let sync: DocSync | null = null;
+
+  afterEach(async () => {
+    await sync?.close();
+    sync = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  const STEM_FILE = "src/content/blog/2026-07-14_hello.mdx";
+
+  it("reseeds on a git-live doorbell ring, so a HEAD move with no file touch doesn't stale-classify the next real edit", async () => {
+    dir = await makeRepo(STEM_FILE);
+    const filePath = path.join(dir, STEM_FILE);
+    const { store, reloadCalls } = makeFakeStore(filePath, "v1\n");
+    const { watcher, ring } = fakeWatcher();
+    sync = createDocSync(store, { filePath, git: createGitRunner(), watcher });
+    await new Promise((r) => setTimeout(r, 100)); // let the initial seedHead land.
+
+    // Moves HEAD without touching the watched file at all -- exactly the case lastKnownHead used to
+    // miss entirely, since nothing here ever fires a disk event for classifyExternalOrigin to run off.
+    runGit(["commit", "-q", "--allow-empty", "-m", "unrelated"], dir);
+    ring(); // git-live's doorbell would have rung for this ref move; simulate it directly.
+    await new Promise((r) => setTimeout(r, 100)); // let the doorbell-triggered reseed land.
+
+    // A genuinely plain edit, unrelated to the commit above. Without the reseed, lastKnownHead would
+    // still be the pre-commit HEAD, so this would misclassify as "git" instead of "external".
+    await writeFile(filePath, "v2\n");
+    await waitFor(() => reloadCalls.length > 0);
+    expect(reloadCalls.at(-1)?.origin).toBe("external");
   });
 });
 
