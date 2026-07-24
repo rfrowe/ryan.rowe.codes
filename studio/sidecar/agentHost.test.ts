@@ -352,6 +352,106 @@ describe("dispatchSystemPrompt", () => {
     expect(turnEnds).toEqual(["human-1", first.promptId, second.promptId]);
   });
 
+  it("does not let a synchronously-redispatching onTurnEnd callback cut in line ahead of an already-queued dispatch", async () => {
+    // Models a real onTurnEnd consumer (a conflict resolver) that fires a new dispatch the instant a
+    // turn ends, before its own first await: exactly the window a callback-triggered redispatch could
+    // otherwise race the FIFO drain in. The drain must run first, so this.current is already
+    // re-populated by the drained item by the time the redispatch's busy-check runs.
+    const mockedQuery = vi.mocked(query);
+    let releaseHumanTurn: () => void = () => {};
+    const humanTurnGate = new Promise<void>((resolve) => (releaseHumanTurn = resolve));
+    mockedQuery.mockImplementationOnce((() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          await humanTurnGate;
+          return { done: true, value: undefined };
+        },
+      }),
+    })) as unknown as typeof query);
+    // The already-queued dispatch and the redispatched interloper both complete cleanly.
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+    mockedQuery.mockImplementationOnce((async function* () {}) as unknown as typeof query);
+
+    const emitted: unknown[] = [];
+    const turnEnds: string[] = [];
+    let redispatched = false;
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => activeWorktree,
+      skillInstructions: "",
+      emit: (m) => emitted.push(m),
+      onTurnEnd: (promptId) => {
+        turnEnds.push(promptId);
+        if (!redispatched) {
+          redispatched = true;
+          void host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "interloper" });
+        }
+      },
+    });
+
+    const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Queued behind the live human turn, same as any F4 dispatch.
+    const queued = host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "queued first" });
+
+    releaseHumanTurn();
+    await humanTurn;
+    const { promptId: queuedId } = await queued;
+    // A bounded settle rather than a while-until-3-calls loop: under the bug this reproduces, the
+    // queued dispatch is rejected outright and never reaches query() at all, so that count would
+    // never arrive and an unbounded wait would hang instead of failing.
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+
+    // The already-queued dispatch must actually run, not be rejected by the interloper cutting in line.
+    expect(emitted).not.toContainEqual(expect.objectContaining({ message: expect.stringContaining("already in progress") }));
+    expect(mockedQuery).toHaveBeenCalledTimes(3);
+    // FIFO: the dispatch that was queued first drains before the interloper that jumped in from onTurnEnd.
+    expect(turnEnds.indexOf(queuedId)).toBeLessThan(turnEnds.length - 1);
+  });
+
+  it("fires a drained item's onTurnEnd nested inside the drain, before the completing turn's own onTurnEnd, when the item's target has vanished", async () => {
+    // Documents an intentional side effect of draining before onTurnEnd: a drained item that fails
+    // resolveDispatchTarget (its target closed mid-turn) reaches onTurnEnd synchronously inside the
+    // drain step, ahead of the completing turn's own onTurnEnd call one line later. Both real
+    // consumers (conflictResolver/rootConflictResolver) key handleTurnEnd purely off their own
+    // promptId, so this reordering relative to a *different* promptId's onTurnEnd is harmless.
+    const mockedQuery = vi.mocked(query);
+    let releaseHumanTurn: () => void = () => {};
+    const humanTurnGate = new Promise<void>((resolve) => (releaseHumanTurn = resolve));
+    mockedQuery.mockImplementationOnce((() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          await humanTurnGate;
+          return { done: true, value: undefined };
+        },
+      }),
+    })) as unknown as typeof query);
+
+    const turnEnds: string[] = [];
+    let active: ActiveWorktree | null = activeWorktree;
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => active,
+      skillInstructions: "",
+      emit: () => {},
+      onTurnEnd: (promptId) => turnEnds.push(promptId),
+    });
+
+    const humanTurn = host.prompt({ promptId: "human-1", text: "hi", context: { path: "/x", cursor: 0, selection: null } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const queued = host.dispatchSystemPrompt({ path: activeWorktree.canonicalPath, text: "queued" });
+    active = null; // the post closes mid-turn; its worktree is gone by the time this drains.
+
+    releaseHumanTurn();
+    await humanTurn;
+    const { promptId: queuedId } = await queued;
+
+    expect(turnEnds).toEqual([queuedId, "human-1"]);
+    expect(mockedQuery).toHaveBeenCalledTimes(1); // the drained item never reaches query() at all.
+  });
+
   it("still rejects a path that is neither the active post nor a configured root", async () => {
     const { host, emitted } = makeHost({ rootWorktreePath: ROOT });
     const { dispatched, promptId } = await host.dispatchSystemPrompt({ path: "/somewhere/else.mdx", text: "x" });
