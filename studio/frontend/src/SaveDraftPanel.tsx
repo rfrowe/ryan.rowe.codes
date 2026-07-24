@@ -4,9 +4,10 @@
 // elsewhere. The sidecar (never the agent) runs git. Surfaces the pushed branch, or the error.
 
 import { useEffect, useRef, useState } from "react";
-import type { GitState, SaveDraftResponse } from "../../shared/protocol";
-import { saveDraft } from "./api";
+import type { GitState, PushFailure, SaveDraftResponse } from "../../shared/protocol";
+import { forcePushSaveDraft, saveDraft } from "./api";
 import { DiffReviewSection, useDiffReview } from "./DiffReview";
+import { PushLossPreview } from "./PushLossPreview";
 import { ScopeSelector } from "./ScopeSelector";
 import { selectPost } from "./gitSelectors";
 import { slugFromPath } from "./slug";
@@ -20,7 +21,10 @@ interface SaveDraftPanelProps {
   onClose: () => void;
 }
 
-type Phase = "editing" | "saving" | "result";
+// Mirrors ship's own escalation ladder (F7): a plain push rejected as diverged opens a loss-preview
+// instead of just failing, offering --force-with-lease, and a stale lease escalates once more to a
+// bare --force.
+type Phase = "editing" | "saving" | "loss-preview" | "force-pushing" | "raw-force-preview" | "raw-force-pushing" | "result";
 
 export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
   const review = useDiffReview(path);
@@ -31,11 +35,17 @@ export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
   const [body, setBody] = useState("");
   const [phase, setPhase] = useState<Phase>("editing");
   const [result, setResult] = useState<SaveDraftResponse | null>(null);
+  const [pushFailure, setPushFailure] = useState<PushFailure | null>(null);
   // The modal can be dismissed (backdrop click) while a save is in flight; the push still completes,
-  // but its resolution must not set state on an unmounted panel.
+  // but its resolution must not set state on an unmounted panel. Reset to true in the effect body,
+  // not just the initializer: Strict Mode's dev-only double-invoke runs this cleanup once immediately
+  // after mount, which would otherwise wedge `alive` false before any real save ever starts.
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
   const canSave = subject.trim().length > 0;
@@ -49,6 +59,31 @@ export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
       res = { ok: false, error: e instanceof Error ? e.message : "save request failed" };
     }
     if (!alive.current) return; // dismissed mid-save; the push finished regardless
+    if (!res.ok && res.push?.reason === "non-ff") {
+      setPushFailure(res.push);
+      setPhase("loss-preview");
+      return;
+    }
+    setResult(res);
+    setPhase("result");
+  }
+
+  async function doForcePush(mode: "with-lease" | "raw"): Promise<void> {
+    setPhase(mode === "with-lease" ? "force-pushing" : "raw-force-pushing");
+    let res: SaveDraftResponse;
+    try {
+      res = await forcePushSaveDraft({ path, mode, confirm: true });
+    } catch (e: unknown) {
+      res = { ok: false, error: e instanceof Error ? e.message : "force-push request failed" };
+    }
+    if (!alive.current) return;
+    // --force-with-lease itself got rejected because the lease went stale; its own push field was
+    // just refreshed against the actual current remote, so escalate once more to raw --force.
+    if (mode === "with-lease" && !res.ok && res.push?.reason === "stale-lease") {
+      setPushFailure(res.push);
+      setPhase("raw-force-preview");
+      return;
+    }
     setResult(res);
     setPhase("result");
   }
@@ -62,7 +97,7 @@ export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
 
       <DiffReviewSection review={review} emptyLabel="Nothing uncommitted — the branch is pushed as-is." />
 
-      {phase !== "result" && (
+      {(phase === "editing" || phase === "saving") && (
         <section className="ship__form">
           <p className="ship__confirm-msg">
             Commit as Ryan Rowe and push this post's branch to origin, without opening a PR. Reopen it any time
@@ -83,6 +118,13 @@ export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
         </section>
       )}
 
+      {(phase === "loss-preview" || phase === "force-pushing") && pushFailure && (
+        <PushLossPreview push={pushFailure} danger={false} />
+      )}
+      {(phase === "raw-force-preview" || phase === "raw-force-pushing") && pushFailure && (
+        <PushLossPreview push={pushFailure} danger={true} />
+      )}
+
       <footer className="ship__foot">
         {phase === "editing" && (
           <>
@@ -95,6 +137,28 @@ export function SaveDraftPanel({ path, git, onClose }: SaveDraftPanelProps) {
           </>
         )}
         {phase === "saving" && <span className="ship__loading">Saving… (commit, push)</span>}
+        {phase === "loss-preview" && (
+          <>
+            <button className="btn btn--ghost" onClick={() => setPhase("editing")}>
+              Cancel
+            </button>
+            <button className="btn btn--danger" onClick={() => void doForcePush("with-lease")}>
+              Force push
+            </button>
+          </>
+        )}
+        {phase === "force-pushing" && <span className="ship__loading">Force pushing…</span>}
+        {phase === "raw-force-preview" && (
+          <>
+            <button className="btn btn--ghost" onClick={() => setPhase("editing")}>
+              Cancel
+            </button>
+            <button className="btn btn--danger" onClick={() => void doForcePush("raw")}>
+              Force push anyway
+            </button>
+          </>
+        )}
+        {phase === "raw-force-pushing" && <span className="ship__loading">Force pushing…</span>}
         {phase === "result" && result && (
           <div className="ship__result">
             {result.ok ? (

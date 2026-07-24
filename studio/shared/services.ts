@@ -4,7 +4,16 @@
 // constructs the concretes and injects them.
 
 import type { ActiveDoc, EditorContext, PreviewState, Range, SessionMode } from "./types";
-import type { PromptContext, RebaseAbortResponse, SaveDraftRequest, SaveDraftResponse, ServerMessage, UpdateResponse } from "./protocol";
+import type {
+  PromptContext,
+  RebaseAbortResponse,
+  SaveDraftForcePushRequest,
+  SaveDraftRequest,
+  SaveDraftResponse,
+  ServerMessage,
+  ShipForcePushRequest,
+  UpdateResponse,
+} from "./protocol";
 import type {
   DescribeResult,
   GetEditorContextResult,
@@ -57,6 +66,11 @@ export interface ShipService {
   openPr(input: OpenPrInput): Promise<OpenPrResult>;
   /** Commit the post with the pinned identity and push its branch to origin, without opening a PR. */
   saveDraft(input: SaveDraftRequest): Promise<SaveDraftResponse>;
+  /** Escalation for a ship push rejected as diverged: redo the push with-lease or raw, then (on
+   *  success) finish ship's own tail. REST-only; never exposed to the agent's open_pr tool. */
+  forcePushShip(input: ShipForcePushRequest): Promise<OpenPrResult>;
+  /** Escalation for a save-draft push rejected as diverged: redo the push with-lease or raw. */
+  forcePushSaveDraft(input: SaveDraftForcePushRequest): Promise<SaveDraftResponse>;
 }
 
 /** Enumerates prior sessions for the picker. */

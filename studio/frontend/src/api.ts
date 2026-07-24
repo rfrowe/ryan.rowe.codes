@@ -8,9 +8,13 @@ import type {
   PutDocRequest,
   PutDocResponse,
   RebaseAbortResponse,
+  SaveDraftForcePushRequest,
+  SaveDraftForcePushResponse,
   SaveDraftRequest,
   SaveDraftResponse,
   SessionsResponse,
+  ShipForcePushRequest,
+  ShipForcePushResponse,
   ShipRequest,
   ShipResponse,
   UpdateResponse,
@@ -79,6 +83,17 @@ export async function ship(req: ShipRequest): Promise<ShipResponse> {
   return asJson<ShipResponse>(res);
 }
 
+/** F7's escalation for a ship rejected as diverged: re-push with `--force-with-lease` or bare
+ *  `--force`. Requires `confirm`. */
+export async function forcePushShip(req: ShipForcePushRequest): Promise<ShipForcePushResponse> {
+  const res = await fetch(endpoint("/ship/force"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify(req),
+  });
+  return asJson<ShipForcePushResponse>(res);
+}
+
 /** Fetch from origin (`git fetch --prune`); the sidecar republishes git.state off the fetched refs. */
 export async function fetchRemote(): Promise<FetchResponse> {
   const res = await fetch(endpoint("/fetch"), { method: "POST", headers: { ...authHeaders() } });
@@ -104,6 +119,16 @@ export async function saveDraft(req: SaveDraftRequest): Promise<SaveDraftRespons
     body: JSON.stringify(req),
   });
   return asJson<SaveDraftResponse>(res);
+}
+
+/** Same escalation as {@link forcePushShip}, for the save-draft push. Requires `confirm`. */
+export async function forcePushSaveDraft(req: SaveDraftForcePushRequest): Promise<SaveDraftForcePushResponse> {
+  const res = await fetch(endpoint("/save-draft/force"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify(req),
+  });
+  return asJson<SaveDraftForcePushResponse>(res);
 }
 
 /** Update/Pull (F3): fetch the post's base then rebase onto it. Opens a closed post first. */

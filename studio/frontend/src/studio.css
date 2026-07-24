@@ -1806,6 +1806,40 @@ body {
   color: var(--danger);
 }
 
+/* ---- force-push loss preview (F7's escalation ladder) ---- */
+.ship__loss {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: rgba(226, 179, 65, 0.1);
+  border: 1px solid rgba(226, 179, 65, 0.4);
+  border-radius: var(--radius-sm);
+}
+/* The last-resort raw --force lever: red-tinted, so it reads as more dangerous than the
+   --force-with-lease preview above it. */
+.ship__loss--danger {
+  background: var(--del-bg);
+  border-color: var(--danger);
+}
+.ship__loss-warn {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+.ship__loss-warn code {
+  font-family: var(--mono);
+}
+.ship__loss-commits {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-dim);
+  max-height: 20vh;
+  overflow: auto;
+}
+
 /* ---- footer status strip ---- */
 .studio__footer {
   display: flex;

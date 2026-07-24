@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import type { GitRunner, RunResult } from "../shared/seams";
 import {
   BLOG_CONTENT_DIR,
+  buildPushFailure,
+  classifyPushFailure,
   computeDiffAgainstRef,
   computeDivergence,
+  computeForcePushLossPreview,
   computeWorkingTreeDiff,
   countOutsideBlog,
   parseStatusPaths,
@@ -223,5 +226,93 @@ describe("computeDivergence", () => {
       return {};
     });
     expect(await computeDivergence(git, "/wt", "main")).toEqual({ onOrigin: true, behind: 4, ahead: 0 });
+  });
+});
+
+describe("classifyPushFailure", () => {
+  it("recognizes a plain non-fast-forward rejection", () => {
+    const stderr = "! [rejected]        blog/foo -> blog/foo (fetch first)\nerror: failed to push some refs";
+    expect(classifyPushFailure(stderr)).toBe("non-ff");
+  });
+
+  it("recognizes a stale --force-with-lease rejection ahead of the generic \"rejected\" match", () => {
+    const stderr = "! [rejected]        blog/foo -> blog/foo (stale info)\nerror: failed to push some refs";
+    expect(classifyPushFailure(stderr)).toBe("stale-lease");
+  });
+
+  it("recognizes an auth failure", () => {
+    expect(classifyPushFailure("fatal: Authentication failed for 'https://github.com/x/y.git/'")).toBe("auth");
+    expect(classifyPushFailure("remote: Permission to x/y.git denied to someone.")).toBe("auth");
+  });
+
+  it("recognizes a network failure", () => {
+    expect(classifyPushFailure("fatal: unable to access '...': Could not resolve host: github.com")).toBe("network");
+  });
+
+  it("falls back to \"other\" for anything unrecognized", () => {
+    expect(classifyPushFailure("fatal: something unexpected")).toBe("other");
+  });
+});
+
+describe("computeForcePushLossPreview", () => {
+  it("is empty when the remote-tracking ref doesn't exist", async () => {
+    const { git, lines } = makeGit((args) => (args.includes("rev-parse") ? { code: 1 } : {}));
+    expect(await computeForcePushLossPreview(git, "/wt", "blog/foo")).toEqual({ remoteOnlyCommits: [], diff: "" });
+    expect(lines().some((l) => l.startsWith("git log") || l.startsWith("git diff"))).toBe(false);
+  });
+
+  it("lists remote-only commits and their accumulated diff", async () => {
+    const { git, lines } = makeGit((args) => {
+      const a = subcommand(args);
+      if (a.startsWith("rev-parse")) return { code: 0 };
+      if (a.startsWith("log")) return { stdout: "abc1234 fix typo\ndef5678 add section\n" };
+      if (a.startsWith("diff")) return { stdout: "diff --git a/x b/x\n+remote change\n" };
+      return {};
+    });
+    const res = await computeForcePushLossPreview(git, "/wt", "blog/foo");
+    expect(res).toEqual({
+      remoteOnlyCommits: ["abc1234 fix typo", "def5678 add section"],
+      diff: "diff --git a/x b/x\n+remote change\n",
+    });
+    expect(lines()).toContain("git log --format=%h %s HEAD..origin/blog/foo");
+    expect(lines()).toContain("git -c core.quotePath=false diff -M HEAD...origin/blog/foo");
+  });
+});
+
+describe("buildPushFailure", () => {
+  it("fetches and previews the loss for a non-ff rejection", async () => {
+    const { git, lines } = makeGit((args) => {
+      const a = subcommand(args);
+      if (a.startsWith("rev-parse")) return { code: 0 };
+      if (a.startsWith("log")) return { stdout: "abc1234 remote commit\n" };
+      if (a.startsWith("diff")) return { stdout: "diff --git a/x b/x\n+remote\n" };
+      return {};
+    });
+    const res = await buildPushFailure(git, "/wt", "blog/foo", "! [rejected] blog/foo -> blog/foo (fetch first)");
+    expect(res).toEqual({
+      reason: "non-ff",
+      remoteOnlyCommits: ["abc1234 remote commit"],
+      diff: "diff --git a/x b/x\n+remote\n",
+    });
+    expect(lines()).toContain("git fetch origin blog/foo");
+  });
+
+  it("fetches and previews the loss for a stale-lease rejection", async () => {
+    const { git, lines } = makeGit((args) => {
+      const a = subcommand(args);
+      if (a.startsWith("rev-parse")) return { code: 0 };
+      if (a.startsWith("log")) return { stdout: "" };
+      return {};
+    });
+    const res = await buildPushFailure(git, "/wt", "blog/foo", "! [rejected] blog/foo -> blog/foo (stale info)");
+    expect(res.reason).toBe("stale-lease");
+    expect(lines()).toContain("git fetch origin blog/foo");
+  });
+
+  it("skips the fetch and preview for a failure a force can't fix", async () => {
+    const { git, lines } = makeGit(() => ({}));
+    const res = await buildPushFailure(git, "/wt", "blog/foo", "fatal: Authentication failed");
+    expect(res).toEqual({ reason: "auth", remoteOnlyCommits: [], diff: "" });
+    expect(lines()).toEqual([]);
   });
 });

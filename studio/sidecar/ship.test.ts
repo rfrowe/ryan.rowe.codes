@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import type { GitRunner, RunResult } from "../shared/seams";
 import type { OpenPrInput } from "../shared/mcpTools";
+import type { SaveDraftForcePushRequest, ShipForcePushRequest } from "../shared/protocol";
 import type { ActiveWorktree } from "../state/store";
 
 import { createShipService } from "./ship";
@@ -284,6 +285,44 @@ describe("createShipService.openPr", () => {
     expect(lines().some((l) => l.includes("pr create"))).toBe(false);
   });
 
+  it("classifies a non-fast-forward rejection and attaches the discarded commits + diff (F7 loss preview)", async () => {
+    const handler = withOverride(happy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("push")) {
+        return { code: 1, stderr: "! [rejected]        blog/aligning-a-skyline -> blog/aligning-a-skyline (fetch first)" };
+      }
+      if (bin === "git" && a.startsWith("log --format")) return { stdout: "abc1234 remote-only commit\n" };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.openPr(baseInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok && res.behind === undefined) {
+      expect(res.push).toEqual({
+        reason: "non-ff",
+        remoteOnlyCommits: ["abc1234 remote-only commit"],
+        diff: `diff --git a/${BLOG_PATH} b/${BLOG_PATH}\n`,
+      });
+    }
+    // Refreshes the remote-tracking ref before previewing the loss: a rejected push never updates it.
+    expect(lines()).toContain("git fetch origin blog/aligning-a-skyline");
+  });
+
+  it("attaches no loss preview for a failure a force can't fix", async () => {
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && args.join(" ").startsWith("push") ? { code: 1, stderr: "fatal: Authentication failed" } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.openPr(baseInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok && res.behind === undefined) {
+      expect(res.push).toEqual({ reason: "auth", remoteOnlyCommits: [], diff: "" });
+    }
+    expect(lines().some((l) => l.startsWith("git fetch"))).toBe(false);
+  });
+
   it("reports push-ok/PR-fail with a recovery hint", async () => {
     const handler = withOverride(happy, (bin, args) =>
       bin === "gh" && args.join(" ").startsWith("pr create") ? { code: 1, stderr: "gh: could not create PR" } : {},
@@ -376,6 +415,99 @@ describe("createShipService.openPr", () => {
     expect(res).toEqual({ ok: true, prUrl: PR_URL });
     expect(lines().some((l) => l.includes("show HEAD:"))).toBe(false);
     expect(calls.find((c) => c.bin === "gh" && c.line.includes("pr create"))!.line).not.toContain("pages.dev");
+  });
+});
+
+const forcePushInput: ShipForcePushRequest = {
+  mode: "with-lease",
+  subject: "Add the skyline post",
+  body: "A post about aligning a skyline.",
+  confirm: true,
+};
+
+describe("createShipService.forcePushShip", () => {
+  it("re-pushes the already-committed branch with --force-with-lease and finishes the PR", async () => {
+    const { git, lines } = makeGit(happy);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip(forcePushInput);
+    expect(res).toEqual({ ok: true, prUrl: PR_URL });
+    expect(lines()).toContain("git push --force-with-lease -u origin blog/aligning-a-skyline");
+    // Nothing gets staged or re-committed; the escalation only redoes the push.
+    expect(lines().some((l) => l.startsWith("git add"))).toBe(false);
+    expect(lines().some((l) => l.includes("commit -m"))).toBe(false);
+    expect(lines().some((l) => l.includes("pr create") && l.includes("--base main"))).toBe(true);
+  });
+
+  it('mode "raw" pushes a bare --force', async () => {
+    const { git, lines } = makeGit(happy);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip({ ...forcePushInput, mode: "raw" });
+    expect(res.ok).toBe(true);
+    expect(lines()).toContain("git push --force -u origin blog/aligning-a-skyline");
+    expect(lines().some((l) => l.includes("--force-with-lease"))).toBe(false);
+  });
+
+  it("blocks on the confirm gate with no git/gh side effects", async () => {
+    const { git, calls } = makeGit(happy);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip({ ...forcePushInput, confirm: false });
+    expect(res).toEqual({ ok: false, error: "confirmation required", behind: undefined });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("errors when there is no active post to ship", async () => {
+    const { git, calls } = makeGit(happy);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => null, getWorktreeFor: () => null, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip(forcePushInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/no active post/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses when the worktree is not on the post's branch", async () => {
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("rev-parse --abbrev-ref HEAD") ? { stdout: "some-other-branch\n" } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip(forcePushInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/expected the post's branch/);
+    expect(lines().some((l) => l.startsWith("git push"))).toBe(false);
+  });
+
+  it("refuses when HEAD identity is not the pinned author", async () => {
+    const handler = withOverride(happy, (bin, args) =>
+      bin === "git" && args.join(" ").startsWith("log -1") ? { stdout: "Someone Else <x@example.com>\n" } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip(forcePushInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/identity assertion failed/);
+    expect(lines().some((l) => l.startsWith("git push"))).toBe(false);
+  });
+
+  it("classifies a stale --force-with-lease rejection so the client can escalate to raw force", async () => {
+    const handler = withOverride(happy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("push")) {
+        return { code: 1, stderr: "! [rejected]        blog/aligning-a-skyline -> blog/aligning-a-skyline (stale info)" };
+      }
+      if (bin === "git" && a.startsWith("log --format")) return { stdout: "def5678 someone else's commit\n" };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({ git, sessionBranch: "main", getActiveWorktree: () => WORKTREE, getWorktreeFor: () => WORKTREE, getActiveNameSync: () => ({ synced: true }) });
+    const res = await svc.forcePushShip(forcePushInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok && res.behind === undefined) {
+      expect(res.push?.reason).toBe("stale-lease");
+      expect(res.push?.remoteOnlyCommits).toEqual(["def5678 someone else's commit"]);
+    }
+    // Refreshed against the actual current remote before the client can offer raw --force.
+    expect(lines()).toContain("git fetch origin blog/aligning-a-skyline");
+    expect(lines().some((l) => l.includes("pr create"))).toBe(false);
   });
 });
 
@@ -696,6 +828,32 @@ describe("createShipService.saveDraft", () => {
     if (!res.ok) expect(res.error).toMatch(/committed locally but were not pushed/);
   });
 
+  it("classifies a non-fast-forward rejection and attaches the discarded commits + diff", async () => {
+    const handler = withOverride(saveHappy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("push")) {
+        return { code: 1, stderr: "! [rejected]        blog/aligning-a-skyline -> blog/aligning-a-skyline (fetch first)" };
+      }
+      if (bin === "git" && a.startsWith("log --format")) return { stdout: "abc1234 remote-only commit\n" };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.saveDraft({ subject: "x", body: "", scope: "post", confirm: true });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.push?.reason).toBe("non-ff");
+      expect(res.push?.remoteOnlyCommits).toEqual(["abc1234 remote-only commit"]);
+    }
+    expect(lines()).toContain("git fetch origin blog/aligning-a-skyline");
+  });
+
   it("aborts before push when HEAD identity is not the pinned author", async () => {
     const handler = withOverride(saveHappy, (bin, args) =>
       bin === "git" && subcommand(args).startsWith("log -1") ? { stdout: "Someone Else <x@example.com>\n" } : {},
@@ -714,5 +872,128 @@ describe("createShipService.saveDraft", () => {
     const seq = lines();
     expect(seq.some((l) => l.includes("commit"))).toBe(true);
     expect(seq.some((l) => l.includes("push"))).toBe(false);
+  });
+});
+
+const forcePushSaveDraftInput: SaveDraftForcePushRequest = { mode: "with-lease", confirm: true };
+
+describe("createShipService.forcePushSaveDraft", () => {
+  it("re-pushes the already-committed branch with --force-with-lease", async () => {
+    const { git, lines } = makeGit(saveHappy);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.forcePushSaveDraft(forcePushSaveDraftInput);
+    expect(res).toEqual({ ok: true, branch: "blog/aligning-a-skyline", committed: false, pushed: true, noop: false });
+    expect(lines()).toContain("git push --force-with-lease -u origin blog/aligning-a-skyline");
+    expect(lines().some((l) => l.startsWith("git add"))).toBe(false);
+    expect(lines().some((l) => l.includes("commit -m"))).toBe(false);
+  });
+
+  it('mode "raw" pushes a bare --force', async () => {
+    const svc = saveSvc(saveHappy);
+    const res = await svc.forcePushSaveDraft({ ...forcePushSaveDraftInput, mode: "raw" });
+    expect(res.ok).toBe(true);
+  });
+
+  it("saves a non-active tab by path via getWorktreeFor", async () => {
+    const svc = saveSvc(saveHappy, { active: null });
+    const res = await svc.forcePushSaveDraft({ ...forcePushSaveDraftInput, path: `/repo/${BLOG_PATH}` });
+    expect(res).toEqual({ ok: true, branch: "blog/aligning-a-skyline", committed: false, pushed: true, noop: false });
+  });
+
+  it("blocks on the confirm gate with no git side effects", async () => {
+    const { git, calls } = makeGit(saveHappy);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.forcePushSaveDraft({ ...forcePushSaveDraftInput, confirm: false });
+    expect(res).toEqual({ ok: false, error: "confirmation required" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("errors when there is no post to save", async () => {
+    const { git, calls } = makeGit(saveHappy);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => null,
+      getWorktreeFor: () => null,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.forcePushSaveDraft(forcePushSaveDraftInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/no post to save/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses when the worktree is not on the post's branch", async () => {
+    const handler = withOverride(saveHappy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("rev-parse --abbrev-ref HEAD") ? { stdout: "some-other-branch\n" } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.forcePushSaveDraft(forcePushSaveDraftInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/expected the post's branch/);
+    expect(lines().some((l) => l.startsWith("git push"))).toBe(false);
+  });
+
+  it("refuses when HEAD identity is not the pinned author", async () => {
+    const handler = withOverride(saveHappy, (bin, args) =>
+      bin === "git" && subcommand(args).startsWith("log -1") ? { stdout: "Someone Else <x@example.com>\n" } : {},
+    );
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.forcePushSaveDraft(forcePushSaveDraftInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/identity assertion failed/);
+    expect(lines().some((l) => l.startsWith("git push"))).toBe(false);
+  });
+
+  it("classifies a stale --force-with-lease rejection so the client can escalate to raw force", async () => {
+    const handler = withOverride(saveHappy, (bin, args) => {
+      const a = subcommand(args);
+      if (bin === "git" && a.startsWith("push")) {
+        return { code: 1, stderr: "! [rejected]        blog/aligning-a-skyline -> blog/aligning-a-skyline (stale info)" };
+      }
+      if (bin === "git" && a.startsWith("log --format")) return { stdout: "def5678 someone else's commit\n" };
+      return {};
+    });
+    const { git, lines } = makeGit(handler);
+    const svc = createShipService({
+      git,
+      sessionBranch: "main",
+      getActiveWorktree: () => WORKTREE,
+      getWorktreeFor: () => WORKTREE,
+      getActiveNameSync: () => ({ synced: true }),
+    });
+    const res = await svc.forcePushSaveDraft(forcePushSaveDraftInput);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.push?.reason).toBe("stale-lease");
+      expect(res.push?.remoteOnlyCommits).toEqual(["def5678 someone else's commit"]);
+    }
+    expect(lines()).toContain("git fetch origin blog/aligning-a-skyline");
   });
 });

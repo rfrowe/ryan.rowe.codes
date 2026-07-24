@@ -29,10 +29,14 @@ import type {
   PutDocResponse,
   RebaseAbortRequest,
   RebaseAbortResponse,
+  SaveDraftForcePushRequest,
+  SaveDraftForcePushResponse,
   SaveDraftRequest,
   SaveDraftResponse,
   ServerMessage,
   SessionsResponse,
+  ShipForcePushRequest,
+  ShipForcePushResponse,
   ShipRequest,
   ShipResponse,
   UpdateRequest,
@@ -222,6 +226,14 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
         return sendJson(res, 200, result satisfies ShipResponse);
       }
 
+      case "POST /ship/force": {
+        // F7's escalation ladder: re-push a ship rejected as diverged. Never reachable from the
+        // agent's open_pr tool, which has no `force` input of its own.
+        const body = await readJson<ShipForcePushRequest>(req);
+        const result = await services.ship.forcePushShip(body);
+        return sendJson(res, 200, result satisfies ShipForcePushResponse);
+      }
+
       case "POST /fetch": {
         // The global refs-only pull (⌘⇧F): fetch, then git.state republishes so every post's
         // behind/incoming reflects it. POST /update below is the per-post fetch-then-rebase.
@@ -268,6 +280,13 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
           confirm: body.confirm,
         });
         return sendJson(res, 200, result satisfies SaveDraftResponse);
+      }
+
+      case "POST /save-draft/force": {
+        // Same escalation ladder as ship, for the save-draft push.
+        const body = await readJson<SaveDraftForcePushRequest>(req);
+        const result = await services.ship.forcePushSaveDraft(body);
+        return sendJson(res, 200, result satisfies SaveDraftForcePushResponse);
       }
 
       default:
