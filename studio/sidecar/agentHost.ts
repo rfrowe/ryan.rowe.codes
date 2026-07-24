@@ -84,6 +84,12 @@ export interface StudioAgentHost extends AgentHost {
    * new key is taken.
    */
   renameSessionKey(oldPath: string, newPath: string): void;
+  /**
+   * The active post's already-established session (id, mode, and transcript so far), if one exists.
+   * Read-only, unlike `select` — it never touches `firstTurn`/`resumeFrom`, so it's safe to call on
+   * every connect to resync a client to a session the sidecar has been resuming all along.
+   */
+  getActiveSessionSnapshot(): Promise<{ sessionId: string; mode: SessionMode; items: SessionHistoryItem[] } | null>;
 }
 
 /** One target's SDK session (a post or the studio root): its id and how the next turn resumes/forks. */
@@ -179,6 +185,17 @@ class EmbeddedAgentHost implements StudioAgentHost {
       // A missing/unreadable transcript shouldn't sink the selection; the agent still resumes.
       return [];
     }
+  }
+
+  async getActiveSessionSnapshot(): Promise<{ sessionId: string; mode: SessionMode; items: SessionHistoryItem[] } | null> {
+    const wt = this.deps.getActiveWorktree();
+    if (!wt) return null;
+    const session = this.sessions.get(wt.canonicalPath);
+    if (!session) return null;
+    // The session's own id, not resumeFrom: by the time a client resyncs, any turn already run (new,
+    // resumed, or forked) has its transcript filed under sessionId, which loadHistory reads directly.
+    const items = await this.loadHistory(session.sessionId);
+    return { sessionId: session.sessionId, mode: session.mode, items };
   }
 
   async prompt(input: { promptId: string; text: string; context: PromptContext }): Promise<void> {

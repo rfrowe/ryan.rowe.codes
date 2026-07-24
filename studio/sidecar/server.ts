@@ -320,6 +320,21 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
     });
 
+    // Attached before any snapshot send below goes async (the session.history push awaits the SDK's
+    // transcript read), so a message the client fires the instant it connects is never dropped.
+    ws.on("message", (data) => {
+      let message: ClientMessage;
+      try {
+        message = JSON.parse(data.toString()) as ClientMessage;
+      } catch {
+        ws.send(JSON.stringify({ type: "error", message: "malformed message" } satisfies ServerMessage));
+        return;
+      }
+      handleClientMessage(ws, message);
+    });
+    ws.on("close", unsubscribe);
+    ws.on("error", () => ws.terminate());
+
     // Replay the current snapshot so a freshly-connected SPA can bootstrap (the bootstrap openPost
     // ran before any client connected). Order matches the store's publishActivation (tabs and active
     // before file.changed) so the target tab exists before its buffer arrives.
@@ -350,19 +365,28 @@ export function createServer(services: StudioServices, opts: ServerOptions): Stu
     const gitState = store.getGitState();
     if (gitState) ws.send(JSON.stringify({ type: "git.state", state: gitState } satisfies ServerMessage));
 
-    ws.on("message", (data) => {
-      let message: ClientMessage;
-      try {
-        message = JSON.parse(data.toString()) as ClientMessage;
-      } catch {
-        ws.send(JSON.stringify({ type: "error", message: "malformed message" } satisfies ServerMessage));
-        return;
-      }
-      handleClientMessage(ws, message);
-    });
-
-    ws.on("close", unsubscribe);
-    ws.on("error", () => ws.terminate());
+    // The active post's session survives a reconnect server-side (the sidecar keeps resuming it
+    // regardless of what the client does), but the client's own chat state doesn't — it starts every
+    // tab as { sessionId: null, mode: "new" } on load. Replaying session.history (the same message
+    // `session.select` broadcasts) resyncs the panel to whatever conversation is actually still live.
+    agentHost
+      .getActiveSessionSnapshot()
+      .then((snapshot) => {
+        if (snapshot && ws.readyState === ws.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "session.history",
+              sessionId: snapshot.sessionId,
+              mode: snapshot.mode,
+              items: snapshot.items,
+            } satisfies ServerMessage),
+          );
+        }
+      })
+      .catch(() => {
+        // Best-effort resync; a failure here shouldn't drop the connection the rest of the snapshot
+        // already established.
+      });
   }
 
   function handleClientMessage(ws: WebSocket, message: ClientMessage): void {

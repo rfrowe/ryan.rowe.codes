@@ -314,6 +314,95 @@ describe("nodeModulesPromotedHook", () => {
   });
 });
 
+describe("getActiveSessionSnapshot", () => {
+  const activeWorktree: ActiveWorktree = {
+    slug: "a",
+    branch: "blog/a",
+    worktreePath: WT,
+    worktreeFilePath: `${WT}/post.mdx`,
+    relPath: "src/content/blog/a.mdx",
+    canonicalPath: "/repo/src/content/blog/a.mdx",
+  };
+
+  function msg(type: "user" | "assistant", content: unknown): SessionMessage {
+    return {
+      type,
+      uuid: "u",
+      session_id: "s",
+      message: { role: type, content },
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+    } as SessionMessage;
+  }
+
+  it("is null when no post is active", async () => {
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => null,
+      skillInstructions: "",
+      emit: () => {},
+    });
+    expect(await host.getActiveSessionSnapshot()).toBeNull();
+  });
+
+  it("is null when the active post has never had a session created", async () => {
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => activeWorktree,
+      skillInstructions: "",
+      emit: () => {},
+    });
+    expect(await host.getActiveSessionSnapshot()).toBeNull();
+  });
+
+  it("reads back the active post's already-established session without mutating it", async () => {
+    const getSessionMessagesImpl = vi.fn().mockResolvedValue([msg("user", "hi")]);
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => activeWorktree,
+      skillInstructions: "",
+      emit: () => {},
+      getSessionMessagesImpl,
+    });
+    const internals = host as unknown as {
+      sessions: Map<string, { sessionId: string; mode: string; firstTurn: boolean; resumeFrom?: string }>;
+    };
+    internals.sessions.set(activeWorktree.canonicalPath, {
+      sessionId: "s-existing",
+      mode: "resume",
+      firstTurn: false,
+      resumeFrom: "s-source",
+    });
+
+    const snapshot = await host.getActiveSessionSnapshot();
+
+    expect(snapshot).toEqual({ sessionId: "s-existing", mode: "resume", items: [{ kind: "user", text: "hi" }] });
+    // Reads the session's own transcript, not the source it was resumed from.
+    expect(getSessionMessagesImpl).toHaveBeenCalledWith("s-existing", { includeSystemMessages: false });
+    // Read-only: firstTurn/resumeFrom (which govern the *next* turn's resume options) are untouched.
+    expect(internals.sessions.get(activeWorktree.canonicalPath)).toEqual({
+      sessionId: "s-existing",
+      mode: "resume",
+      firstTurn: false,
+      resumeFrom: "s-source",
+    });
+  });
+
+  it("resolves an empty transcript rather than throwing when the transcript can't be read", async () => {
+    const host = createAgentHost({
+      tools: {} as unknown as StudioTools,
+      getActiveWorktree: () => activeWorktree,
+      skillInstructions: "",
+      emit: () => {},
+      getSessionMessagesImpl: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    });
+    const internals = host as unknown as { sessions: Map<string, { sessionId: string; mode: string; firstTurn: boolean }> };
+    internals.sessions.set(activeWorktree.canonicalPath, { sessionId: "s-1", mode: "new", firstTurn: true });
+
+    expect(await host.getActiveSessionSnapshot()).toEqual({ sessionId: "s-1", mode: "new", items: [] });
+  });
+});
+
 describe("dispatchSystemPrompt", () => {
   const ROOT = "/repo";
   // Several of these tests assert on `query`'s call count; without a reset, mock implementations and
