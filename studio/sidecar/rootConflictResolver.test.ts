@@ -134,6 +134,10 @@ describe("createRootConflictResolver", () => {
     expect(call[0].path).toBe(c.repo);
     expect(call[0].text).toContain("astro.config.mjs");
     expect(call[0].text).toContain("origin/main");
+    // No human watches this turn live, so the prompt must head off a narrated resolution in favor
+    // of a terse, structured one, matching conflictResolver's post-side prompt.
+    expect(call[0].text).toContain("Work silently");
+    expect(call[0].text).toContain("terse, structured summary");
     expect(setResolvingCalls).toEqual([true]);
     expect(published).toEqual([{ type: "chat.injected", promptId: "p0", path: c.repo, text: call[0].text, kind: "system" }]);
   });

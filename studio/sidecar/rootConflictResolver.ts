@@ -30,10 +30,13 @@ function composePrompt(sessionBranch: string, conflictedFiles: string[], retry: 
     : `A rebase of the studio root onto origin/${sessionBranch} hit conflicts in: ${files}.`;
   return [
     intro,
+    // No human is watching this turn live, so narrating the reasoning only clutters the transcript
+    // for whoever reads it later; the resolution itself is the only useful output.
+    "Work silently: no reasoning or narration in chat text, only tool calls, until you're done.",
     "Resolve each conflict in the working tree, reconciling the root's local commits with the incoming base changes.",
     "Stage resolved files with `git add`.",
     "Do not commit and do not run `git rebase --continue`: the studio finishes the rebase once conflicts are cleared.",
-    "When done, briefly summarize what you reconciled.",
+    "When done, reply with only a terse, structured summary: one line per file as `<path>: <what you kept>`. No preamble, no restating the conflict, no closing remarks.",
   ].join(" ");
 }
 
